@@ -192,7 +192,8 @@ func (in *Ingester) applyParts(ctx context.Context, messageID string, m gm.Messa
 		// store.DownloadStateFor. Writing `pending` here unconditionally is
 		// what made every download unreachable.
 		if _, err := in.Store.UpsertAttachment(ctx, in.AccountID, messageID, att,
-			sealed, store.DownloadStateFor(att.MediaID, att.ThumbnailMediaID)); err != nil {
+			sealed, store.DownloadStateForMessage(
+				att.MediaID, att.ThumbnailMediaID, string(m.DeliveryState))); err != nil {
 			return fmt.Errorf("upserting attachment: %w", err)
 		}
 	}

@@ -8,6 +8,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -225,15 +226,19 @@ func TestMigrationForwardOnAPopulatedV1Database(t *testing.T) {
 
 	after := rawOpen(t, path)
 
-	// Migration 0004 rewrote participant IDs and handed the rows it could
-	// not resolve to the sweep, through the key section 4.3 defines for it.
+	// Migration 0004 rewrote every participant ID in this fixture, because
+	// every one of them has a participants row to join against. So it left
+	// NOTHING for the reprocess task, and must not have set the key: a
+	// database with nothing to fix must not make its next start do a full
+	// re-walk. The other branch -- a participant that was never ingested --
+	// is TestMigration0004RewritesRawParticipantIDs.
 	var pending string
-	if err := after.QueryRow(
-		`SELECT value FROM server_meta WHERE key = 'pending_reprocess'`).Scan(&pending); err != nil {
-		t.Fatalf("migration 0004 set no pending_reprocess key: %v", err)
-	}
-	if pending != "reconcile_participants" {
-		t.Errorf("pending_reprocess = %q, want reconcile_participants", pending)
+	err = after.QueryRow(
+		`SELECT value FROM server_meta WHERE key = 'pending_reprocess'`).Scan(&pending)
+	if err == nil {
+		t.Errorf("pending_reprocess = %q, but 0004 resolved every row here", pending)
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("reading pending_reprocess: %v", err)
 	}
 
 	for _, table := range tables {

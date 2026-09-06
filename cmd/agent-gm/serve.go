@@ -276,6 +276,27 @@ func buildServer(ctx context.Context, addrOverride string) (*built, int) {
 	}
 	log.Info().Int("accounts", resumed).Msg("resumed")
 
+	// Section 4.3's other half: a migration that needs derived data
+	// recomputed sets server_meta.pending_reprocess, and "the process runs
+	// that task once after startup and clears the key". It runs BEFORE the
+	// listener binds, for the same reason crash recovery does -- a caller
+	// must not see a half-reconciled database and read an empty sender=me
+	// page as an answer.
+	var live []string
+	for _, a := range sup.List() {
+		live = append(live, a.ID)
+	}
+	if task, ran, err := core.RunPendingReprocess(ctx, st, workers, live); err != nil {
+		// Not fatal: the key stays set and the next start tries again. A
+		// server that refused to start because one phone was asleep would
+		// be worse than one that serves and retries.
+		log.Warn().Err(err).Str("task", task).
+			Msg("a pending reprocess task did not complete; it will be retried at the next start")
+	} else if ran {
+		log.Info().Str("task", task).Int("accounts", len(live)).
+			Msg("ran the pending reprocess task and cleared the key")
+	}
+
 	srv := api.NewServer(api.Deps{
 		Authz:     authzSvc,
 		PublicURL: cfg.PublicURL,

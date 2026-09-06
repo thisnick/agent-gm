@@ -1243,6 +1243,12 @@ CREATE TABLE attachments (
     width              INTEGER,
     height             INTEGER,
     download_state     TEXT NOT NULL,                 -- available|pending|failed|unavailable
+    -- Derived from the attachment and its message, never asserted by a
+    -- writer: a media ID is `available`, a thumbnail alone is `pending`
+    -- (10.1's GetFullSizeImage window), neither is `unavailable`, and a
+    -- message whose delivery_state is `download_failed` (4.4) makes its
+    -- attachments `failed` whatever media IDs they carry -- Google said the
+    -- media exists and then said the download did not work.
     sha256             TEXT,
     UNIQUE (message_id, part_index)
 );
@@ -2229,6 +2235,16 @@ agent reads it to decide whether an empty result means "nothing" or "not yet":
 A `signed_out` account that finished backfilling before it was signed out
 still reports `complete`: the history is indexed and readable, which is the
 whole point of §4.7's "signing out keeps everything".
+
+**`completed_at` is the stored completion instant and is independent of
+`state`.** A stored completion promotes `pending` and `not_started` to
+`complete`, but it does **not** override `running` or `paused`, because a
+re-backfill after a re-pair is exactly that case and "walking at this moment"
+is the more actionable fact. So a `running` backfill with a non-null
+`completed_at` is a re-walk of an account whose history is **already
+indexed**, and an empty result from it still means *nothing*, not *not yet*.
+A caller that branches on `state` alone gets a re-pair wrong; the block
+carries both fields for this reason.
 
 `config_version_live` and `is_default_sms_app` are per account, cached from
 that account's last `FetchConfig` and `IsBugleDefault`, refreshed on connect

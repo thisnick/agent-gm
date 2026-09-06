@@ -232,12 +232,53 @@ var migration0002 = migration{
 		    is_visible        INTEGER NOT NULL DEFAULT 1,
 		    UNIQUE (conversation_id, source_id)
 		)`,
-		`INSERT INTO participants_new
+		// contact_id is RESOLVED, not copied.
+		//
+		// The v1 column had no REFERENCES clause, and Slice 1's ingest wrote
+		// Google's own contact ID into it. This migration gives the column a
+		// foreign key to `contacts`, which it has just created empty -- so
+		// copying those values straight across violates the constraint and
+		// the whole migration fails. It did, on the owner's real Slice 1
+		// database: 47 of 222 participants carried a raw Google contact ID
+		// and `agent-gm serve` exited 9 with "FOREIGN KEY constraint failed".
+		//
+		// The value cannot be repaired here. A `contact_` ID is UUIDv5 over
+		// (account, "contact", the Google participant ID) and SQLite cannot
+		// compute that, and inventing a contacts row from a participant's
+		// display name would be asserting a contact Google never sent. So
+		// anything that does not already resolve becomes NULL -- which is
+		// what the column means when this account holds no contact for that
+		// person -- and the rows are handed to `pending_reprocess` below,
+		// which re-links them from the backend after startup.
+		`-- all-accounts: a schema migration rewrites every row, for every account
+		 INSERT INTO participants_new
 		    (id, account_id, conversation_id, source_id, contact_id, display_name,
 		     first_name, phone_e164, formatted_number, identifier_type, is_me, is_visible)
-		 SELECT id, account_id, conversation_id, source_id, contact_id, display_name,
-		     first_name, phone_e164, formatted_number, identifier_type, is_me, is_visible
-		   FROM participants`,
+		 SELECT p.id, p.account_id, p.conversation_id, p.source_id,
+		        (SELECT c.id FROM contacts c
+		          WHERE c.account_id = p.account_id AND c.source_id = p.source_id),
+		        p.display_name, p.first_name, p.phone_e164, p.formatted_number,
+		        p.identifier_type, p.is_me, p.is_visible
+		   FROM participants p`,
+		// Read the OLD table, before it is dropped: a participant that
+		// arrived carrying a contact_id and did not get one back has lost a
+		// link this migration could not rebuild, and the startup task
+		// re-resolves it from the backend (section 4.3).
+		//
+		// The condition is "had one and lost it", not "has none now". A
+		// participant this account simply holds no contact for legitimately
+		// has NULL, and treating that as work would make every fresh
+		// deployment do a full re-walk on its first start for nothing.
+		`-- all-accounts: a schema migration inspects every row, for every account
+		 INSERT INTO server_meta(key, value)
+		 SELECT 'pending_reprocess', 'reconcile_participants'
+		  WHERE EXISTS (
+		        SELECT 1 FROM participants p
+		          JOIN participants_new n ON n.id = p.id
+		         WHERE p.contact_id IS NOT NULL AND n.contact_id IS NULL
+		    )
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+
 		`DROP TABLE participants`,
 		`ALTER TABLE participants_new RENAME TO participants`,
 		`CREATE INDEX participants_phone     ON participants(account_id, phone_e164)`,
@@ -579,13 +620,26 @@ var migration0004 = migration{
 		           AND p.source_id = reactions.participant_id
 		    )`,
 
-		// Anything the join could not resolve is left alone and handed to
-		// the sweep, which re-ingests through the current path. Setting the
-		// key unconditionally is deliberate: a migration that inspected the
-		// rows first would have to be right about the inspection too, and
-		// re-sweeping an already-correct account costs bandwidth and nothing
-		// else -- the sweep is idempotent by construction (section 5.4).
-		`INSERT INTO server_meta(key, value) VALUES('pending_reprocess', 'reconcile_participants')
+		// Anything the join could not resolve -- a participant Agent GM never
+		// ingested -- is left alone and handed to the task section 4.3
+		// defines for exactly this: `pending_reprocess`, which the process
+		// runs once after startup and then clears.
+		//
+		// The key is set ONLY when something is actually left, which matters
+		// because a brand-new database runs every migration too: setting it
+		// unconditionally would make a first start do a full re-walk of an
+		// account with nothing to fix, on every fresh deployment.
+		`-- all-accounts: a schema migration inspects every row, for every account
+		 INSERT INTO server_meta(key, value)
+		 SELECT 'pending_reprocess', 'reconcile_participants'
+		  WHERE EXISTS (
+		        SELECT 1 FROM messages
+		         WHERE sender_participant IS NOT NULL
+		           AND sender_participant NOT LIKE 'part\_%' ESCAPE '\'
+		    ) OR EXISTS (
+		        SELECT 1 FROM reactions
+		         WHERE participant_id NOT LIKE 'part\_%' ESCAPE '\'
+		    )
 		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
 	},
 }

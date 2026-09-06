@@ -232,6 +232,26 @@ func nullBlob(b []byte) any {
 //   - neither → `unavailable`. There is nothing to fetch and never will be;
 //     saying `pending` would promise bytes that are not coming.
 func DownloadStateFor(mediaID, thumbnailMediaID string) string {
+	return DownloadStateForMessage(mediaID, thumbnailMediaID, "")
+}
+
+// DownloadStateForMessage is DownloadStateFor with the owning message's
+// delivery state, which can veto the other two.
+//
+// Section 4.4 maps `INCOMING_DOWNLOAD_FAILED(106)` and its eight siblings to
+// a message delivery_state of `download_failed`, and such a message can still
+// carry a media ID -- Google told us the media exists and then told us the
+// download did not work. Reading the media ID alone would serve that
+// attachment as `available`, and the redemption would fail against Google
+// instead of the route saying `failed` up front.
+//
+// `failed` was a declared value of section 4.2's closed vocabulary that
+// nothing produced, which is the worst kind: a caller branches on it and
+// never exercises the branch.
+func DownloadStateForMessage(mediaID, thumbnailMediaID, deliveryState string) string {
+	if deliveryState == string(gm.DeliveryStateDownloadFailed) {
+		return DownloadStateFailed
+	}
 	switch {
 	case mediaID != "":
 		return DownloadStateAvailable

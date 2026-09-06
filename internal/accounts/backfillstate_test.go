@@ -44,13 +44,30 @@ func TestBackfillStateVocabularyIsClosed(t *testing.T) {
 			t.Errorf("the spec's backfill.state table does not name %q", state)
 		}
 	}
-	// And the table names nothing the code cannot produce.
-	for _, cell := range regexp.MustCompile("`([a-z_]+)`").FindAllStringSubmatch(section, -1) {
-		name := cell[1]
-		if !strings.Contains(strings.Join(want, ","), name) &&
-			!strings.Contains("parked,signed_out,error,account_changed,degraded,backfill,state", name) {
-			t.Errorf("the spec's table names %q, which BackfillStates() does not have", name)
+	// And the table's own ROWS name nothing the code cannot produce. Only
+	// the first cell of each row is a state; the prose around the table
+	// legitimately mentions other fields (`completed_at`) and other
+	// vocabularies (`parked`, `signed_out`), and reading those as claimed
+	// states is how this check would fail for the wrong reason.
+	haveState := map[string]bool{}
+	for _, state := range want {
+		haveState[state] = true
+	}
+	row := regexp.MustCompile("(?m)^\\| `([a-z_]+)` \\|")
+	rows := 0
+	for _, cell := range row.FindAllStringSubmatch(section, -1) {
+		// The header row, `| `state` | Meaning |`, is not a state.
+		if cell[1] == "state" {
+			continue
 		}
+		rows++
+		if !haveState[cell[1]] {
+			t.Errorf("the spec's table has a row for %q, which BackfillStates() does not have",
+				cell[1])
+		}
+	}
+	if rows != len(want) {
+		t.Errorf("the spec's table has %d state rows, the code has %d states", rows, len(want))
 	}
 }
 
