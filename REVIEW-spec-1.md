@@ -1110,3 +1110,96 @@ inventing a concept, both worth a rename while they are cheap:
 - **`logged_out` / `agm logout`.** Google Messages says *Sign out*. `signed_out`
   and `agm accounts sign-out` would match; if the current words are kept, it is
   a deliberate choice worth one line in §18.1.
+
+---
+
+# Re-review 3 — final confirm pass, spec at `07e9443` (5078 lines)
+
+The sweep report is committed alongside this file as `REVIEW-sweep-1.md`.
+
+## Verdict
+
+**Accept.**
+
+## The 12 Re-review-2 findings
+
+| | Verdict | Line |
+|---|---|---|
+| RR2-1 empty `SourceID` | closed | pairing refused before an account row exists |
+| RR2-2 orphan `pairing` row | closed | `waiting`/`parked` states, :586-603 |
+| RR2-3 `session.enc.tmp` | closed | per-account temp name |
+| RR2-4 stale `session.enc` in docs | closed | CONTRIBUTING, implementer.md |
+| RR2-5 `account` vs `account_id` | closed | `account_id` everywhere |
+| RR2-6 unindexed default read | closed | all-accounts index counterparts |
+| RR2-7 idempotency warning | closed | §8.3 instructions block |
+| RR2-8 §15.2 "derived from the phone" | closed | sweep B-80; D6 :4937 now states it correctly |
+| RR2-9 fake returns status 4 | closed | ConfigVersion diff, no status claimed |
+| RR2-10 two route spellings | closed | `/v1/accounts/{id}/…` throughout |
+| RR2-11 one Chrome profile | closed | §11.4 |
+| RR2-12 `PairCallback` / `QRData` | closed | :337-341, an explicit **"not called"** block naming `PairCallback`, `SetProxy`, `ConnectBackground`, `SetPingInterval`, `SetDataReceiveCheckInterval` — broader than filed |
+
+## The sweep's highest-priority list
+
+C-2 closed (§3.5 :842-843, `signed_out` + `not_signed_in` (409)). C-3 closed —
+:773-774 now states outright "There is no `bad_credentials` state and no
+`unpaired` state; §4.7 defines the whole vocabulary." B-53/B-54 closed
+(`agm accounts list|show|label|sign-out|remove`, `--account`, :3303-3311).
+A-1/A-2 closed; **A-6 only partly** — see below. B-19 closed, and well:
+`accounts.backfill_complete_at_ms` with an explicit "Never a `server_meta` key:
+two accounts would race on one row" (:1625-1626). B-80 closed. B-41/B-44
+closed — §8.2 is **21 tools = 11 + 8 + 2**, I counted 21 rows, tests 14 and 16
+agree, and the false "every other `/v1` route has a tool" universal is replaced
+by an if-and-only-if rule plus an exclusion table. C-1 closed (:89 cites D29).
+
+## Ten spot-checks
+
+A-9, B-7, B-23, B-35, B-49, B-62, B-71, B-88 all closed, several beyond what was
+filed: B-35 gained a whole "Matching across accounts" rule for `me` and raw
+numbers (:2217-2220); B-49 moved the account-disclosure line into §9.4's actual
+screen contract (:2654 ff.) so a test can assert it; B-71's test now asserts the
+*contract* (a different phone keeps the IDs) rather than its inverse.
+
+## Vocabulary
+
+`logged_out` and `not_logged_in` are **gone** — zero occurrences. `signed_out`
+and `not_signed_in` are used consistently across §3.4, §3.5, §4.7, §7.7 and
+§11.2. `google_address` → `google_account`. The OAuth `logout` at :2125 is
+*deliberately* retained with its reason stated in the route table, which is the
+right call.
+
+Four prose sentences still say "logout" where they mean the **account**
+sign-out, and now collide with that deliberate OAuth sense: :176
+(`internal/accounts` responsibilities), :1062 ("survives a logout, a re-pair"),
+:3796 (audit kinds — §12.4's kind is `account.signed_out`), :4648 (Slice 2 test
+32). One `sed` away.
+
+## Still open — three, all small
+
+1. **A-6 half-closed.** §3.1:346 now says "`Unpair`, `UnpairGaia` and
+   `UnpairBugle` are out of contract", but §3.2:676-679 still carries the
+   heading *"Unpairing and session invalidation"* and the sentence
+   "`Unpair(ctx)` (`pair.go:159-166`) dispatches to `UnpairGaia` when cookies
+   are present, else `UnpairBugle`." That contradicts §3.1 outright. Retitle to
+   "Session invalidation" and delete the dispatch sentence; the rest of the
+   paragraph (the phone ending the pairing) is correct and should stay.
+2. The four "logout" prose uses above.
+3. **D27 cites `client.go:164`; `NewClient` is at `163`.** Third instance of
+   this one-line drift (after `client.go:305-311` in Re-review 2 and two in
+   Re-review 1) — worth one pass over §3's and §18's addresses rather than
+   another finding each time.
+
+## Phone numbers
+
+Clean. The only matches are `+15105550123` and `+12025550123` — both in the
+reserved fictional `555` range that §13.3 designates for examples. Live-gate
+targets are `<APPROVED_DIRECT_NUMBER>` placeholders resolved from
+`AGENT_GM_LIVE_NUMBERS` or the untracked `testdata/live-numbers.local`.
+
+## Rubric
+
+**2 / 2.** Both cautions from Re-review 2 were taken: `google_address` →
+`google_account`, and `logged_out`/`not_logged_in` → `signed_out`/
+`not_signed_in`, matching Google's own *Sign out*. Retaining `logout` for the
+OAuth token sense, with the distinction written into the route table, is
+correct rather than a lapse: it is a different noun's verb, and the spec says so
+where a reader meets it.
