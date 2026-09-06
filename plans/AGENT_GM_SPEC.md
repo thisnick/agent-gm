@@ -1635,7 +1635,6 @@ that is not terminal.
 
 Base: `https://gm.agent-wx.app/v1`. JSON in, JSON out. Every route requires a
 bearer token except `/healthz`, `/oauth/*` and `/.well-known/*`.
-
 ### 7.1 Envelopes
 
 Success:
@@ -1667,38 +1666,51 @@ control characters or exceeding its length bound is accepted, cleaned, and
 reported in `warnings` as `reason_normalized`, `reason_truncated`,
 `filename_normalized` or `filename_truncated`.
 
+**The idempotency key has exactly two transports** (§6.3): the
+`Idempotency-Key` header, or the `client_request_id` body field. **There is no
+`?client_request_id=` query parameter on any route**, and one presented as a
+query parameter is `invalid_request` naming it, like any other unknown
+parameter. The two `DELETE` routes that would otherwise have no body accept a
+JSON body for it (§7.6).
+
 ### 7.2 Error codes
 
 | Code | HTTP | Retryable | Meaning |
 |---|---|---|---|
-| `invalid_request` | 400 | no | malformed, unknown parameter/field, wrong ID prefix, contradictory idempotency key |
-| `invalid_token` | 401 | no | absent, expired, unknown, or wrong-audience bearer |
+| `invalid_request` | 400 | no | malformed, unknown parameter or field, wrong ID prefix, contradictory idempotency key |
+| `invalid_token` | 401 | no | absent, expired, unknown, or wrong-audience bearer. Covers what Agent MX split into `authentication_required` |
 | `insufficient_scope` | 403 | no | valid token, wrong scope |
 | `not_found` | 404 | no | no such object. Byte-identical whether it never existed or the caller may not see it |
 | `idempotency_conflict` | 409 | no | same key, different body |
-| `not_paired` | 409 | no | no Google Messages session, or the session was invalidated |
-| `pairing_no_cookies` | 409 | no | Google-account pairing without cookies |
+| `not_paired` | 409 | no | **there is no Google Messages session at all.** Not used for a paired-but-unusable conversation — that is `unsupported_capability` (§7.7) |
+| `pairing_no_cookies` | 409 | no | Google-account pairing attempted without cookies |
 | `pairing_no_devices` | 409 | no | the account has no primary device |
-| `pairing_multiple_devices` | 409 | no | more than one primary-looking device |
 | `pairing_wrong_emoji` | 409 | no | the owner tapped the wrong emoji |
-| `pairing_cancelled` | 409 | no | the owner dismissed or chose "not me" |
+| `pairing_cancelled` | 409 | no | dismissed, or "this is not me" |
 | `pairing_timeout` | 409 | no | no response within the window |
-| `pairing_init_timeout` | 409 | yes | `GaiaInitTimeout` (20s) elapsed |
+| `pairing_init_timeout` | 409 | yes | `GaiaInitTimeout` (20s) elapsed. Carries `details.multiple_devices` and `details.device_count` when the account had more than one candidate (§3.5) |
+| `pairing_wrong_account` | 409 | no | a cookie refresh whose Google account differs from the paired one (§3.2) |
 | `unsupported_capability` | 409 | no | the action cannot apply here; `details.reason` from §7.7 |
 | `payload_too_large` | 413 | no | body over 1 MiB, or media over `media.upload_max_bytes` |
 | `media_unsupported_type` | 415 | no | mime not in `libgm.MimeToMediaType` |
 | `rate_limited` | 429 | yes | with `Retry-After` |
 | `internal_error` | 500 | yes | a bug |
-| `not_default_sms_app` | 502 | no | `FAILURE_4` and `IsBugleDefault` is false |
-| `config_version_stale` | 502 | no | §3.7. Names both ConfigVersions and says the fix is a pin bump |
-| `google_error` | 502 | maybe | a tachyon error; `details.google_type`, `details.google_message` |
-| `google_http_error` | 502 | yes | transport-level; `details.status` |
+| `not_default_sms_app` | 502 | no | `SendMessageResponse_FAILURE_4` |
+| `config_version_stale` | 502 | no | Agent GM's own diagnosis: a conversation-creating call failed **and** the compiled and live `ConfigVersion` differ (§3.7). The message names both and says the fix is a pin bump |
+| `google_undocumented_status` | 502 | no | a Google enum value the pinned proto has no name for. `details.status` is the bare integer; no meaning is claimed (§3.7) |
+| `google_error` | 502 | maybe | a tachyon error; `details.google_type` (integer), `details.google_message` |
+| `google_http_error` | 502 | yes | transport level; `details.status` |
 | `google_permission_denied` | 502 | no | `ErrCallerNoPermission` |
 | `disconnected` | 503 | yes | `ErrConnectionClosed`; the long poll is down |
 | `phone_not_responding` | 504 | yes | `ErrPhoneNotResponding`. **The operation is `pending`, not failed — do not resend.** |
 
 A body over 1 MiB is `413` carrying `payload_too_large`; a body that fails to
 read for any other reason is `400`, because "too large" would be a guess.
+
+`details.google_type` and `details.status` are the only raw Google integers on
+a public surface. They are diagnostic values with no Agent GM meaning, they are
+never IDs, and they exist because an owner reading a `google_error` needs
+something to search for. Every other raw Google value is `admin`-only (§4.1).
 
 `401` and `403` carry `WWW-Authenticate` with `realm="agent-gm"`, an `error`
 parameter, `resource_metadata` pointing at
@@ -1711,7 +1723,7 @@ Cursors are **opaque, HMAC-signed (data key, `agent-gm/cursor/v1`), and bound
 to the endpoint and the filter set as written**. Reusing a cursor with
 different filters is `invalid_request`. The binding is to the query as
 written, not to a normalised form: a cursor issued without `folder` is not
-valid when replayed with `folder=inbox`, although the two select the same
+valid when replayed with `folder=active`, although the two select the same
 rows. A client that walks a listing sends the same query string on every page
 anyway.
 
@@ -1720,22 +1732,54 @@ anyway.
 and capped at 100. Ordering is newest-first unless the route says otherwise.
 The cursor encodes `(sent_at_ms, id)` so it is stable across equal timestamps.
 
-### 7.4 Routes — health, session, pairing
+### 7.4 Routes — health, auth, session, pairing
 
 | Method | Path | Scope | Notes |
 |---|---|---|---|
 | `GET` | `/healthz` | none | liveness. Never touches SQLite. `200 {"status":"ok"}` |
-| `GET` | `/v1/health` | `messages:read` | the full picture: `google` (§3.7), `session`, `backfill`, `counters`, `version`, `source_url` (§1.4) |
-| `GET` | `/v1/session` | `messages:read` | pairing state: `state`, `phone_id`, `paired_at`, `connected`, `phone_responding`, `last_event_at` |
-| `POST` | `/v1/pairing/start` | `admin` | `{"method":"qr"}` or `{"method":"google","cookies":{...}}`. Returns `{"pairing_id","method","qr":{"payload","png_data_url"},"expires_at"}` for QR, or `{"pairing_id","method","emoji"}` for Google. |
-| `GET` | `/v1/pairing/{pairing_id}` | `admin` | poll: `{"state":"waiting|paired|failed|expired","qr":{...},"emoji":"…","error":{...}}`. A refreshed QR appears here. |
+| `GET` | `/v1/health` | `messages:read` | see the DTO below |
+| `POST` | `/v1/auth/admin-session` | none — presents `AGENT_GM_ADMIN_SECRET` in the body | `{"secret": "..."}`. Returns an access token, a refresh token and the granted scopes. **See §9.7 for what an admin session carries.** |
+| `POST` | `/v1/auth/refresh` | none — presents the admin refresh token in the body | rotates it. Reuse of a spent token revokes the session. OAuth refresh tokens are refused here (§9.6) |
+| `GET` | `/v1/auth/whoami` | `messages:read` | `{authorization_id, kind, scopes, client_id, expires_at}` |
+| `POST` | `/v1/auth/logout` | `messages:read` | revokes the calling authorization's tokens. Same scope as `whoami`: a token that cannot read cannot ask who it is |
+| `GET` | `/v1/session` | `messages:read` | `{state, phone_id, method, paired_at, connected, phone_responding, last_event_at, last_sweep_at}` (backed by `server_meta`, §4.2) |
+| `GET` | `/v1/session/events` | `messages:read` | **SSE**, one `session` event per state change plus a 30s heartbeat. The only streaming route; it carries no message data, so it needs no replay ring and no cursor. Backs `agm session --watch` |
+| `POST` | `/v1/session/reconnect` | `admin` | force `Reconnect()` |
+| `POST` | `/v1/session/unpair` | `admin` | `libgm.Unpair`. Requires `{"confirm": true}`. Audited |
+| `POST` | `/v1/pairing/start` | `admin` | `{"method": "qr"}`, or `{"method": "google", "cookies": {...}, "device_index"?: 0}`. QR → `{pairing_id, method, qr: {payload, png_data_url}, expires_at}`. Google → `{pairing_id, method, emoji}` |
+| `GET` | `/v1/pairing/{pairing_id}` | `admin` | poll: `{state: waiting\|paired\|failed\|expired, qr?, emoji?, error?}`. A refreshed QR appears here |
 | `DELETE` | `/v1/pairing/{pairing_id}` | `admin` | abandon an in-flight pairing |
-| `POST` | `/v1/session/unpair` | `admin` | `libgm.Unpair`. Requires `{"confirm":true}`. Audited. |
-| `POST` | `/v1/session/reconnect` | `admin` | force `Reconnect()`. For operator use after a network event. |
+| `POST` | `/v1/pairing/refresh-cookies` | `admin` | `{"cookies": {...}}`. Re-authenticates the **existing** pairing (§3.2). A different Google account is `pairing_wrong_account` |
 
 `session.state` vocabulary: `unpaired`, `pairing`, `connected`, `degraded`
 (temporary listen error), `error`, `bad_credentials`, `account_changed`,
 `logged_out`.
+
+`GET /v1/health`:
+
+```json
+{ "status": "ok",
+  "version": "1.0.0", "commit": "abc1234",
+  "source_url": "https://github.com/thisnick/agent-gm/tree/abc1234",
+  "session": { "state": "connected", "phone_responding": true,
+               "last_event_at": "2026-09-06T09:40:59.000Z" },
+  "google": { "config_version_compiled": "2026.9.2",
+              "config_version_live": "2026.9.2",
+              "config_version_stale": false,
+              "is_default_sms_app": true,
+              "upstream_commit": "be48a58" },
+  "backfill": { "state": "complete", "conversations_done": 41,
+                "conversations_total": 41,
+                "completed_at": "2026-09-06T09:12:00.000Z" },
+  "sweep": { "last_sweep_at": "2026-09-06T09:38:00.000Z", "sweeps_total": 12 },
+  "counters": { "dropped_events": 0, "unknown_events": 0,
+                "pending_operations": 0 },
+  "client_source": "100.64.0.7" }
+```
+
+`config_version_live` and `is_default_sms_app` are cached from the last
+`FetchConfig` and `IsBugleDefault`; both are refreshed on connect and every
+`settings.ingest.sweep_interval`, so `/v1/health` never blocks on the phone.
 
 ### 7.5 Routes — reads
 
@@ -1743,39 +1787,69 @@ The cursor encodes `(sent_at_ms, id)` so it is stable across equal timestamps.
 
 | Method | Path | Parameters |
 |---|---|---|
-| `GET` | `/v1/conversations` | `query`, `participant`, `folder` (`inbox`\|`archive`\|`spam_blocked`), `type` (`sms`\|`rcs`), `unread_only`, `group_only`, `include_deleted`, `cursor`, `limit` |
+| `GET` | `/v1/conversations` | `query`, `participant`, `folder` (`active`\|`archived`\|`spam_blocked`), `type` (`sms_mms`\|`rcs`), `unread_only`, `group_only`, `include_deleted`, `cursor`, `limit` |
 | `GET` | `/v1/conversations/{conversation_id}` | — |
-| `GET` | `/v1/conversations/{conversation_id}/messages` | `cursor`, `limit`, `direction` (`incoming`\|`outgoing`), `sender`, `after`, `before` (RFC 3339), `has_attachment`, `delivery_state`, `include_tombstones` |
+| `GET` | `/v1/conversations/{conversation_id}/messages` | `cursor`, `limit`, `direction` (`incoming`\|`outgoing`), `sender`, `after`, `before` (RFC 3339), `has_attachment`, `delivery_state`, `include_system` |
 | `GET` | `/v1/messages` | the same plus `conversation_id` |
 | `GET` | `/v1/messages/{message_id}` | — |
 | `GET` | `/v1/messages/{message_id}/context` | `before` (default 5, max 100), `after` |
-| `GET` | `/v1/messages/{message_id}/attachments` | metadata only |
-| `GET` | `/v1/search/messages` | `q` (required), `syntax` (`literal` default, `fts5`), `conversation_id`, `sender`, `after`, `before`, `has_attachment`, `cursor`, `limit`. Returns `results[{message, rank, snippet, conversation}]` plus `coverage` |
+| `GET` | `/v1/messages/{message_id}/attachments` | metadata only. Folded into `get_message` on MCP (§8.2) |
+| `GET` | `/v1/search/messages` | `q` (required), `mode` (`words` default, `exact`), `conversation_id`, `sender`, `after`, `before`, `has_attachment`, `cursor`, `limit` |
 | `GET` | `/v1/contacts` | `query`, `top`, `cursor`, `limit` |
 | `GET` | `/v1/attachments/{attachment_id}` | metadata + a download ticket (§10) |
 | `GET` | `/v1/attachments/{attachment_id}/content` | bytes. Access token **or** download ticket |
-| `GET` | `/v1/operations/{operation_id}` | `messages:write`. The caller's own operations; another authorization's is `not_found` |
+| `GET` | `/v1/operations/{operation_id}` | `messages:write`. The §6.5 object |
+| `GET` | `/v1/uploads/{upload_id}` | `messages:write`. The caller's own reservation |
 
-`participant` accepts an E.164 number (`+1<APPROVED_DIRECT_NUMBER>`), the bare digits, a
+`participant` accepts an E.164 number (`+12025550123`), the bare digits, a
 national form, or a `part_`/`contact_` ID. `sender` accepts the same plus the
 literal `me`.
+
+**Search has two modes and no SQLite vocabulary.** `words` tokenises the query
+and requires every term (the ordinary case). `exact` matches the phrase as
+written. Both run against `messages_fts`; `exact` additionally filters the page
+by substring, so neither is an unindexed scan. There is no way to inject FTS5
+operator syntax, and no mode named after a SQLite extension.
+
+Search returns `results[{message, rank, snippet, conversation}]` plus:
+
+```json
+"coverage": { "complete": false,
+              "oldest_indexed_at": "2025-09-06T00:00:00.000Z",
+              "conversations_pending": 3 }
+```
+
+`coverage.complete` is false while backfill is outstanding, and the response
+carries a `history_incomplete` **warning** (not an error code), so an empty
+result during backfill is not read as an absent message.
 
 Conversation DTO:
 
 ```json
 { "id": "conv_...", "name": "Alex", "is_group": false, "type": "rcs",
-  "send_mode": "auto", "folder": "inbox", "unread": true, "pinned": false,
-  "read_only": false,
+  "folder": "active", "unread": true, "pinned": false, "read_only": false,
   "participants": [ { "id": "part_...", "contact_id": "contact_...",
-                      "display_name": "Alex", "phone": "+15105550123",
+                      "display_name": "Alex", "phone": "+12025550123",
                       "is_me": false } ],
+  "peer_typing_until": null,
   "last_activity_at": "2026-09-06T09:41:02.115Z",
   "latest_message_id": "msg_...",
   "capabilities": { "send_text": true, "send_media": true, "reply": true,
-                    "react": true, "mark_read": true, "delete_message": true,
-                    "delete_conversation": true, "typing": true },
+                    "react": true, "mark_read": true, "typing": true,
+                    "force_rcs": true, "archive": true, "pin": true,
+                    "delete_message": true, "delete_conversation": true },
   "created_at": "…", "updated_at": "…" }
 ```
+
+`peer_typing_until` is an RFC 3339 instant or `null`. It is held in memory
+only, never persisted, and is always `null` in a list response — typing is
+per-conversation live state, so it is populated only by
+`GET /v1/conversations/{id}`.
+
+**`participants` are the people in a thread; `recipients` are the phone
+numbers you address when creating one** (§7.6). They are two different things,
+not two names for one, and Google's own group-messaging setting uses
+"recipients" the same way.
 
 Message DTO:
 
@@ -1783,18 +1857,21 @@ Message DTO:
 { "id": "msg_...", "conversation_id": "conv_...", "kind": "message",
   "direction": "outgoing", "sender": { "id": "part_...", "is_me": true },
   "text": "on my way", "subject": null,
-  "delivery": { "state": "delivered", "state_raw": 2, "error": null,
+  "delivery": { "state": "delivered", "error": null,
                 "updated_at": "2026-09-06T09:41:07.900Z" },
   "reply_to_message_id": null, "operation_id": "op_...",
   "attachments": [ { "id": "att_...", "mime_type": "image/jpeg",
                      "filename": "IMG_0421.jpg", "size": 184320,
                      "width": 1024, "height": 768,
                      "download_state": "available" } ],
-  "reactions": [ { "id": "react_...", "emoji": "👍",
+  "reactions": [ { "id": "react_...", "emoji": "👍", "type": "like",
                    "participant_id": "part_...", "is_mine": false } ],
   "is_deleted": false,
   "sent_at": "2026-09-06T09:41:02.115Z" }
 ```
+
+A reaction whose `EmojiType` has no unicode serves
+`{"emoji": null, "type": "emotify"}` rather than being dropped (§3.7).
 
 ### 7.6 Routes — writes
 
@@ -1802,56 +1879,69 @@ Message DTO:
 
 | Method | Path | Body | Answer |
 |---|---|---|---|
-| `POST` | `/v1/conversations` | `{"recipients":["+1…"], "name"?, "client_request_id"}` | `200` with the existing conversation, or `200` with a newly created one. `GetOrCreateConversation`; the `CREATE_RCS` retry of §3.7 is internal. `name` is accepted only for 2+ recipients. Zero recipients, or two that normalise to one number, is `invalid_request` **before** an operation row exists. |
-| `POST` | `/v1/conversations/{id}/messages` | `{"text"?, "upload_ids"?, "reply_to_message_id"?, "force_rcs"?, "client_request_id"}` | `200` with `{operation, message_id}`. At least `text` or one upload. `force_rcs` is `invalid_request` unless the conversation is RCS with `send_mode=auto`. |
-| `POST` | `/v1/conversations/{id}/typing` | `{}` | `204`. Fire-and-forget. Not idempotency-keyed; it has no lasting effect. |
-| `POST` | `/v1/conversations/{id}/read` | `{"message_id", "client_request_id"}` | `200`. Marks the conversation read through that message. |
-| `POST` | `/v1/messages/{id}/reactions` | `{"emoji", "client_request_id"}` | `200`. `SendReaction` with `ADD`, or `SWITCH` if the owner already has a different reaction on that message. `200` with `operation: null` if the owner already has exactly that reaction. |
-| `DELETE` | `/v1/messages/{id}/reactions/{emoji}` | `?client_request_id=` | `200`. `REMOVE`. `200` with `operation: null` if there is nothing to remove. |
-| `POST` | `/v1/uploads` | see §10.2 | `201` with an upload ticket |
-| `GET`/`DELETE` | `/v1/uploads/{upload_id}` | — | the caller's own reservation |
+| `POST` | `/v1/conversations` | `{"recipients": ["+1…"], "name"?, "client_request_id"}` | `200` with the existing or newly created conversation plus the operation. `GetOrCreateConversation`; the `CREATE_RCS` retry of §3.7 is internal. `name` is accepted only for 2+ recipients. Zero recipients, or two that normalise to one number, is `invalid_request` **before** an operation row exists |
+| `POST` | `/v1/conversations/{id}/messages` | `{"text"?, "upload_ids"?, "reply_to_message_id"?, "force_rcs"?, "client_request_id"}` | `200` with `{operation, message_id}`. At least `text` or one upload. `upload_ids` is an array but **currently accepts exactly one element**; two is `invalid_request` naming the limit (§10.2) |
+| `POST` | `/v1/conversations/{id}/typing` | `{}` | `204`. Fire-and-forget, no operation, no idempotency key: it has no lasting effect |
+| `POST` | `/v1/conversations/{id}/read` | `{"message_id", "client_request_id"}` | `200`. Marks the conversation read through that message |
+| `PATCH` | `/v1/conversations/{id}` | `{"folder"?, "pinned"?, "unread"?, "client_request_id"}` | `200`. Archive, unarchive, pin, unpin and mark-unread, through `UpdateConversation` (§3.1). Returns `operation: null` and `changed: false` when already in the requested state |
+| `POST` | `/v1/messages/{id}/reactions` | `{"emoji", "client_request_id"}` | `200`. `SendReaction` `ADD`, or `SWITCH` when the owner already has a different reaction. `operation: null` when the owner already has exactly that one. `emoji` is canonicalised first (§3.7) |
+| `DELETE` | `/v1/messages/{id}/reactions/{emoji}` | `{"client_request_id"}` | `200`. `REMOVE`. `operation: null` when there is nothing to remove. The path segment is canonicalised before matching |
+| `DELETE` | `/v1/reactions/{reaction_id}` | `{"client_request_id"}` | `200`. The same removal by `react_` ID. A reaction somebody else sent is `unsupported_capability` with `reason: "not_my_reaction"` |
+| `POST` | `/v1/uploads` | §10.2 | `201` with an upload ticket |
+| `DELETE` | `/v1/uploads/{upload_id}` | — | `204`. Drops the reservation and its staged bytes |
 | `PUT` | `/v1/uploads/{upload_id}/content` | raw bytes | authenticated by the **upload token**, not the access token |
 
 `messages:delete` — and only these two:
 
-| Method | Path | Body | Effect sentence (verbatim on all three surfaces) |
+| Method | Path | Body | `effect` |
 |---|---|---|---|
 | `DELETE` | `/v1/messages/{message_id}` | `{"client_request_id"}` | *"deletes this message from your Google Messages account only; the recipient keeps it"* |
 | `DELETE` | `/v1/conversations/{conversation_id}` | `{"client_request_id"}` | *"deletes this conversation from your Google Messages account only; the other people in it keep it"* |
 
-There is no `mode` and no other delete. A request carrying `mode` anywhere is
-`invalid_request` naming it.
+Both responses carry an **`effect` field** holding that exact sentence. The
+same string is the MCP tool description's closing sentence and the `agm`
+confirmation prompt, so a model or a human cannot read a broader claim off one
+surface than another (§11.3). There is no other delete and no delete option: a
+request carrying an `action`, `scope` or similar switch is `invalid_request`
+naming it.
 
 `admin`:
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET`/`PATCH` | `/v1/admin/settings` | effective value, source (`default`\|`environment`\|`database`), mutability, restart requirement. `PATCH` validates the whole body; any invalid key rejects the request and changes nothing |
-| `POST` | `/v1/admin/backfill` | `{"conversation_id"?}`; re-opens backfill |
+| `GET` | `/v1/admin/settings` | effective value, source (`default`\|`environment`\|`database`), mutability, restart requirement |
+| `GET` | `/v1/admin/settings/{key}` | one key, same shape |
+| `PATCH` | `/v1/admin/settings` | validates the whole body; any invalid key rejects the request and changes nothing |
+| `POST` | `/v1/admin/backfill` | `{"conversation_id"?}`; re-opens backfill, or runs a full reconciliation sweep with no body |
 | `POST` | `/v1/admin/backup` | writes `<data_dir>/backups/agent-gm-<ts>-<id>.sqlite3` via the SQLite backup API. The caller does not choose the path |
 | `GET` | `/v1/admin/audit` | `kind`, `kind_prefix`, `authorization_id`, `after`, `before`, `cursor`, `limit` |
-| `GET` | `/v1/admin/diagnostics` | the raw Google view: last 100 events by type, `dropped_events`, `unknown_events`, compiled/live ConfigVersion, `CurrentSessionID`, `IsBugleDefault`, upstream commit |
+| `GET` | `/v1/admin/diagnostics` | the raw Google view, and the **only** place raw values appear: last 100 events by type, `dropped_events`, `unknown_events`, per-message `delivery_state_raw`, `operations.google_status_raw`, `CurrentSessionID`, the gaia device that was chosen, compiled/live `ConfigVersion` |
 | — | `/v1/admin/enrollment-codes`, `/v1/admin/authorization-requests`, `/v1/admin/authorizations`, `/v1/admin/clients` | §9 |
 
 ### 7.7 `unsupported_capability` reasons
 
 A closed vocabulary, in `details.reason`. Emitted **before** any operation row
 exists, so a refused action never leaves a record that looks like an attempt.
+The order of checks is part of the contract: resolve the object, check the
+capability, validate the request, *then* create the operation.
 
 | Reason | Meaning |
 |---|---|
-| `not_paired` | no Google Messages session |
 | `conversation_read_only` | `Conversation.ReadOnly` is set |
 | `conversation_deleted` | delete-for-me has been applied locally |
-| `not_my_message` | reacting to or deleting something with the wrong ownership |
-| `reply_not_supported` | `reply_to_message_id` on an SMS conversation; replies are RCS-only |
-| `rcs_not_available` | `force_rcs` on a conversation that is not RCS |
+| `not_my_message` | deleting a message the owner did not send |
+| `not_my_reaction` | removing somebody else's reaction |
+| `reply_not_supported` | `reply_to_message_id` on an SMS/MMS conversation; replies are RCS-only |
+| `rcs_not_available` | `force_rcs` where `capabilities.force_rcs` is false (§4.6) |
 | `media_pending` | the attachment's bytes are not downloaded yet |
 
 An `unsupported_capability` answer carries the object ID, the action, the
 capability's current value, and `details.reason`.
 
----
+**`not_paired` is not in this table.** Having no Google Messages session at all
+is a service-level condition, not a property of a conversation, so it is the
+top-level `not_paired` code of §7.2 and nothing else. There is exactly one
+answer to an unpaired write.
 
 ## 8. MCP
 
