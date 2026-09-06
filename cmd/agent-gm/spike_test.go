@@ -1,6 +1,7 @@
 package main_test
 
 import (
+	"database/sql"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -8,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	_ "modernc.org/sqlite"
 
 	"github.com/thisnick/agent-gm/internal/gm"
 )
@@ -246,6 +249,22 @@ func TestPairPasteListAndSendAgainstTheFake(t *testing.T) {
 	assertNoCookieOnDisk(t, env["AGENT_GM_DATA_DIR"], "FIXTURE-SID")
 	assertNoCookieOnDisk(t, env["XDG_STATE_HOME"], "FIXTURE-SID")
 
+	// **Pairing left the conversation IN THE DATABASE**, before the process
+	// exited. This is asserted directly, against the store, rather than
+	// through `spike list` in a later process: the ClientReady that carries
+	// the conversations arrives asynchronously, so a pair that returned
+	// before applying it would leave the next process reading an empty
+	// database -- which is exactly what happened on a slower machine, and
+	// which `spike list` masked because it re-reads the backend too.
+	//
+	// Plant: remove the ingestConversations call from spikePair and this
+	// fails at "pairing left no conversation in the database". Planted
+	// 2026-09-07.
+	if !strings.Contains(paired.stdout, "Read ") {
+		t.Errorf("pair did not report reading the conversation list:\n%s", paired.stdout)
+	}
+	assertConversationInStore(t, env["AGENT_GM_DATA_DIR"], "Fixture direct")
+
 	// list finds the fixture conversation, with a conv_ ID.
 	listed := run(t, env, "", "spike", "list")
 	if listed.code != 0 {
@@ -378,5 +397,28 @@ func TestPastePathNamesMissingCookies(t *testing.T) {
 	}
 	if strings.Contains(got.stderr, "FIXTURE-VALUE") {
 		t.Errorf("the error echoed a cookie value: %s", got.stderr)
+	}
+}
+
+// assertConversationInStore opens the database directly and looks for a
+// conversation by name. It goes to the file rather than through a command so
+// that "pairing persisted this" is asserted about the pairing and not about
+// whatever the next command happens to re-fetch.
+func assertConversationInStore(t *testing.T, dataDir, name string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", filepath.Join(dataDir, "agent-gm.sqlite3")+"?mode=ro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM conversations WHERE name = ?`, name).
+		Scan(&n); err != nil {
+		t.Fatalf("reading conversations: %v", err)
+	}
+	if n == 0 {
+		t.Errorf("pairing left no conversation in the database; the ClientReady that "+
+			"carries them is asynchronous, so a pair that returns before applying it "+
+			"leaves the next process reading an empty database (looking for %q)", name)
 	}
 }

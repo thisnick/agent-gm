@@ -344,6 +344,25 @@ func spikePair(args []string) int {
 	}
 	defer r.sup.StopAll(context.WithoutCancel(ctx))
 
+	// Ingest the conversation list before returning.
+	//
+	// Pairing starts an event goroutine and the phone's ClientReady carries
+	// the conversations, but that arrives ASYNCHRONOUSLY: without this the
+	// process could exit before the first event was applied, and `spike
+	// list` in the next process would find an empty database. It did, on a
+	// slower machine -- the same race the spec's own transcript rules out by
+	// printing "Backfilling 41 conversations... done" before the prompt
+	// comes back.
+	//
+	// Doing it synchronously here, through the same upsert path the event
+	// loop uses, makes "paired" mean the history is readable rather than
+	// merely that the phone said yes.
+	if n, err := r.ingestConversations(ctx, acct); err != nil {
+		fmt.Fprintf(os.Stderr, "agent-gm: reading the conversation list: %v\n", err)
+	} else {
+		fmt.Printf("Read %d conversations.\n", n)
+	}
+
 	row, err := r.store.Account(ctx, acct.ID)
 	if err != nil {
 		return fail(err)
@@ -468,14 +487,8 @@ func spikeList(args []string) int {
 	if err != nil {
 		return fail(err)
 	}
-	convs, err := a.Backend.ListConversations(ctx, gm.FolderInbox, 100)
-	if err != nil {
+	if _, err := r.ingestConversations(ctx, a); err != nil {
 		return fail(err)
-	}
-	for _, c := range convs {
-		if _, err := a.Ingester().IngestConversation(ctx, c); err != nil {
-			return fail(err)
-		}
 	}
 
 	rows, err := r.store.Conversations(ctx, store.ConversationFilter{AccountID: a.ID})
@@ -489,6 +502,22 @@ func spikeList(args []string) int {
 	}
 	fmt.Printf("\n%d conversations for %s\n", len(rows), a.ID)
 	return exitOK
+}
+
+// ingestConversations reads this account's conversation list and applies it
+// through the SAME upsert path the event loop uses, so a caller never has to
+// wonder which of two writers produced a row.
+func (r *runtimeEnv) ingestConversations(ctx context.Context, a *accounts.Account) (int, error) {
+	convs, err := a.Backend.ListConversations(ctx, gm.FolderInbox, 100)
+	if err != nil {
+		return 0, err
+	}
+	for _, c := range convs {
+		if _, err := a.Ingester().IngestConversation(ctx, c); err != nil {
+			return 0, err
+		}
+	}
+	return len(convs), nil
 }
 
 // --- spike send --------------------------------------------------------------
