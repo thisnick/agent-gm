@@ -29,9 +29,15 @@ Rules:
   sends belong to the coordinator alone (§13.3, §17). If you believe you need
   one, report that and stop. Use `internal/gm/fake` and
   `AGENT_GM_BACKEND=fake`.
-- Fictional `555` numbers are for fixtures and examples. Never put a real
-  number, a real message body, a token, a cookie, or anything from
-  `session.enc` in a fixture, a test, a commit message, or a log.
+- **Never write a real phone number into this repository** — not in a test,
+  a fixture, a doc, a comment or a commit message. This repo is public. Use
+  the placeholders `<APPROVED_DIRECT_NUMBER>`, `<APPROVED_GROUP_NUMBER_1>`
+  and `<APPROVED_GROUP_NUMBER_2>`; the real values live in the operator's
+  private notes and reach live tests only via `AGENT_GM_LIVE_NUMBERS` or the
+  untracked `testdata/live-numbers.local`. Fictional `555` numbers are for
+  fixtures and examples. Never put a real message body, a token, a Google
+  cookie, or anything from `session.enc` in a fixture, a test, a commit
+  message, or a log. `devbox run no-real-numbers` must pass.
 - Small, reviewable commits on your working branch. Do not commit secrets.
 - Never read `.env`, 1Password, or any credential store. Never touch
   `/home/nick/code/agent-mx-trial`, port `8787`, `127.0.0.1:8008`,

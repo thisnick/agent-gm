@@ -47,7 +47,10 @@ Method:
    skeleton) and say so.
 
 **You never send a message to a real phone number, for any reason.** Live
-sends belong to the coordinator alone. Never read `.env`, 1Password, or any
+sends belong to the coordinator alone. **And you never write a real phone
+number into this public repository** — use `<APPROVED_DIRECT_NUMBER>`,
+`<APPROVED_GROUP_NUMBER_1>`, `<APPROVED_GROUP_NUMBER_2>`; the real values are
+in the operator's private notes. `devbox run no-real-numbers` must pass. Never read `.env`, 1Password, or any
 credential store. Never touch `/home/nick/code/agent-mx-trial`, port `8787`,
 `127.0.0.1:8008`, `/home/nick/code/openclaw-custom/.env`, or
 `openclaw-custom/matrix`. Never `pkill -f`; use `pkill -x` or a PID.
