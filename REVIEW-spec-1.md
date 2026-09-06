@@ -896,3 +896,217 @@ debugging port is loopback-bound on a random port and Chrome is killed on
 completion, and the new-profile 2FA challenge is named as a one-time cost rather
 than a failure. QR is primary (D19). Nothing further required beyond the
 `httpOnly` correction above.
+
+---
+
+# Re-review 2 — spec at `a2cbbf2` (4729 lines): three owner decisions
+
+Deltas only: `d246f79` (gaia is the default flow), `2299f2d` (QR removed),
+`a2cbbf2` (multi-account, D27-D30). Every new library citation re-checked
+against `be48a58`.
+
+## Verdict
+
+**Accept with required changes.** The multi-account change is well made — the
+account identifier is correctly chosen and, unusually, *argued* with a negative
+table that rules out the four alternatives, and I verified each of those rulings
+against the pin. The selection rule (§7.3), the AEAD associated data, the
+per-account supervisor and the one-fake-per-account testing shape are all right.
+Twelve findings, two of them Major, and one class recurs: **stale text from the
+single-account and QR eras that now states something false** (RR2-8, RR2-9,
+RR2-12). None blocks Slice 1; RR2-1, RR2-2, RR2-8 and RR2-9 should land before
+Slice 2.
+
+## (a) The account identifier — verified
+
+`AuthData.Mobile.SourceID` is the right choice and the evidence holds.
+
+| Spec claim | Check at `be48a58` |
+|---|---|
+| lowercased at sign-in, `pair_google.go:102-105` | ✓ exact — `lowercaseDevice.SourceID = strings.ToLower(device.SourceID)`, `AuthData.Mobile = lowercaseDevice`, `AuthData.Browser = device` |
+| upstream compares it across a re-auth, `connector/login.go:267-270` | ✓ exact |
+| upstream passes it as `remoteName`, `login.go:352` | ✓ exact, and it is the last argument |
+| `PairingID` is fresh per session, `pair_google.go:120-127` | ✓ exact — `UUID: uuid.New()` |
+| `DestRegID` is the device chosen at pair time, `pair_google.go:370-372` | ✓ substantively (the assignment itself is at `:374`) |
+| `SessionID` is overwritten by `FetchConfig`, `client.go:305-311` | **✗ wrong address.** `:305-311` is `postConnect`'s set-active-session block. The assignment is at **`client.go:389`**, inside `FetchConfig`. The claim is right; the citation points at unrelated code |
+
+**Does it survive a cookie refresh?** Yes — verified. The override path never
+reassigns `Mobile`; it only compares against it (`login.go:262-268`).
+
+**Does it survive a re-pair to a different phone?** Yes — verified, and this is
+the decisive property. `Mobile` is set from the *sign-in* response's device and
+its `SourceID` is what `Config.DeviceInfo.Email` is compared against, so it is
+the Google account address, not a phone identity. §4.1's claim that a re-pair to
+a different phone keeps every `conv_` and `msg_` ID follows correctly.
+
+One undeclared deviation: upstream does **not** refuse a wrong-account refresh.
+`SubmitCookies` logs `"Reauthenticated with wrong account"` and falls out of the
+chain to `SetCookies(nil)` (`login.go:267-271`, `:289`) and then a *fresh
+pairing*. Agent GM's `pairing_wrong_account` refusal is stricter and better, but
+§3.2 presents it as implementing upstream "exactly". Say it deviates.
+
+### RR2-1 (M) Nothing requires `Mobile.SourceID` to be non-empty
+
+`acct_` is `UUIDv5(ns, "account", address)`. An empty address yields one
+degenerate ID, so two accounts that both produced an empty `SourceID` would
+**merge into one account's ID space**, silently — and §4.1 makes those IDs the
+root of every `conv_`, `msg_` and `contact_`. Refuse the pair with a named error
+before an account row exists, and assert it in §16.
+
+### RR2-2 (M) A cancelled or timed-out pair leaves an orphan `pairing` row
+
+`AuthData.Mobile` is populated inside `StartGaiaPairing`
+(`pair_google.go:325` → `:101-104`) — that is, **before the emoji is
+confirmed**. So the `acct_` ID, and therefore §4.7's `pairing` row, can only be
+created at the emoji step. §3.2 discards the half-built `AuthData` on
+`AGENT_GM_PAIRING_TIMEOUT`, but nothing says the row goes with it, and there is
+no transition out of `pairing` and no sweep. An orphan `pairing` row then trips
+§7.3's "more than one account exists" test and starts demanding `account_id` on
+every write for an account that never existed. Give `pairing` a timeout
+transition, sweep it, and count only reachable states toward the ambiguity rule.
+
+## (b) Session files and the data key — sound
+
+AAD `"agent-gm/session/v1|" || acct_id` correctly makes a renamed or copied file
+fail to open rather than load the wrong account; one key with HKDF `info`
+separation across four purposes; `sessions/` at `0700` and files at `0600`;
+per-account persistence including the 5-minute timer, which is correctly
+identified as the *only* thing that captures a cookie rotation because
+`UpdateCookiesFromResponse` (`client.go:73-81`) emits no event. D9's
+non-rotatability and §4.5's recovery instruction both scale to N files correctly.
+
+### RR2-3 (m) The atomic-write temp file is still singular
+
+:637 still says `session.enc.tmp` — one fixed name for N files. Atomicity
+survives only because §2.4 has a single store-writer goroutine. Make it
+`sessions/<acct_id>.enc.tmp`, and say the temp file lives in the same directory
+as its target so the rename is atomic.
+
+### RR2-4 (m) Stale singular `session.enc` in the contract-adjacent docs
+
+`CONTRIBUTING.md:17`, `CONTRIBUTING.md:34`, `.claude/agents/implementer.md:40`.
+
+## (c) The selection rule and the fake — good
+
+§7.3 is thorough and well reasoned: the read/write asymmetry is argued rather
+than asserted; `details.accounts` lets a caller retry without a second round
+trip; cursors are bound to the account filter; a `conv_` ID paired with the
+wrong `account_id` is `invalid_request` naming both, never `not_found`; an ID
+already implies its account. Slice 2 test 34 exercises every branch.
+
+The fake is modelled correctly: one fake per account registered with
+`internal/accounts`, and "the fake never models several accounts internally"
+(:3583-3586) — the multiplexing is tested where it actually lives.
+
+### RR2-5 (m) Two names for one thing
+
+Reads take `account`; writes take `account_id` (:1915-1916). §11.3's own rule is
+that a name is the same word on all three surfaces, and the rubric forbids two
+names for one noun. Use `account_id` everywhere.
+
+### RR2-6 (M) The default read path is unindexed
+
+§7.3 makes *omitting* the account the default for reads, but
+`conversations_filters` (:1053) and `messages_kind_state` (:1116) both lead with
+`account_id`. So `type`, `unread_only`, `group_only`, `include_deleted`,
+`delivery_state` and `include_system` have no usable index on exactly the path
+the spec calls the default. `conversations_all` (:1050) and `messages_time`
+(:1115) cover only the *unfiltered* all-accounts case. Add all-accounts
+counterparts, or make the account filter required for the filtered lists.
+
+## (d) Idempotency across accounts — correct
+
+Uniqueness is `(authorization, account, operation kind, key)` (:1546). A client
+**cannot** replay across accounts: the same key against a different account is a
+different tuple, hence a new operation. That is the safe direction, and test 35
+pins it.
+
+### RR2-7 (m) The mirror risk is not stated where a model would read it
+
+The hazard is the reverse: a client *retrying* a send that passes a different
+`account_id` gets a second real message, not a replay. §6.3 says every tool
+description warns that a fresh key is a new call; it must also say that the same
+key with a different account is a new call, and §8.3's instructions block is
+where a cold agent needs it.
+
+## (e) What survived from the single-account era
+
+### RR2-8 (M) §15.2 still derives the account from the phone
+
+:4051-4052: "because `account_key` is derived from the phone (§4.1), re-pairing
+the same **phone** keeps every existing `conv_` and `msg_` ID." Both halves are
+now false: `account_key` is a retired term (it is `account_id` / `acct_`), and
+§4.1 derives it from the Google **address** precisely so that a re-pair to a
+*different* phone keeps the IDs (:976-978). This is the one place the old model
+survives as a live statement, and it is in the restore runbook — the worst place
+for it.
+
+### RR2-9 (M) §13.2 re-imports the withdrawn status-4 claim
+
+:3663 scripts "`config_version_stale`: fake returns **status 4**", while
+§3.7:861 says "the diff is the whole detection rule; no particular status code
+is required or claimed". The test would pass while asserting exactly the
+unsourced claim F-1 removed. Script the fake to return a non-`SUCCESS` status
+**and** a live `ConfigVersion` that differs from the compiled one.
+
+### RR2-10 (m) Two spellings for two routes
+
+`POST /v1/pairing/refresh-cookies` (:583) vs
+`POST /v1/accounts/{account_id}/refresh-cookies` (:1981); `GET
+/v1/session/events` (:2251, :4718) vs `GET /v1/accounts/{id}/events` (:1974).
+
+## (f) QR removal and the pairing change
+
+Thorough. `gm.Backend` carries only `StartGooglePairing`,
+`RefreshGoogleCookies` and `Unpair` — no QR path in the interface, the fake or
+the tests. `StartLogin`, `RefreshPhoneRelay` and `GenerateQRCodeData` appear
+only at :4727, declared out of contract. The `httpOnly` correction landed
+exactly as filed, naming `APISID` and `SAPISID` as the two exceptions
+(:474-477, :3200, :3290). The no-Chrome path explains rather than erroring, and
+`--forget-browser` exists.
+
+### RR2-11 (m) One browser profile, N accounts
+
+:3264-3270 keeps a single `<state>/chrome-profile` holding a logged-in session
+for whichever account was added last. `agm pair --refresh-cookies --account A`
+run after pairing B therefore captures **B's** cookies, and is caught only by
+`pairing_wrong_account` — after a full Chrome launch and capture. Either key the
+profile by account (`chrome-profile/<acct_id>`), or navigate to the account
+chooser and select the expected address before capturing. §11.4 should say
+which.
+
+### RR2-12 (m) Two dead QR-era items in the §3.1 contract table
+
+§3.1 opens "Agent GM calls exactly these `libgm` symbols. Anything not listed
+here is out of contract." Two entries are now unreachable:
+
+- **`PairCallback`** (:337) fires from `completePairing`, which is reached only
+  via `handlePairingEvent` on `BugleRoute_PairEvent` — the QR flow. The gaia
+  flow emits `PairSuccessful` directly from `DoGaiaPairing`
+  (`pair_google.go:310`). The row also ends "so that the library's built-in
+  2-second settle-then-reconnect (**see below**) is used", and that bullet was
+  correctly deleted — the cross-reference now dangles.
+- **`*events.PairSuccessful{PhoneID, QRData}`** (:699) still documents `QRData`
+  as `*gmproto.PairedData`. In the gaia flow it is **nil**: `DoGaiaPairing`
+  constructs `&events.PairSuccessful{PhoneID: phoneID}` and nothing else
+  (`pair_google.go:310`). An implementer reading the table will dereference nil.
+  Say `QRData` is always nil on this path, or drop the field from the row.
+
+`Unpair`'s row (:335) still mentions `UnpairBugle`; harmless, since cookies are
+now always present so it always dispatches to `UnpairGaia` — but say so.
+
+## (g) Rubric — re-score
+
+**2 / 2, held.** The new vocabulary is Google's: an *account* is a Google
+account, `list_accounts` and `agm accounts list` name the thing the phone's own
+pairing screen names, `not_logged_in` is distinguished from `not_paired` on a
+real difference, and `logout` keeps history because Google's own sign-out does
+not delete your messages. Two cautions, neither a leaked internal and neither
+inventing a concept, both worth a rename while they are cheap:
+
+- **`google_address`** (:1971 and every account DTO). Google's own term is
+  "Google Account", rendered as an email. `google_account` or `email` is the
+  word the owner will look for.
+- **`logged_out` / `agm logout`.** Google Messages says *Sign out*. `signed_out`
+  and `agm accounts sign-out` would match; if the current words are kept, it is
+  a deliberate choice worth one line in §18.1.
