@@ -2123,8 +2123,8 @@ The cursor encodes `(sent_at_ms, id)` so it is stable across equal timestamps.
 | `POST` | `/v1/auth/refresh` | none — presents the admin refresh token in the body | rotates it. Reuse of a spent token revokes the session. OAuth refresh tokens are refused here (§9.6) |
 | `GET` | `/v1/auth/whoami` | `messages:read` | `{authorization_id, kind, scopes, client_id, expires_at}` |
 | `POST` | `/v1/auth/sign-out` | `messages:read` | revokes the calling authorization's tokens. Same scope as `whoami`: a token that cannot read cannot ask who it is |
-| `GET` | `/v1/accounts` | `messages:read` | every account, whatever its state. `{id, google_account, label, state, phone_id, phone_responding, paired_at, last_event_at, backfill}`. `google_account` is served because the owner needs to tell their accounts apart; it is never an ID and never in a URL |
-| `GET` | `/v1/accounts/{account_id}` | `messages:read` | one of them, plus that account's `google` block (§3.7) |
+| `GET` | `/v1/accounts` | `messages:read` | every account, whatever its state. `{id, google_account, label, state, state_reason, pairing_id, phone_id, phone_responding, paired_at, last_event_at}`. `google_account` is served because the owner needs to tell their accounts apart; it is never an ID and never in a URL |
+| `GET` | `/v1/accounts/{account_id}` | `messages:read` | one of them, plus that account's `google`, `backfill`, `sweep` and `counters` blocks — the same per-account object `GET /v1/health` embeds. The list route omits those four to keep a many-account listing small; that asymmetry is deliberate and is why `get_session` (§8.2) exists alongside `list_accounts` |
 | `PATCH` | `/v1/accounts/{account_id}` | `admin` | `{"label"?}` — a human name for a listing. Nothing else is mutable |
 | `GET` | `/v1/accounts/{account_id}/events` | `messages:read` | **SSE**, one event per state change for that account, plus a 30s heartbeat. The only streaming route; it carries no message data, so it needs no replay ring and no cursor. Backs `agm session --watch`. Omitting the ID (`/v1/accounts/events`) streams every account's changes, each tagged |
 | `POST` | `/v1/accounts/{account_id}/reconnect` | `admin` | force `Reconnect()` on that account |
@@ -2138,6 +2138,11 @@ The cursor encodes `(sent_at_ms, id)` so it is stable across equal timestamps.
 Account `state` vocabulary is §4.7's: `pairing`, `connected`, `degraded`,
 `error`, `signed_out`, `account_changed`. There is no server-level "unpaired"
 state — an Agent GM with no accounts is a healthy Agent GM with no accounts.
+
+`GET /v1/accounts` and `GET /v1/health` are `messages:read`, and both return
+every account's `google_account`. Under D29 a `messages:read` token therefore
+**enumerates all of the owner's Google addresses**; that is a consequence of
+global scopes, and it is what the authorization screen discloses (§9.4).
 
 `GET /v1/health`:
 
@@ -2198,15 +2203,33 @@ send" reads the account.
 | `GET` | `/v1/messages/{message_id}/context` | `before` (default 5, max 100), `after` |
 | `GET` | `/v1/messages/{message_id}/attachments` | metadata only. Folded into `get_message` on MCP (§8.2) |
 | `GET` | `/v1/search/messages` | `q` (required), `account_id`, `mode` (`words` default, `exact`), `conversation_id`, `sender`, `after`, `before`, `has_attachment`, `cursor`, `limit` |
-| `GET` | `/v1/contacts` | `account_id`, `query`, `top`, `cursor`, `limit`. Returns `{id, display_name, phone, is_top, avatar_hash, updated_at}`. `avatar_hash` is a SHA-256 of the avatar bytes or `null`; there is no avatar *content* route, because Agent GM stores the hash so a caller can detect a change, not the picture |
+| `GET` | `/v1/contacts` | `account_id`, `query`, `top`, `cursor`, `limit`. Returns `{id, account_id, display_name, phone, is_top, avatar_hash, updated_at}` — `account_id` is always present, because the same person in two accounts is two contact rows and a cross-account list would otherwise be unattributable. `avatar_hash` is a SHA-256 of the avatar bytes or `null`; there is no avatar *content* route, because Agent GM stores the hash so a caller can detect a change, not the picture |
 | `GET` | `/v1/attachments/{attachment_id}` | metadata + a download ticket (§10) |
 | `GET` | `/v1/attachments/{attachment_id}/content` | bytes. Access token **or** download ticket |
+| `GET` | `/v1/operations` | `messages:write`. The caller's own operations: `account_id`, `kind`, `status`, `terminal`, `after`, `before`, `cursor`, `limit`. Newest first |
 | `GET` | `/v1/operations/{operation_id}` | `messages:write`. The §6.5 object |
 | `GET` | `/v1/uploads/{upload_id}` | `messages:write`. The caller's own reservation |
 
 `participant` accepts an E.164 number (`+12025550123`), the bare digits, a
 national form, or a `part_`/`contact_` ID. `sender` accepts the same plus the
 literal `me`.
+
+**Matching across accounts.** A raw phone number is not account-specific — the
+same person can be in threads on several of the owner's accounts — so:
+
+- With `account_id`, a number matches participants in **that account only**,
+  served by `participants(account_id, phone_e164)`.
+- Without it, a number matches in **every** account and the results carry
+  `account_id` so the caller can tell them apart, served by
+  `participants(phone_e164)`. Both directions are indexed (§4.2).
+- A `part_` ID already belongs to one account; passing it with a
+  **different** `account_id` is `invalid_request` naming both.
+- **`sender=me` means "whichever account's own participant"**, resolved per
+  account rather than to one identity: on an account-scoped query it is that
+  account's `is_me` participant, and on a cross-account query it is *each*
+  account's, so `sender=me` returns everything the owner sent from anywhere.
+  It is never ambiguous and never an error. `participants(account_id, is_me)`
+  is a partial index for exactly this.
 
 **Search has two modes and no SQLite vocabulary.** `words` tokenises the query
 and requires every term (the ordinary case). `exact` matches the phrase as
@@ -3055,6 +3078,7 @@ ticket**:
 
 ```json
 { "attachment_id": "att_9f3c...",   // UUIDv5, 4.1
+  "account_id": "acct_...",
   "filename": "IMG_0421.jpg", "mime_type": "image/jpeg",
   "size": 184320, "sha256": "…", "sha256_available": true,
   "width": 1024, "height": 768, "download_state": "available",
@@ -3121,6 +3145,17 @@ computed, `sha256` is `null`, `sha256_available` is `false`, and
    once. Naming an upload twice is refused; naming another authorization's is
    `not_found`.
 
+**Uploads are deliberately account-agnostic.** An `upl_` reservation carries no
+`account_id`: it is bytes staged by an authorization, and **the account is
+fixed at send time** by the conversation named in `send_message`. So the same
+upload can be sent into any account the caller may write to — though only
+**once**, so it cannot be fanned out — and §7.3's "every multi-account DTO
+carries `account_id`" does not apply to it, because an upload never appears in
+a multi-account *result*. Under D29 there is nothing account-shaped for a
+ticket redemption to re-check anyway: scopes are global. Slice 2 asserts both
+halves — an upload reserved and sent into a second account succeeds, and a
+second send of it is refused.
+
 `mime_type` is validated against `libgm.MimeToMediaType` at reservation time,
 with the same type-prefix fallback upstream uses; an unsupported type is
 `media_unsupported_type` (415) and reserves nothing. **One attachment per
@@ -3159,7 +3194,7 @@ only its hash is stored, exactly like an OAuth token.
 | download token life | 15 minutes |
 | download token redemptions | 5, counted in `download_tickets.redemptions` |
 | `media.upload_max_bytes` | 100 MiB (104857600), runtime-mutable downward |
-| `media.cache_max_bytes` | 2 GiB, LRU eviction among unpinned entries |
+| `media.cache_max_bytes` | 2 GiB, LRU eviction among unpinned entries. **Global across accounts, not per account** — one account's backfill can evict another's cached media. The cache is a cache; the bytes are always re-fetchable from Google |
 | `media.inline_mcp_image_max_bytes` | 1 MiB |
 | sweep of expired reservations and tickets | at startup and every 5 minutes |
 | token prefixes | `agm_ut_` upload, `agm_dt_` download |
@@ -3739,7 +3774,8 @@ row is **never rewritten**, by a migration or by anything else: it records
 what happened at the time it happened.
 
 `GET /v1/admin/audit` and `agm admin audit list` filter by `kind`,
-`kind_prefix`, `authorization_id`, `after`, `before`, with a signed cursor.
+`kind_prefix`, **`account_id`**, `authorization_id`, `after`, `before`, with a
+signed cursor.
 
 ---
 
