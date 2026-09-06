@@ -723,7 +723,15 @@ Rules:
 
 `SetEventHandler` receives `any`. This is the complete catalogue Agent GM
 handles; anything else is logged at debug and dropped, and an unknown type
-increments `unknown_events` in health.
+increments that account's `unknown_events` counter in health.
+
+> **Every row below is one account's event, on one account's `Client`, and
+> every reaction is scoped to that account** — its `accounts` row, its
+> `gm.Backend`, its ingest goroutine, its backfill and its sweep. There is one
+> handler per account (§2.4, §4.7). "Mark `connected`", "persist `AuthData`"
+> and "→ `degraded`" all mean *for this account*; no event from one account
+> ever changes another's state, and no account's failure stops another's
+> stream.
 
 **Connection lifecycle** (`pkg/libgm/events/ready.go`)
 
@@ -734,9 +742,9 @@ increments `unknown_events` in health.
 | `*events.ListenTemporaryError{Error}` | poll dropped, will retry | session → `degraded`; health counter; no user-visible failure |
 | `*events.ListenRecovered{}` | poll back | session → `connected` |
 | `*events.ListenFatalError{Error}` | poll cannot continue | see the matching rule below |
-| `*events.PingFailed{Error, ErrorCount}` | ditto ping failed | `ErrRequestedEntityNotFound` → invalidate as `unpaired`; else if `ErrorCount > 1` → session `error` (upstream deliberately ignores the first failure) |
-| `*events.PhoneNotResponding{}` | see below | health flag `phone_responding=false`; sends still allowed but will likely fail |
-| `*events.PhoneRespondingAgain{}` | recovered | `phone_responding=true` |
+| `*events.PingFailed{Error, ErrorCount}` | ditto ping failed | `ErrRequestedEntityNotFound` → set this account `signed_out` (the phone no longer knows this pairing); else if `ErrorCount > 1` → this account `error` (upstream deliberately ignores the first failure) |
+| `*events.PhoneNotResponding{}` | see below | this account's `phone_responding=false` in `GET /v1/health`; its sends are still allowed but will likely fail. Other accounts' phones are unaffected |
+| `*events.PhoneRespondingAgain{}` | recovered | this account's `phone_responding=true` |
 | `*events.NoDataReceived{}` | nothing received for `dataReceiveCheckInterval` (default 2h55m, `client.go:115`) | health counter; triggers a reconciliation sweep (§5.4) |
 | `*events.HackySetActiveMayFail{}` | skip count non-zero at connect | re-issue `SetActiveSession` after a delay |
 
@@ -747,9 +755,12 @@ Agent GM therefore matches with
 `errors.As(err, &events.HTTPError{})` and `Resp.StatusCode ∈ {401, 403}`, or
 `errors.Is(err, events.ErrInvalidCredentials)` — **never on the string**.
 Matching only `"http 401 while polling"` sends a 403 into the retry branch,
-where it loops forever on dead credentials. Either match → invalidate the
-session as `bad_credentials`. Anything else → session `error`, and the
-supervisor retries `Reconnect` with backoff.
+where it loops forever on dead credentials. Either match → set **this account**
+`signed_out`: its credentials are dead, its history stays readable, and the fix
+is `agm pair --refresh-cookies --account <id>` (§4.7). Anything else → this
+account `error`, and the supervisor retries `Reconnect` for it with backoff,
+leaving every other account alone. There is no `bad_credentials` state and no
+`unpaired` state; §4.7 defines the whole vocabulary.
 
 **`PhoneNotResponding` has two trigger paths** (`longpoll.go:72-90,134-147,196-212`):
 the **first** unanswered ping, or `alertTimeoutCount` (default **4**,
@@ -760,10 +771,10 @@ knowing this is not a single fixed threshold.
 
 | Event | Meaning |
 |---|---|
-| `*events.PairSuccessful{PhoneID, QRData}` | pairing done. **`QRData` is always `nil` on this path** — `DoGaiaPairing` constructs `&events.PairSuccessful{PhoneID: phoneID}` and nothing else (`pair_google.go:310`); the field is only populated by the withdrawn QR flow's `completePairing`. Read `PhoneID` and never dereference `QRData` |
-| `*gmproto.RevokePairData` | the phone revoked this pairing → invalidate |
-| `*events.GaiaLoggedOut{}` | Google cookies dead → session `signed_out`, offer a cookie refresh (§3.2) |
-| `*events.AccountChange{*gmproto.AccountChangeOrSomethingEvent, IsFake bool}` | the phone's active Google account changed. `IsFake=true` means it was synthesised at startup from `EncryptedData2` (`event_handler.go:105-118`), not a real change. A real change to a different account marks the session `account_changed` and blocks writes |
+| `*events.PairSuccessful{PhoneID, QRData}` | pairing done. **`QRData` is always `nil` on this path** — `DoGaiaPairing` constructs `&events.PairSuccessful{PhoneID: phoneID}` and nothing else (`pair_google.go:310`); the field is populated only by the withdrawn QR flow's `completePairing`. The **name** is vestigial upstream and does not indicate a surviving QR path. Read `PhoneID`; never dereference `QRData` |
+| `*gmproto.RevokePairData` | the phone revoked this pairing → set this account `signed_out`. **Deletes nothing** (§4.7) |
+| `*events.GaiaLoggedOut{}` | Google cookies dead → set this account `signed_out` and offer a cookie refresh (§3.2). **Deletes nothing** |
+| `*events.AccountChange{*gmproto.AccountChangeOrSomethingEvent, IsFake bool}` | the phone's active Google account changed. `IsFake=true` means it was synthesised at startup from `EncryptedData2` (`event_handler.go:105-118`), not a real change. A real change to a different Google account sets this account `account_changed` and blocks its writes; §15.4 says what to do |
 
 `*events.BrowserActive` is **defined but never emitted** at this pin
 (`NewBrowserActive` has zero callers outside `pkg/libgm/gmtest/main.go:131`).
@@ -792,9 +803,9 @@ auto-acks) and never reaches Agent GM.
 |---|---|
 | `BROWSER_ACTIVE(2)` | **This session became active.** Compare `Client.CurrentSessionID()` against the last one Agent GM saw; if it differs — or if the session was inactive, or no data arrived recently — **resync**: run the reconciliation sweep of §5.4 since `last_data_received`. This is the pattern at `connector/handlegmessages.go:301-327`. It means "our session changed, resync", **not** "another device took over" |
 | `BROWSER_INACTIVE(1)`, `BROWSER_INACTIVE_FROM_TIMEOUT(7)`, `BROWSER_INACTIVE_FROM_INACTIVITY(8)` | this session went idle; health flag, and expect a `BROWSER_ACTIVE` resync next |
-| `MOBILE_DATABASE_SYNC_STARTED(13)`, `MOBILE_DATABASE_SYNCING(11)` | the phone is resyncing its own database; **defer backfill**, results are unstable |
+| `MOBILE_DATABASE_SYNC_STARTED(13)`, `MOBILE_DATABASE_SYNCING(11)` | this phone is resyncing its own database; **defer this account's backfill only**, results are unstable. Other accounts keep going |
 | `MOBILE_DATABASE_SYNC_COMPLETE(12)` | resume backfill and run a minimal reconciliation sweep |
-| `MOBILE_BATTERY_LOW(5)` / `MOBILE_BATTERY_RESTORED(6)`, `MOBILE_DATA_CONNECTION(3)` / `MOBILE_WIFI_CONNECTION(4)`, `RCS_CONNECTION(9)` | phone-health fields in `GET /v1/health` |
+| `MOBILE_BATTERY_LOW(5)` / `MOBILE_BATTERY_RESTORED(6)`, `MOBILE_DATA_CONNECTION(3)` / `MOBILE_WIFI_CONNECTION(4)`, `RCS_CONNECTION(9)` | phone-health fields on **this account's** row in `GET /v1/health` |
 
 The other 19 are recorded in the audit log and otherwise ignored.
 
@@ -817,8 +828,8 @@ handler loop **`return`s**, abandoning *every remaining part of the batch*
 |---|---|---|
 | `libgm.ErrPhoneNotResponding` | `session_handler.go:20-32,231`; the phone did not answer within `responseHardTimeout` = **60s**. Upstream notes *the server already accepted the request, so the phone may still process it later* | `phone_not_responding` (504) — and the operation stays `pending`, not `failed` (§6.4) |
 | `libgm.ErrConnectionClosed` | `session_handler.go:25`; request in flight when `Disconnect` ran | `disconnected` (503) |
-| `events.ErrInvalidCredentials` | tachyon type 16 (`events/ready.go:47-52`) | `not_paired` (409) |
-| `events.ErrRequestedEntityNotFound` | tachyon type 5 (`events/ready.go:35-45`) | `not_paired` (409) |
+| `events.ErrInvalidCredentials` | tachyon type 16 (`events/ready.go:47-52`) | sets the account `signed_out`; a write against it is `unsupported_capability` with `details.reason = "not_signed_in"` (409) |
+| `events.ErrRequestedEntityNotFound` | tachyon type 5 (`events/ready.go:35-45`) | same — `signed_out` + `not_signed_in` (409) |
 | `events.ErrCallerNoPermission` | tachyon type 7 (`events/ready.go:54-59`) | `google_permission_denied` (502) |
 | `events.RequestError{Data, HTTP}` | any non-OK tachyon response | `google_error` (502), with the numeric type and message in `details` |
 | `events.HTTPError{Action, Resp, Body}` | transport level | `google_http_error` (502) |
@@ -831,6 +842,14 @@ handler loop **`return`s**, abandoning *every remaining part of the batch*
 
 There is **no `pairing_multiple_devices` code.** Google never reports
 "multiple devices" as an error; the library picks one (§3.2).
+
+**Credential death is per account, and never `not_paired`.** The two rows above
+are the library origin of `unsupported_capability` / `not_signed_in` (§7.8):
+the account still exists, its history stays readable and searchable, and only
+*its* writes are refused. `not_paired` (§7.2) means something different and
+rarer — the server holds **no accounts at all** — and **no library error maps
+to it**. An implementer building the error mapper from this table must not
+collapse the two; §16 Slice 2 test 31 asserts the difference.
 
 `events.RequestError.Is` compares `Type` and `Message` only, not the error
 class (`events/ready.go:69-77`), so `errors.Is` against the three sentinel
@@ -925,19 +944,12 @@ in the pinned tree, it says so and points at §18.1.
   status **and** the live `ConfigVersion` from `FetchConfig` differs from the
   compiled-in `util.ConfigMessage` in year, month or day. The ConfigVersion
   diff is the whole detection rule; no particular status code is required or
-  claimed. `GET /v1/health` always reports both versions so the diff is
-  visible without reproducing a failure:
-
-  ```json
-  "google": {
-    "config_version_compiled": "2026.9.2",
-    "config_version_live": "2026.9.2",
-    "config_version_stale": false,
-    "is_default_sms_app": true,
-    "phone_responding": true,
-    "upstream_commit": "be48a58"
-  }
-  ```
+  claimed. **The compiled version is a property of the binary; the live one is
+  a property of each account's `FetchConfig`**, so `GET /v1/health` carries the
+  compiled value once at the top level and a `google` block per account — §7.5
+  holds the one authoritative shape of that document. The diff is therefore
+  visible per account without reproducing a failure, and an account that is not
+  `connected` reports `google: null`.
 - **Message status ranges.** `MessageStatusType` outgoing values run 1–27,
   incoming 100–118, **tombstones 200–279**, and `MESSAGE_DELETED = 300` sits
   outside every range (`gmproto/conversations.proto:295-427`). §4.4 maps every
@@ -993,10 +1005,6 @@ in the pinned tree, it says so and points at §18.1.
   (`connector/backfill.go:126`, `chatsync.go:51`), as is `TachyonTTL`
   (`client.go:440-445`). Agent GM converts once, at the `gm` boundary, and
   stores milliseconds (§4.3).
-- **`AuthData.AuthNetwork()` returns `util.GoogleNetwork` ("GDitto") for the
-  gaia flow and the empty string otherwise** (`client.go:96-101`).
-  `util.QRNetwork` ("Bugle") appears only in the two pairing HTTP payloads
-  (`pair.go:93,115`), never as a runtime network value.
 - **`libgm` writes to the process's zerolog logger** and at trace level logs
   the base64 of decrypted payloads (`event_handler.go:logContent`). Agent GM
   configures the library logger at `info` in production and forbids `trace`
