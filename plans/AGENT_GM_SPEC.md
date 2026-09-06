@@ -3729,18 +3729,18 @@ Tags: `slice-1`, `slice-2`, `slice-3`, `v1.0.0`.
 Every acceptance test below is a falsifiable assertion with a runnable
 evidence recipe. A slice is not accepted with any test unproven, and an
 unproven test is listed as `gap <sha>`, never quietly dropped.
-
 ### Slice 1 — the spike
 
 **Goal:** prove Agent GM can pair, read and write against the real thing,
 before any of the surfaces exist.
 
 **Deliverables.** The Go module; `devbox.json` as shipped; `internal/gm` with
-the `Backend` interface, the `libgm` implementation and the fake;
-`internal/store` with migration `0001` covering `conversations`, `messages`,
-`participants` and `server_meta`; a `cmd/agent-gm spike` subcommand with
-`pair`, `list`, `send` and `watch`; `internal/gm/pin.go`; the
-`fixture-validation` CI job.
+the complete `Backend` interface (§2.3), the `libgm` implementation and the
+fake; `internal/store` with migration `0001` covering `conversations`,
+`messages`, `participants` and `server_meta`; a `cmd/agent-gm spike`
+subcommand with `pair`, `list`, `send`, `watch` and `diag`;
+`internal/gm/pin.go`; the `pin-consistency`, `fixture-validation` and
+`no-real-numbers` CI jobs.
 
 **Explicitly not in this slice:** REST, MCP, OAuth, media, the CLI proper,
 idempotency, the audit log.
@@ -3748,41 +3748,54 @@ idempotency, the audit log.
 **Acceptance tests.**
 
 1. `devbox run check` is green, and `go.mod`, `internal/gm/pin.go` and §3.6 all
-   name `be48a58`; the `pin-consistency` job fails if any one is edited alone.
-2. The `fixture-validation` job passes all eleven assertions of §13.4 against
-   a fresh clone of mautrix-gmessages at `be48a58`.
+   name `be48a58`; `pin-consistency` fails if any one is edited alone.
+2. `fixture-validation` passes all twenty assertions of §13.4 against a fresh
+   clone of mautrix-gmessages at `be48a58`.
 3. Against the **fake**: pair, list 3 conversations, send a text, receive the
-   echo, and see `delivery_state` walk `queued → sent → delivered`. No network.
-4. Against the fake, every error in §3.5 maps to the code in §7.2, proven by a
-   table test that enumerates the list rather than sampling it.
-5. **Live gate (coordinator only).** `agent-gm spike pair --qr` renders a QR
-   in an 80×24 terminal; the owner scans it on the phone; the process reports
-   `Paired` with a phone ID and persists `session.enc` at mode `0600`.
-6. **Live gate.** `agent-gm spike list` returns the owner's real conversation
-   list, and the row for `<APPROVED_DIRECT_NUMBER>` is present with a `conv_` ID.
-7. **Live gate.** `agent-gm spike send <conv> "agent-gm slice 1 test"` to
+   echo, and see `delivery_state` walk `sending → sent → delivered`. No
+   network, no sleeps — the fake's clock is advanced explicitly.
+4. Every error in §3.5 maps to the `gm`-level error value §7.2 will later
+   render, proven by a table test that **enumerates** the list rather than
+   sampling it. This is a unit test inside `internal/gm`; no REST exists yet.
+5. `internal/gm/fake` satisfies the whole `Backend` interface — asserted by a
+   compile-time `var _ gm.Backend = (*fake.Backend)(nil)` plus a test that
+   calls every method once. If a method is unimplementable against the fake,
+   it does not belong in the interface.
+6. **Live gate (coordinator only).** `agent-gm spike pair` renders a QR in an
+   80×24 terminal; the owner scans it; the process reports `Paired` with a
+   phone ID and persists `session.enc` at mode `0600`.
+7. **Live gate.** `agent-gm spike list` returns the owner's real conversation
+   list, and the row for `<APPROVED_DIRECT_NUMBER>` is present with a `conv_`
+   ID.
+8. **Live gate.** `agent-gm spike send <conv> "agent-gm slice 1 test"` to
    **`<APPROVED_DIRECT_NUMBER>` and no other number** returns
-   `SendMessageResponse_SUCCESS`, and `spike watch` shows the remote echo
-   carrying the same `TmpID`, then at least one delivery-status update.
-8. **Live gate.** The owner replies from that phone; `spike watch` prints the
+   `SendMessageResponse_SUCCESS`; `spike watch` shows the remote echo carrying
+   the same bare-UUID `TmpID` we sent, then at least one delivery-status
+   update.
+9. **Live gate.** The owner replies from that phone; `spike watch` prints the
    inbound message within 10 seconds, with the right text and sender.
-9. **Live gate.** Restart the process; `session.enc` is reloaded, `Connect`
-   succeeds without re-pairing, and `IsLoggedIn()` is true.
-10. `agent-gm spike diag` prints the compiled and live `ConfigVersion` side by
-    side and `is_default_sms_app`; the values are recorded in the slice report.
+10. **Live gate.** Restart the process; `session.enc` reloads, `Connect`
+    succeeds without re-pairing, and `IsLoggedIn()` is true.
+11. **Live gate.** `agent-gm spike diag` prints the compiled and live
+    `ConfigVersion` and `is_default_sms_app` from a real round trip; both are
+    recorded in the slice report. (The fake can produce these too — test 3
+    covers that — but the *live* values are the point here.)
 
 ### Slice 2 — store, REST, CLI, media
 
-**Deliverables.** The full schema and migrations; the ingest loop with backfill
-and live events; operations with idempotency and crash recovery; every `/v1`
-route of §7 including admin; the media ticket system of §10; the `agm` CLI of
-§11 with QR pairing; the audit log; rate limits and trusted-proxy resolution;
-`docs/api.md`, `docs/cli.md`, `docs/pairing.md`, `docs/operations.md`.
+**Deliverables.** The full schema and migrations; the ingest loop with
+backfill, live events and the reconciliation sweep; operations with
+idempotency and crash recovery; every `/v1` route of §7 including
+`/v1/auth/admin-session` and the admin subtree; the media ticket system of
+§10; the `agm` CLI of §11 including both pairing flows; the audit log; rate
+limits and trusted-proxy resolution; `docs/api.md`, `docs/cli.md`,
+`docs/pairing.md`, `docs/operations.md`.
 
-Authentication in this slice is the **admin bootstrap only**
-(`POST /v1/auth/admin-session`); OAuth arrives in Slice 3. Scope checks are
-implemented and enforced now, so Slice 3 adds a token source and not a
-security model.
+Authentication in this slice is the **admin bootstrap only**. Per §9.7 that
+session carries `admin` **plus all three messaging scopes**, and accepts a
+`scopes` narrowing, so this slice can call and refuse its own routes. OAuth
+arrives in Slice 3 and adds a second token source, not a second security
+model.
 
 **Acceptance tests.**
 
@@ -3794,85 +3807,128 @@ security model.
    replay writes zero rows and does not change any `updated_at_ms`.
 3. `last_activity_ms` never moves backwards, proven by replaying an old
    message after a new one.
-4. Every `MessageStatusType` value in the pinned proto maps to a
-   `delivery_state` in §4.4; a value absent from the mapping fails the test.
-5. A backward transition (`read → sent`) is refused, leaves the stored state
-   alone, writes `delivery_state_raw`, and emits
-   `message.status_out_of_order`.
-6. The same `client_request_id` with the same body returns the same operation
+4. **The reconciliation sweep recovers real loss.** Script the fake to
+   abandon the rest of a batch the way the library's dedup does (§3.4); assert
+   the messages are missing; fire a `BROWSER_ACTIVE` with a changed session
+   ID; assert the sweep runs and every missing message is now present exactly
+   once. Repeat for the timer, `NoDataReceived` and
+   `MOBILE_DATABASE_SYNC_COMPLETE` triggers.
+5. Every `MessageStatusType` value at the pin outside 200–279 maps to a
+   `delivery_state` in §4.4, and every value in 200–279 classifies as
+   `kind='system'`. A value absent from both fails the test.
+6. A backward transition (`read → sent`) is refused, leaves the stored state
+   alone, still writes `delivery_state_raw`, and emits
+   `message.status_out_of_order`. A forward skip is accepted.
+7. The same `client_request_id` with the same body returns the same operation
    and calls the backend **once** (fake call counter); with a different body it
-   is `idempotency_conflict` and calls it **zero** times.
-7. Killing the process between the operation commit and the backend call, then
+   is `idempotency_conflict` and calls it **zero** times. A key supplied as a
+   query parameter is `invalid_request`.
+8. Killing the process between the operation commit and the backend call, then
    restarting, leaves the operation `unknown` with `crash_recovered`; feeding
    the echo afterwards corrects it to `succeeded` with a `message_id` and sets
-   `corrected_at_ms`. **Nothing is resent.**
-8. `ErrPhoneNotResponding` yields HTTP 504 `phone_not_responding` **and an
-   operation in `pending`, not `failed`**; the echo settles it to `succeeded`;
-   with no echo it becomes `unknown` after `operations.pending_timeout`.
-9. `FAILURE_2` twice then `SUCCESS` succeeds after retries at `[3s, 8s]`
-   (asserted on a fake clock); `FAILURE_4` with `IsBugleDefault=false` is
-   `not_default_sms_app` and is **not** retried.
-10. `GetOrCreateConversation` status 3 retries once with `CreateRCSGroup=true`
-    and succeeds; a second status 3 is `google_error`; **status 4 is
-    `config_version_stale`** and the message names both ConfigVersions.
-11. Every `/v1` route rejects an unknown query parameter and an unknown body
-    field with `invalid_request` naming it, including `?_=1`; a route-by-route
-    test, not a sample.
-12. A `msg_` ID where a `conv_` is expected is `invalid_request` naming the
+   `corrected_at`. **Nothing is resent.**
+9. `ErrPhoneNotResponding` yields HTTP 504 `phone_not_responding` **and an
+   operation in `pending` with `terminal: false`**, not `failed`; the echo
+   settles it to `succeeded`, or to `failed` if the echo reports a failed
+   status; with no echo it becomes `unknown` after
+   `operations.pending_timeout` — **advanced on the injected clock, not
+   waited out**.
+10. `FAILURE_2` twice then `SUCCESS` succeeds after backoffs of `3s` and `8s`
+    on the injected clock, reusing **one** `tmp_id` across the retries;
+    `FAILURE_4` is `not_default_sms_app` and is **not** retried.
+11. `ResolveResult.Status = CREATE_RCS` retries once with
+    `CreateRCSGroup=true` and succeeds; a second `CREATE_RCS` is
+    `google_error`; an **unnamed integer** is `google_undocumented_status`
+    with `details.status` carrying the bare number and no invented name; and a
+    failure with a compiled/live `ConfigVersion` mismatch is
+    `config_version_stale` naming both versions.
+12. Every `/v1` route rejects an unknown query parameter and an unknown body
+    field with `invalid_request` naming it, including `?_=1`; route by route,
+    not a sample.
+13. A `msg_` ID where a `conv_` is expected is `invalid_request` naming the
     parameter and the expected prefix — **never `not_found`**. A raw Google ID
     is the same.
-13. A cursor replayed with a changed filter is `invalid_request`; a tampered
+14. A cursor replayed with a changed filter is `invalid_request`; a tampered
     cursor is `invalid_request`; pagination across ten equal timestamps
     returns each row exactly once.
-14. The full upload path: reserve, `PUT` the exact bytes, send. A short body, a
+15. Emoji canonicalisation: `add_reaction` with `❤` then
+    `DELETE …/reactions/❤️` removes it, and the reverse also works; both
+    derive the same `react_` ID. A second, different emoji from the same
+    person **replaces** the first (one row, `SWITCH` sent). A reaction whose
+    type has no unicode serves `{"emoji": null, "type": "emotify"}`.
+    `DELETE /v1/reactions/{react_id}` removes by ID; somebody else's is
+    `unsupported_capability` with `not_my_reaction`.
+16. `PATCH /v1/conversations/{id}` archives, unarchives, pins, unpins and marks
+    unread; repeating one returns `changed: false` with `operation: null` and
+    calls the backend zero times.
+17. The full upload path: reserve, `PUT` the exact bytes, send. A short body, a
     long body, a wrong `sha256` and a contradicted content type are each
     refused **and spend the reservation**. A second `PUT` with the same token
     fails. The token presented at another upload's URL is refused **and not
-    spent**, proven by then redeeming it successfully at its own URL.
-15. A download ticket redeems up to 5 times and then fails; it re-checks the
-    issuing authorization's scope on each redemption, proven by revoking
-    between redemptions.
-16. `upload_url` and `download_url` are built from `AGENT_GM_PUBLIC_URL` even
+    spent**, proven by then redeeming it successfully at its own URL. Two
+    `upload_ids` in one send is `invalid_request`.
+18. A download ticket redeems 5 times and the 6th fails, proven against the
+    `download_tickets.redemptions` counter and across a process restart. Each
+    redemption re-checks the issuing authorization: narrowing that session's
+    scopes to drop `messages:read` (via `POST /v1/auth/admin-session` with
+    `scopes`) makes the next redemption fail.
+19. `upload_url` and `download_url` are built from `AGENT_GM_PUBLIC_URL` even
     when the request carries a hostile `Host` and `X-Forwarded-Host`.
-17. Erasure order: a purge collects paths inside the transaction, commits,
+20. Erasure order: a purge collects paths inside the transaction, commits,
     then unlinks; a fault injected between commit and unlink leaves an orphan
-    file and **no** orphan row.
-18. The exit-code matrix of §11.2: every code produced by a real `agm`
-    invocation against a fake-backed server.
-19. `--json` puts exactly one JSON value on stdout and everything else on
+    file and **no** orphan `media_cache_entries` row.
+21. The exit-code mapping table of §11.2 in full: every §7.2 code produced
+    against a fake-backed server maps to the stated exit code. Exits 3 and 4
+    come from an expired token and from a narrowed admin session.
+22. `--json` puts exactly one JSON value on stdout and everything else on
     stderr, for every command, asserted by parsing stdout as JSON.
-20. `agm messages delete` and `agm conversations delete` print the exact effect
-    sentence of §7.6 and refuse without `y` or `--yes`; the string matches the
-    REST `effect` field byte for byte.
-21. Trusted-proxy resolution: with the CIDR list set, a forged
+23. Every `/v1` route parameter is reachable from a CLI flag, and every CLI
+    command maps to a route — asserted by a table test over both inventories,
+    so a route added without a flag fails.
+24. `agm messages delete` and `agm conversations delete` print the `effect`
+    string **taken from the route's response**, and refuse without `y` or
+    `--yes`; the printed string equals the response field byte for byte.
+25. Trusted-proxy resolution: with the CIDR list set, a forged
     `X-Forwarded-For` from an untrusted peer is ignored; from a trusted peer
     the **rightmost** non-trusted entry wins; an unparseable entry stops the
     walk at the TCP peer; an invalid CIDR list refuses to start.
-22. Rate limits: exceeding each bucket of §12.3 is `rate_limited` with
-    `Retry-After`, and holding three scopes does not multiply the allowance.
-23. Sentinel secrets appear in no log line, no audit payload, and nowhere in
+26. Rate limits: exceeding each bucket of §12.3 is `rate_limited` with
+    `Retry-After`, and a session holding all four scopes gets one allowance per
+    surface, not four.
+27. Sentinel secrets — including each of the seven Google cookie values by
+    name — appear in no log line, no audit payload, and nowhere in
     `agent-gm.sqlite3`, `-wal` or `-shm`, proven by `strings | grep`.
-24. `PRAGMA foreign_key_check` is empty after every migration; a database at a
+28. `PRAGMA foreign_key_check` is empty after every migration; a database at a
     higher `user_version` refuses to open, naming both numbers.
-25. `POST /v1/admin/backup` produces a file that opens standalone, and pruning
+29. `POST /v1/admin/backup` produces a file that opens standalone, and pruning
     keeps exactly `backup.keep` and audits each removal.
-26. **Live gate.** `agm pair --qr` from a clean data directory, then
+30. `no-real-numbers` passes over the whole tree.
+31. **Live gate.** `agm pair` (QR) from a clean data directory, then
     `agm conversations list`, then `agm messages send` one text to
-    `<APPROVED_DIRECT_NUMBER>` with `--wait --wait-for sent`, then `agm messages send`
-    with `--file` of a small JPEG to the same number, then the owner replies
-    and `agm messages list` shows it. Then `agm messages react` and
-    `agm messages unreact`. Then `agm messages delete` on Agent GM's own test
-    message, with the owner confirming the effect sentence first.
-27. **Live gate.** `agm conversations start +1<APPROVED_GROUP_NUMBER_1> +1<APPROVED_GROUP_NUMBER_2>
-    --name "agent-gm test"` creates a group; if it fails, the failure is
-    diagnosed against the §15.4 runbook rows (group-MMS setting,
-    `config_version_stale`) before anything else is changed.
+    `<APPROVED_DIRECT_NUMBER>` with `--wait --wait-for sent`, then
+    `agm messages send --file` of a small JPEG to the same number, then the
+    owner replies and `agm messages list` shows it. Then `agm messages
+    add-reaction` and `remove-reaction`. Then `agm messages delete` on Agent
+    GM's own test message, with the owner confirming the effect sentence
+    first. Then `agm conversations archive` and `unarchive`.
+32. **Live gate.** `agm pair --google` on a machine with Chrome: the dedicated
+    profile opens, the owner signs in, exactly seven cookies are captured
+    (including `OSID` from `messages.google.com`), Chrome is terminated, the
+    emoji is displayed, the owner taps it, and the session reaches
+    `connected`. Then `agm pair --google --refresh-cookies` re-authenticates
+    **without** a re-pair and without a new emoji. Then `agm pair
+    --forget-browser` removes the profile directory.
+33. **Live gate.** `agm conversations start <APPROVED_GROUP_NUMBER_1>
+    <APPROVED_GROUP_NUMBER_2> --name "agent-gm test"` creates a group. If it
+    fails, the failure is diagnosed against the §15.4 runbook rows
+    (group-MMS setting, `config_version_stale`, `google_undocumented_status`)
+    before anything is changed.
 
 ### Slice 3 — OAuth and MCP
 
 **Deliverables.** `internal/oauth` in full (§9); `internal/mcp` in full (§8);
 the instructions block; `devbox run conformance` and its baseline; the name
-lint; `docs/mcp.md`, `docs/oauth.md`.
+lint and its meta-test; `docs/mcp.md`, `docs/oauth.md`.
 
 **Acceptance tests.**
 
@@ -3881,8 +3937,7 @@ lint; `docs/mcp.md`, `docs/oauth.md`.
    equality on both discovery documents.
 2. An unauthenticated `/mcp` request answers `401` with the exact
    `WWW-Authenticate` of §9.2; a valid token carrying no messaging scope
-   answers `403 insufficient_scope` with the same challenge — the two are
-   distinguishable.
+   answers `403 insufficient_scope` with the same challenge.
 3. DCR: `token_endpoint_auth_method` other than `none` is refused; a
    client-chosen `client_id` is refused; 11 redirect URIs are refused; a
    501-character URI is refused; `http://localhost:1/cb` is **accepted** and
@@ -3894,7 +3949,7 @@ lint; `docs/mcp.md`, `docs/oauth.md`.
 4. Authorize: an unknown client and an unregistered redirect answer `4xx` and
    **do not redirect**; every later failure redirects with `error`, `state`
    and a byte-exact `iss`. Omitting `code_challenge_method` is
-   `invalid_request` (not defaulted to `plain`). A `resource` other than the
+   `invalid_request`, never defaulted to `plain`. A `resource` other than the
    canonical one is `invalid_target`. `scope=admin` is `invalid_scope`.
 5. An invalid enrollment code re-renders the form with **one generic message,
    byte-identical** for unknown, expired, revoked and consumed codes, creates
@@ -3903,7 +3958,7 @@ lint; `docs/mcp.md`, `docs/oauth.md`.
    per signed context **and** per source, and loading a fresh authorization
    page does not reset the source bucket.
 7. `/oauth/requests/{id}` and `/status` answer `404` without the context
-   cookie; the request ID alone conveys no authority.
+   cookie.
 8. A replayed authorization code is `invalid_grant` **and revokes the tokens
    the first exchange produced**. A wrong PKCE verifier is `invalid_grant`
    **and consumes the code**.
@@ -3915,46 +3970,53 @@ lint; `docs/mcp.md`, `docs/oauth.md`.
 11. Unauthenticated budgets: 30 invalid presented tokens in 15 minutes trips a
     durable cooldown that survives a restart; a successful presentation does
     not clear the counter; the token is looked up read-only before any write
-    transaction opens (proven by holding the writer busy and showing the
-    unknown-token path does not block).
+    transaction opens.
 12. The enrollment code's plaintext appears nowhere in the database file, the
     WAL, the shm, or a log; the stored hash equals SHA-256 of the canonical
     form **computed outside the codebase**.
-13. `tools/list` under `messages:read` returns exactly the nine read tools and
-    **no** write or delete tool; under `messages:write` it adds exactly the
-    seven; under `messages:delete` exactly the two. `tools/call` on a
+13. An OAuth authorization can never hold `admin`, and an admin session can
+    never be minted through `/oauth/token`; the two credential paths do not
+    cross (§9.6).
+14. `tools/list` under `messages:read` returns exactly the ten read tools and
+    **no** write or delete tool; under `messages:write` exactly the eight
+    more; under `messages:delete` exactly the two. `tools/call` on a
     non-visible name is refused again at call time.
-14. Every tool has a description; **every argument has a description**; every
+15. Every tool has a description; **every argument has a description**; every
     schema is `additionalProperties: false`; every write tool requires
     `client_request_id`; every write tool's description ends with the
     fresh-key sentence of §8.2. Asserted by fetching `tools/list` from a
-    running server and counting.
-15. A domain failure is a **result** with `isError: true` and
+    running server and counting, so a stale description fails the claim.
+16. Every `/v1` route either has a tool or appears in §8.2's stated-exclusion
+    list — a table test over both inventories.
+17. A domain failure is a **result** with `isError: true` and
     `structuredContent.error`, not a JSON-RPC error; an unknown tool name
     **is** a JSON-RPC error. Both directions asserted.
-16. The `initialize` instructions block is byte-identical to the "First five
+18. The `initialize` instructions block is byte-identical to the "First five
     minutes" section of `docs/mcp.md` modulo markdown quoting.
-17. `Origin: https://evil.example` on `/mcp` is `403` before parsing; no
+19. `Origin: https://evil.example` on `/mcp` is `403` before parsing; no
     `Origin` is accepted; two `Authorization` headers are refused rather than
     resolved.
-18. `get_attachment` returns inline image content under
+20. `get_attachment` returns inline image content under
     `media.inline_mcp_image_max_bytes` and a resource link above it, **and the
     download ticket either way**; the first content block is the text summary.
-19. `devbox run conformance` runs against a token minted through the **whole**
-    OAuth flow (not an admin token), passes its baseline in both directions,
-    and fails if the chosen spec revision runs zero scenarios.
-20. The name lint fails on `room`, `portal`, `provider`, `redact`, `outbox`, a
-    `mode` argument and a `room_` prefix in a served tool description or in
-    any markdown page, and its meta-test proves §1.3 and §18 history text is
-    still allowed.
-21. **Live gate.** A real connector — claude.ai and ChatGPT, each — completes
-    discovery, dynamic registration, the authorization screen with an
-    enrollment code, owner approval, and the token exchange; then calls
-    `list_conversations` and `get_message` against the owner's real account;
-    then `send_message` one text to `<APPROVED_DIRECT_NUMBER>`; then the owner revokes the
-    authorization and the next call is `401`.
+21. `devbox run conformance` runs against a token minted through the **whole**
+    OAuth flow, passes its baseline in both directions, and fails if the
+    chosen spec revision runs zero scenarios.
+22. `devbox run lint-names` fails on each banned word in a served tool
+    description and in a `docs/` page, and its meta-test proves the exempt
+    cases — §18.3, a fenced block quoting upstream, `send_mode`,
+    `search.mode` — still pass.
+23. **Live gate.** A real MCP client completes discovery, dynamic
+    registration, the authorization screen with an enrollment code, owner
+    approval and the token exchange against a **temporary public URL**
+    (`cloudflared tunnel --url` against the locally built binary — this needs
+    no image and no deployment, which is why the connector gate is Slice 4).
+    It then calls `list_conversations`, `get_message` and `get_health` against
+    the owner's real account, and `send_message` one text to
+    `<APPROVED_DIRECT_NUMBER>`. The owner then revokes the authorization and
+    the next call is `401`.
 
-### Slice 4 — packaging
+### Slice 4 — packaging and the connectors
 
 **Deliverables.** The Dockerfile, `compose.example.yml`, the release workflow,
 the GHCR push, the npm wrapper, `docs/deploy.md`, `CHANGELOG.md`.
@@ -3965,15 +4027,17 @@ the GHCR push, the npm wrapper, `docs/deploy.md`, `CHANGELOG.md`.
    and `agent-gm healthcheck` succeeds inside it with no shell and no `curl`.
 2. `docker compose -f compose.example.yml up` on a clean machine with only the
    three required environment variables reaches `GET /healthz` = 200.
-3. `GET /v1/health` and MCP `serverInfo` report a `commit` that equals the
-   built commit and a `source_url` that resolves — the AGPL §13 obligation of
-   §1.4.
-4. `npm i -g @agent-gm/cli@<version>` on linux-x64, linux-arm64, darwin-x64
-   and darwin-arm64 installs a working `agm`; `agm version` matches the npm
-   version exactly.
+3. `GET /v1/health` and MCP `serverInfo` report a `commit` equal to the built
+   commit and a `source_url` that resolves — the AGPL §13 obligation of §1.4.
+4. CI cross-compiles all six release binaries and asserts each runs
+   `agm version` under `qemu` where the architecture allows; the two darwin
+   archives are checked for architecture and dynamic-link correctness with
+   `file` and `otool -L` equivalents, since there is no macOS runner. Darwin
+   execution is covered by test 9.
 5. The wrapper verifies the downloaded binary against the `checksums.txt`
    **pinned inside the npm tarball**; a tampered download fails install with a
-   message naming the file, and `AGENT_GM_CLI_SKIP_DOWNLOAD=1` skips cleanly.
+   message naming the file; `AGENT_GM_CLI_SKIP_DOWNLOAD=1` skips cleanly and
+   `AGENT_GM_CLI_BINARY` points at an existing binary.
 6. An unsupported platform fails `postinstall` with a message naming the
    platform, rather than installing something that cannot run.
 7. Exit codes survive the npm shim: `agm --nonsense` exits `2` through npm as
@@ -3981,11 +4045,16 @@ the GHCR push, the npm wrapper, `docs/deploy.md`, `CHANGELOG.md`.
 8. The GitHub release carries all six archives, `checksums.txt` and a valid
    cosign signature; the GHCR digest is recorded in the release notes together
    with the `libgm` pin.
-9. **Live gate.** The owner installs `@agent-gm/cli` on their Mac, runs
-   `agm auth login` against `https://gm.agent-wx.app`, `agm conversations
-   list`, and `agm messages send` one text to `<APPROVED_DIRECT_NUMBER>`.
-
----
+9. **Live gate.** The owner installs the CLI on their Mac, runs
+   `agm auth login` against `https://gm.agent-wx.app`,
+   `agm conversations list`, and `agm messages send` one text to
+   `<APPROVED_DIRECT_NUMBER>`.
+10. **Live gate.** claude.ai and ChatGPT each add
+    `https://gm.agent-wx.app/mcp` as a connector against the **deployed**
+    container, complete enrollment and approval, list conversations, read a
+    message, and send one text to `<APPROVED_DIRECT_NUMBER>`. Each is then
+    revoked from `/v1/admin/authorizations` and the connector reports a
+    failure rather than silently continuing.
 
 ## 17. The agent team
 
