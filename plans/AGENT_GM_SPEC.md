@@ -2214,3 +2214,768 @@ A crash between the commit and the unlink leaves a file nothing references,
 which an operator can delete.
 
 ---
+
+## 11. CLI
+
+`agm`, one binary, speaks the REST API. It never touches SQLite or `libgm`
+directly, so anything the CLI can do an agent can do too, and vice versa.
+
+### 11.1 Global flags
+
+```text
+--server <url>        Override the configured server.
+--profile <name>      Select a saved server and authorization profile.
+--json                Emit one stable JSON value on stdout.
+--output <format>     table (default) | json | jsonl
+--timeout <duration>  Bound the request, and any operation wait.
+--quiet               Suppress non-result output.
+--verbose             Diagnostic detail on stderr.
+--idempotency-key     Resume one logical state-changing request.
+--yes                 Skip the confirmation prompt on a destructive command.
+```
+
+Durations are integer + unit, `s|m|h|d`: `30s`, `15m`, `2h`, `7d`. Anything
+else is exit 2 naming the flag.
+
+### 11.2 Exit codes
+
+```text
+0   success
+2   CLI usage or validation error
+3   authentication required or expired credentials
+4   authorization or insufficient scope
+5   requested resource absent
+6   unsupported capability for this conversation or message
+7   retryable network, Google, phone, or rate-limit failure
+8   an operation reached a terminal failure
+9   local configuration or credential-store failure
+10  server contract or internal failure
+```
+
+`1` is deliberately unassigned. A command that times out waiting returns `7`,
+prints the operation ID, and leaves it available to `agm operations wait`.
+`phone_not_responding` is exit `7`, **not** `8`, and the message says the
+operation is pending and must not be resent.
+
+### 11.3 Commands
+
+```text
+agm pair [--qr | --google --cookies-file <path>] [--timeout 5m]
+agm unpair [--yes]
+agm session [--watch]
+agm health
+
+agm conversations list [--query|--participant|--folder|--type|--unread|--group|--all]
+agm conversations show <conv-id>
+agm conversations start <e164>... [--name <name>]
+agm conversations delete <conv-id> [--yes]
+agm conversations read <conv-id> --message <msg-id>
+agm conversations typing <conv-id>
+
+agm messages list <conv-id> [--direction|--sender|--after|--before|--has-attachment|--all]
+agm messages show <msg-id>
+agm messages context <msg-id> [--before 5] [--after 5]
+agm messages search <query> [--syntax literal|fts5] [--conversation <conv-id>]
+agm messages send <conv-id> [--text <t>] [--file <path>]... [--reply-to <msg-id>]
+                            [--wait] [--wait-for sent|delivered|read|terminal]
+agm messages delete <msg-id> [--yes]
+agm messages react <msg-id> <emoji>
+agm messages unreact <msg-id> <emoji>
+
+agm attachments show <att-id>
+agm attachments download <att-id> [--output <path>]
+
+agm contacts list [--query <q>] [--top]
+
+agm operations show <op-id>
+agm operations wait <op-id> [--for sent|delivered|read|terminal] [--timeout 60s]
+
+agm auth login [--admin] [--server <url>] [--scopes ...] [--no-browser] [--secret-stdin]
+agm auth logout
+agm auth whoami
+
+agm admin settings list|get|set
+agm admin enrollment-codes create|list|show|revoke
+agm admin authorization-requests list|show|approve|deny
+agm admin authorizations list|show|revoke
+agm admin clients list|show|revoke
+agm admin audit list
+agm admin backfill [--conversation <conv-id>]
+agm admin backup
+agm admin diagnostics
+
+agm completion bash|zsh|fish
+agm version
+```
+
+`agm messages send --file <path>` does the whole media dance for the owner:
+reserve, `PUT`, send. An agent does the three steps itself (§10.2), because it
+has no filesystem the server can reach.
+
+`--wait` defaults to `--wait-for sent`. `terminal` means `succeeded`,
+`failed`, `unknown`, or a message `delivery_state` of `delivered`, `read`,
+`failed` or `canceled`. **`agm` warns on stderr when `--wait-for delivered` is
+used on an SMS conversation**, for the reason in §5.5.
+
+Destructive commands (`unpair`, `conversations delete`, `messages delete`,
+`auth logout`, `admin ... revoke`) print the **exact effect sentence** from
+§7.6 and require an interactive `y`, or `--yes`. The effect sentence, the
+REST `effect` field, and the MCP tool description are the same words, so a
+model or a human cannot read a broader claim off one surface than another.
+
+Human output prints the operation ID first for every mutation. `--json`
+writes the server envelope plus CLI metadata (effective profile and server) as
+one value on stdout; diagnostics, progress, warnings and confirmation prompts
+go to stderr, so stdout stays machine-readable.
+
+### 11.4 Pairing UX
+
+```console
+$ agm pair --qr
+Pairing Agent GM with your phone.
+
+  Open Google Messages on your Android phone
+    -> profile picture / overflow menu
+    -> Device pairing
+    -> QR code scanner
+  then scan this:
+
+    █▀▀▀▀▀█ ▀▄█▀▄ ▄ █▀▀▀▀▀█
+    █ ███ █ ▀ ▄█▀██ █ ███ █
+    █ ▀▀▀ █ █▄▀ ▄▀▄ █ ▀▀▀ █
+    ▀▀▀▀▀▀▀ █ █ █▄█ ▀▀▀▀▀▀▀
+    ... (rendered at 1 module = 1 half-block, so it fits an 80x24 terminal)
+
+  Waiting for the phone... (the code refreshes every 60s; press Ctrl-C to stop)
+```
+
+The QR is rendered in the terminal with half-block characters
+(`▀`/`▄`/`█`/space), which halves the height and makes a version-6 code fit
+80×24. `--qr-ascii` falls back to two-space-per-module ASCII for terminals
+without Unicode block support, and `--qr-file <path.png>` writes a PNG
+instead. On `RefreshPhoneRelay` the terminal is redrawn in place.
+
+```console
+$ agm pair --google --cookies-file ~/gm-cookies.json
+Pairing Agent GM with your Google account.
+
+  Your phone will show three emoji and ask which one matches.
+  Tap this one:
+
+        🦋
+
+  Waiting for the phone...
+```
+
+The emoji is printed large and alone. Nothing else is printed while waiting,
+so it cannot be misread.
+
+Both flows end with:
+
+```console
+Paired.  phone: <phone_id>
+Backfilling 41 conversations... done (2,183 messages).
+
+Two things to check on the phone, once:
+  * Google Messages must be your default SMS app, or sends will fail.
+    Agent GM reports this as `is_default_sms_app` in `agm health`.
+  * For group messages, Settings -> Advanced -> Group messaging must be
+    "Send an MMS reply to all recipients", not "Send an SMS reply".
+    A phone set the other way cannot create a group at all.
+
+Agent GM is now the paired web device for this phone. Pairing Google
+Messages Web in a browser may evict it, and vice versa.
+```
+
+Both prerequisites are checked by `agm health` where checkable and are
+repeated in `docs/pairing.md`.
+
+### 11.5 Credentials
+
+Tokens are stored per server in `$XDG_STATE_HOME/agent-gm/credentials.json`
+(`~/.local/state/agent-gm/credentials.json`), mode `0600` inside a `0700`
+directory, written atomically under a `credentials.lock` advisory lock.
+Override with `--credentials-file` or `AGENT_GM_CREDENTIALS_FILE`.
+
+Precedence:
+
+| Source | Use |
+|---|---|
+| `AGENT_GM_ACCESS_TOKEN` | one access token, used as given, not refreshable |
+| `AGENT_GM_REFRESH_TOKEN_FILE` + `AGENT_GM_CLIENT_ID` | automation. Every invocation exchanges the token and rewrites the file with the rotated value, atomically, at mode `0600` |
+| the stored profile | the ordinary case, written by `agm auth login` |
+
+**Write-back safety.** The destination is proved writable *before* the token is
+spent — the temporary file that the write later renames into place is created
+first. An unwritable directory is **exit 9 while the token is still good**. A
+token the server has already refused is **exit 3** (log in again), never
+retried.
+
+`agm auth login` performs the same OAuth flow as any other MCP client:
+discovery, dynamic registration, a loopback callback on `127.0.0.1`, PKCE
+`S256`, and verification of `state` and the RFC 9207 `iss` before the code is
+exchanged. A callback whose `iss` does not match is refused, **and so is one
+carrying no `iss` at all**, because the server's metadata advertises
+`authorization_response_iss_parameter_supported` (RFC 9207 §2.4).
+`--no-browser` prints the URL. `--scopes` requests a specific set; `admin` is
+refused there and is issued only by `agm auth login --admin`, which exchanges
+`AGENT_GM_ADMIN_SECRET` over `--secret-stdin` or a TTY prompt.
+
+Each profile is bound to an exact server issuer and resource. Changing
+`--server` selects credentials for that server; it never forwards one
+profile's token to a new origin.
+
+---
+
+## 12. Security
+
+### 12.1 Secrets
+
+| Secret | Where it lives | Rotatable |
+|---|---|---|
+| `AGENT_GM_ADMIN_SECRET` | environment only. ≥43 characters; the server refuses shorter | yes — changing it revokes every previous admin bootstrap authorization on next start |
+| `AGENT_GM_DATA_KEY` | environment only. 256 bits as 64 hex or base64 | **no.** §4.5 |
+| Google session (`AuthData`) | `session.enc`, sealed with the data key, mode `0600` | by re-pairing |
+| Google cookies | inside `AuthData`, never on disk unencrypted, never logged | by re-pairing |
+| OAuth tokens | SQLite, **hashes only** | rotate on use |
+| Enrollment codes | SQLite, **SHA-256 only**; the value is returned once, at creation | revoke and reissue |
+| Media tickets | signed, not stored as values | expire |
+
+Generate both with `devbox run gen-secret` (`openssl rand -hex 32`).
+
+Secrets never appear in `argv`: `--secret-stdin`, `--cookies-file`. Passphrases
+and cookies are read from a TTY prompt, stdin, or a file read once, and are
+excluded from process arguments, logs, audit payloads and error messages.
+
+### 12.2 Logging
+
+Structured logs carry request IDs, operation IDs, coarse event types, latency,
+error codes and state transitions. Mandatory redaction covers:
+
+- `Authorization` headers and bearer tokens.
+- The admin secret and the data key.
+- The Google tachyon token, refresh key, request-crypto keys and cookies.
+- Enrollment-code values and OAuth authorization codes.
+- Message bodies, subjects and attachment bytes.
+- Full phone numbers — logs carry a stable salted hash and the last four
+  digits, never the number.
+- OAuth form bodies.
+
+`libgm` is given a logger at `info`. At `trace` it base64-logs decrypted
+payloads (`event_handler.go:logContent`), so `trace` is refused unless
+`AGENT_GM_UNSAFE_TRACE=1` is set, which also stamps every line with
+`unsafe_trace=true` and writes one `security.unsafe_trace_enabled` audit row
+at startup.
+
+The acceptance test is a scan: run the whole flow with sentinel values, and
+assert none of them appear in captured logs, in `agent-gm.sqlite3`, in its
+`-wal` or `-shm`, or in any audit payload (§13.2).
+
+### 12.3 Rate limits and client source
+
+| Surface | Limit |
+|---|---|
+| reads (`messages:read`) | 300 req/min per authorization, burst 100 |
+| mutations (`messages:write`, `messages:delete`) | 120 req/min per authorization, burst 30 |
+| `/v1/admin/*` | 120 req/min per authorization, burst 30 |
+| admin-secret failures | 5 / 15 min per source, 20 / 15 min globally, exponential cooldown |
+| enrollment-code failures | 10 / 15 min per signed OAuth context and per source |
+| DCR | 20 / hour per source |
+| unauthenticated `/oauth/token` refresh and `/oauth/revoke` | 60 req/min per source, burst 20; plus 30 invalid tokens / 15 min, durable |
+| concurrent uploads | 4 per authorization, 16 globally |
+| concurrent downloads | 8 per authorization, 32 globally |
+| `/mcp` in flight | 8 per authorization, 32 globally |
+
+Holding several scopes does not multiply the allowance. Exceeding one is
+`rate_limited` with `Retry-After`. Token buckets for ordinary traffic;
+durable cooldown metadata for the credential-failure limiters.
+
+**Client source** — used by every per-source limit and by the `source` field
+of every audit record:
+
+| `AGENT_GM_TRUSTED_PROXY_CIDRS` | Source |
+|---|---|
+| unset or empty (default) | the TCP peer. Forwarded headers ignored entirely |
+| a comma-separated CIDR list | if the TCP peer is inside the list, the **rightmost** `X-Forwarded-For` entry that is not itself inside the list; otherwise the TCP peer |
+
+Rules:
+
+- The walk is **right to left**. Taking the leftmost entry is the usual bug and
+  would turn every per-source limit in the system into decoration.
+- An unparseable entry **stops** the walk and falls back to the TCP peer;
+  it is not skipped.
+- Entries may be CIDRs (`127.0.0.1/32`, `10.0.0.0/8`, `::1/128`) or bare
+  addresses read as host routes. An IPv4-mapped IPv6 peer
+  (`::ffff:127.0.0.1`) matches an IPv4 CIDR.
+- An invalid value **refuses to start**. An operator who mistypes the list
+  should find out immediately, not discover months later that the trust they
+  configured was never in force.
+- The resolved source is never the empty string.
+- `X-Forwarded-Proto` and `X-Forwarded-Host` are recorded but **never build a
+  URL**. The issuer, the canonical resource, both discovery documents, every
+  redirect, and every media URL come from `AGENT_GM_PUBLIC_URL` alone.
+
+Cloudflare Tunnel terminates TLS and connects to `agent-gm:8080` over plain
+HTTP from inside the Docker network, so a deployment sets
+`AGENT_GM_TRUSTED_PROXY_CIDRS` to the tunnel container's network. Startup logs
+`client_source_mode=socket_peer` or `=trusted_proxy` once, and
+`GET /v1/health` reports the `client_source` **this** request resolved to, so
+a misconfiguration where every caller collapses to one source is visible.
+**With a trusted proxy configured, the listening port becomes a trust
+boundary:** any process that can reach it can assert an arbitrary
+`X-Forwarded-For` and choose its own source.
+
+### 12.4 Audit
+
+`audit_events` records security-relevant metadata: pairing start, success,
+failure and unpair; session invalidation and its cause; every write operation
+and its outcome; enrollment-code creation, consumption, expiry and
+revocation; authorization request creation, approval, denial and expiry;
+authorization and client revocation; refresh-token reuse detection; settings
+changes; backup and pruning; crash recovery; `message.status_out_of_order`;
+`security.unsafe_trace_enabled`.
+
+Payloads carry IDs, counts, codes and outcomes — never message text, never a
+full phone number, never a token, never a cookie, never the data key. An audit
+row is **never rewritten**, by a migration or by anything else: it records
+what happened at the time it happened.
+
+`GET /v1/admin/audit` and `agm admin audit list` filter by `kind`,
+`kind_prefix`, `authorization_id`, `after`, `before`, with a signed cursor.
+
+---
+
+## 13. Testing
+
+### 13.1 The fake backend
+
+`internal/gm/fake` implements `gm.Backend` (§2.3) as a deterministic in-memory
+Google Messages. It is not a mock with canned returns; it is a small
+simulator, and it is what makes every layer above `gm` testable with no phone,
+no network and no flakiness.
+
+It must:
+
+- Hold conversations, participants, messages, reactions and contacts, and
+  answer `ListConversations` / `FetchMessages` with real cursors, including
+  the equal-timestamp case.
+- Accept a send, mint a message ID, and **emit the remote echo on the event
+  channel**, carrying back the `TmpID` it was given — so the echo-correlation
+  path (§6.3) is exercised, not stubbed.
+- Walk delivery status on a script: `queued → sent → delivered → read`, or
+  stop at `sent` when the conversation is marked SMS, which is what makes the
+  §5.5 SMS behaviour testable.
+- Be scriptable to return, on the next call: each `SendMessageResponse.Status`
+  (including `FAILURE_2`/`FAILURE_3` twice then success, to exercise the
+  retry backoff), `ErrPhoneNotResponding`, `ErrConnectionClosed`,
+  `ErrInvalidCredentials`, `ErrRequestedEntityNotFound`,
+  `ErrCallerNoPermission`, an arbitrary `RequestError`, and
+  `GetOrCreateConversation` status 3 then 1, and status 4.
+- Emit any event in §3.4 on demand, including `IsOld=true` replays,
+  `RevokePairData`, `GaiaLoggedOut`, `AccountChange`, and the alert types.
+- Run both pairing flows: hand out a QR string, refresh it, then "scan" it;
+  and hand out an emoji, then accept or reject it with each
+  `GaiaPairingErrorCode`.
+- Be able to drop events, so the `dropped_events` counter is tested.
+
+`AGENT_GM_BACKEND=fake` selects it at runtime, so the CLI, the REST suite and
+the MCP conformance run can all drive a real server with no phone.
+
+### 13.2 Unit and integration
+
+Under `devbox run test`, no gate:
+
+- **ID derivation**, including that the `account_key` component is present and
+  that a different phone produces different IDs. A test that computes the
+  UUIDv5 independently, not by calling the same function twice.
+- **Delivery-state mapping** for every one of the ~70 `MessageStatusType`
+  values, as a table test enumerating the enum from the pinned proto (§13.4),
+  so a value added upstream fails the test rather than silently landing in
+  `unknown`.
+- **Transition enforcement**: a backward move is refused, audited, and leaves
+  the stored state alone; a forward skip is accepted.
+- **Idempotency**: same key + same body returns the same operation and calls
+  the backend **once** (asserted on the fake's call counter); same key +
+  different body is `idempotency_conflict` and calls it zero times.
+- **Crash recovery**: kill between the operation commit and the backend call,
+  restart, assert `unknown` + `crash_recovered`, then deliver the echo and
+  assert the correction to `succeeded`.
+- **Ordering and dedup**: interleave backfill and live events for the same
+  messages in both orders; assert one row each, identical content, identical
+  ordering, and that `last_activity_ms` never moves backwards.
+- **Strict parameter rejection** on every `/v1` route, including `_=`.
+- **Cursor signing**: tamper rejection, filter-binding rejection, stability
+  across equal timestamps.
+- **Error mapping**: every library error in §3.5 to its code and status.
+- **`config_version_stale`**: fake returns status 4 → the error names both
+  ConfigVersions and says a pin bump is the fix.
+- **Exit-code matrix**: every code in §11.2 produced by a real CLI invocation
+  against a fake-backed server.
+- **Golden JSON** for every response and error shape.
+- **Log and database scanning** for sentinel secrets (§12.2), across
+  `.sqlite3`, `-wal`, `-shm`, log capture and audit payloads.
+- **`PRAGMA foreign_key_check`** empty after every migration, and a database
+  at a higher `user_version` refuses to open.
+- **Instructions parity**: the `initialize` instructions block and the "First
+  five minutes" section of `docs/mcp.md` are byte-identical modulo quoting.
+- **Cold-agent schema audit**: fetch `tools/list` from a live fake-backed
+  server; assert every tool has a description, every argument has a
+  description, every schema is `additionalProperties: false`, every write tool
+  requires `client_request_id`, and every write tool's description ends with
+  the fresh-key sentence.
+
+Nothing here needs Docker or a phone, so **nothing here is behind a gate**.
+Parking a test behind a gate it does not need is how a clause stays unverified
+for a phase.
+
+### 13.3 Live gates
+
+Live tests are `go test -tags live` plus `AGENT_GM_LIVE=1`, run by
+`devbox run test-live`. They are not in CI. They are run **by the coordinator
+only**, never by an implementer or a reviewer, from a checkout pinned to the
+reviewer-accepted commit — never from an implementer's working tree, because a
+mid-edit tree failing to build is what makes a live gate meaningless.
+
+**The approved-test-number rule.** Live sends go **only** to:
+
+| Purpose | Number(s) |
+|---|---|
+| direct conversation | `+1<APPROVED_DIRECT_NUMBER>` |
+| group conversation | `+1<APPROVED_GROUP_NUMBER_1>` and `+1<APPROVED_GROUP_NUMBER_2>` |
+
+No other number is ever used in a live test, in a fixture, in an example, or
+in a doc. Fictional `555` numbers (`+12025550123`) are reserved for examples
+and fixtures and must never be dialled. **Only the coordinator sends live**;
+an implementer or reviewer that believes it needs a live send reports that
+instead of performing one.
+
+Every destructive live action displays its exact effect and requires the
+owner's confirmation before it runs.
+
+### 13.4 Fixtures validated against the pinned source
+
+Fixtures live in `testdata/libgm/be48a58/`, named for the pinned commit, and
+are **source-derived, not live captures** — every identifier is a fixture
+label or a `555` number, and every key is a nonfunctional placeholder.
+
+A CI job, `fixture-validation`, clones mautrix-gmessages at `be48a58` and
+asserts, against that tree and not against Agent GM's own code:
+
+1. Every symbol named in §3.1 exists with the signature stated.
+2. `util.ConfigMessage` equals `2026.9.2` with `V1=4, V2=6`.
+3. The `MessageStatusType` enum in §4.4 covers every value in
+   `conversations.proto` exactly once, with no value unmapped.
+4. `GetOrCreateConversationResponse.Status` still declares only `0, 1, 3`,
+   so §3.7's claim that 2 and 4 are unnamed is still true.
+5. `SendMessageResponse.Status` still declares `0..4`.
+6. `SendReactionRequest.Action` still declares `0..3`.
+7. `ListConversationsRequest.Folder` still declares `0, 1, 2, 5`.
+8. `AlertType` still has 28 values, and the ones §3.4 acts on still carry the
+   numbers stated.
+9. `responseHardTimeout` is still 60s and `RefreshTachyonBuffer` still 1h.
+10. `shouldIgnoreStatus`'s ignore set matches the one Agent GM carries.
+11. The `sendRetryBackoff` values are still `[3s, 8s, 20s]` and
+    `isTransientSendFailure` still names only `FAILURE_2` and `FAILURE_3`.
+
+A test that only asserts Agent GM's own serialisation round-trips is **not**
+compatibility evidence. If a claim in §3 cannot be checked against the pinned
+tree by a job, it is written in §3 with the file and symbol it was read from,
+so a reviewer can check it by hand.
+
+### 13.5 Reviewer discipline and plants
+
+The reviewer's default assumption is that nothing works.
+
+- **Evidence is something the reviewer ran.** A description from the
+  implementer is not evidence. Real output is quoted, with the command and the
+  exit code.
+- The reviewer diffs the implementation against this spec **clause by
+  clause**. Each public contract item — route, DTO field, error code, tool
+  schema, state transition, CLI flag, exit code, setting — is either verified
+  by a test the reviewer ran, or listed as unverified. Rows are
+  **SHA-qualified**: `verified <sha>`, `failed <sha>`, `partial <sha>`,
+  `gap <sha>`, `unverified`, or `n/a` — and `n/a` rows are still listed, so
+  every deferral is explicit.
+- **Plants are the reviewer's, not the implementer's.** Two kinds:
+  - *Planted tests*, written on the review branch **before** the code exists,
+    `t.Skip`ped so `devbox run check` stays green, and un-skipped by the
+    reviewer with `-run` at every reported SHA. Each declares the slice that
+    unblocks it and its wire assumptions up front. A plant must fail at the
+    *expected* point against the baseline, proving it exercises real routes
+    rather than nothing. The implementer may adapt a plant's call shape; it may
+    **not** weaken an assertion.
+  - *Planted mutations*: the reviewer edits production source at a named
+    file:line, runs the full suite, records killed (by a **named** test) or
+    **SURVIVED** (with the pass count), and reverts with `git checkout --`. A
+    survivor is a finding, not a note; the reviewer states the production
+    consequence. After the fix the mutation is re-planted and must be killed,
+    and the killing test carries a doc comment recording the plant and its
+    date. Documentation contracts are mutated too — putting a wrong sentence
+    back into a served tool description must be caught by a lint test.
+- Findings are `<Letter>-<n>`, severity-ordered, each with the spec clause, the
+  evidence run, and the fix required. The verdict is `accept`,
+  `accept with required fixes`, or `reject`.
+- The reviewer works in its own worktree and syncs with
+  `git fetch . <branch>` then `git reset --hard <sha>`, so its tests run
+  against exactly what was reported.
+
+**A name lint** (`internal/lint`, run under `devbox run test`) reads the
+catalogue the server actually serves — tool names, descriptions, argument
+names and descriptions, enums, the instructions block — plus every markdown
+page under `docs/` and `plans/`, and fails on a Matrix vocabulary asserted as
+a live contract: `room`, `portal`, `event_id`, `provider`, `redact`,
+`generation`, `outbox`, a `mode` argument, or a `room_` prefix. It carries its
+own meta-test proving both directions: the banned words are caught, and the
+*history* — §1.3 and §18 saying what Agent MX called things — is allowed.
+
+### 13.6 CI
+
+GitHub Actions, on push and pull request:
+
+| Job | What |
+|---|---|
+| `check` | `devbox run check` — build, vet, `golangci-lint run`, `go test -race` |
+| `pin-consistency` | `go.mod`, `internal/gm/pin.go` and §3.6 all name `be48a58` |
+| `fixture-validation` | §13.4, against a fresh clone of the pinned upstream tree |
+| `conformance` | `devbox run conformance` against the baseline (§8.4) |
+| `lint-names` | the name lint of §13.5 |
+| `build-matrix` | `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64` binaries |
+| `image` | build the Dockerfile; on a tag, push to GHCR |
+
+CI installs Devbox and runs the same scripts, so the local and CI environments
+are identical. There is no command in this repository that is not a
+`devbox run <script>`.
+
+---
+
+## 14. Packaging
+
+### 14.1 Dockerfile
+
+Two stages. Build with `golang:1.27` on the pinned Go version; run on
+`gcr.io/distroless/static-debian12:nonroot`, because `CGO_ENABLED=0` and a
+pure-Go SQLite driver (`modernc.org/sqlite`) mean there is nothing to link
+against.
+
+```dockerfile
+FROM golang:1.27 AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG VERSION=dev
+ARG COMMIT=unknown
+RUN CGO_ENABLED=0 go build -trimpath \
+      -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" \
+      -o /out/agent-gm ./cmd/agent-gm
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/agent-gm /usr/local/bin/agent-gm
+ENV AGENT_GM_DATA_DIR=/data AGENT_GM_LISTEN_ADDR=0.0.0.0:8080
+VOLUME ["/data"]
+EXPOSE 8080
+USER nonroot:nonroot
+ENTRYPOINT ["/usr/local/bin/agent-gm"]
+CMD ["serve"]
+```
+
+`main.commit` is what `GET /v1/health` reports as `source_url` and what
+`serverInfo` carries (§1.4).
+
+`compose.example.yml` ships in this repository as a **generic** example: the
+service, the volume, the environment, and a commented-out Cloudflare Tunnel
+sidecar. The owner's real Compose service lives in `openclaw-custom` and is
+**out of scope for this repository**, as is the tunnel configuration. What
+this repository owes any host is: a Dockerfile, a compose example, an
+environment-variable table (§15.1), and the operations docs.
+
+Healthcheck: `agent-gm healthcheck` — an internal subcommand that does an
+HTTP `GET /healthz` against its own listen address, so distroless needs no
+`curl`.
+
+### 14.2 GHCR
+
+`ghcr.io/thisnick/agent-gm`. Tags: `vX.Y.Z`, `vX.Y`, `latest` on a release;
+`sha-<short>` on every `main` build. Multi-arch `linux/amd64` and
+`linux/arm64`. **Deployments pin by digest, not by tag** — a tag is a label
+and a digest is evidence. Every release note records the digest and the
+upstream `libgm` commit.
+
+### 14.3 Releases and the npm wrapper
+
+A GitHub release for tag `vX.Y.Z` carries, from a public repository:
+
+```text
+agent-gm_X.Y.Z_linux_amd64.tar.gz
+agent-gm_X.Y.Z_linux_arm64.tar.gz
+agm_X.Y.Z_linux_amd64.tar.gz
+agm_X.Y.Z_linux_arm64.tar.gz
+agm_X.Y.Z_darwin_amd64.tar.gz
+agm_X.Y.Z_darwin_arm64.tar.gz
+checksums.txt
+checksums.txt.sig        (cosign keyless, GitHub OIDC)
+```
+
+`@agent-gm/cli` on npm is a **thin wrapper**, not a bundle:
+
+- `package.json` declares `"bin": { "agm": "bin/agm.js" }`, `"license":
+  "AGPL-3.0-or-later"`, and `"version"` equal to the Go release version, so
+  `npm i -g @agent-gm/cli@1.4.2` gets `agm 1.4.2`.
+- A `postinstall` script maps `process.platform` × `process.arch` to an asset
+  name, downloads it from
+  `https://github.com/thisnick/agent-gm/releases/download/v<version>/…`,
+  **verifies the SHA-256 against a `checksums.txt` that is itself pinned into
+  the npm tarball at publish time** (so a compromised release page cannot
+  serve a different binary to an old package version), extracts to
+  `vendor/agm`, and `chmod 0755`.
+- `bin/agm.js` is a shim that `execFileSync`s `vendor/agm` with the process's
+  argv and propagates the exit code **exactly** — the §11.2 codes must survive
+  the wrapper, and there is a test that asserts `agm --nonsense` exits 2
+  through npm as it does natively.
+- An unsupported platform fails `postinstall` with a message naming the
+  platform and pointing at the release page, rather than installing something
+  that cannot run.
+- `AGENT_GM_CLI_SKIP_DOWNLOAD=1` skips the download for CI images that supply
+  the binary themselves; `AGENT_GM_CLI_BINARY=<path>` points the shim at an
+  existing binary.
+- The npm package is AGPL-3.0-or-later and says so, because it distributes
+  AGPL binaries (§1.4).
+
+Releases are cut by tagging; the `release` workflow builds the matrix, signs
+the checksums, creates the GitHub release, pushes the GHCR image, and
+publishes to npm with an OIDC-authenticated token. **No release is cut from a
+commit that has not passed a live gate** (§16).
+
+---
+
+## 15. Operations
+
+### 15.1 Configuration
+
+Environment only, plus a runtime settings table. **There is no config file.**
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `AGENT_GM_PUBLIC_URL` | *(required)* | `https://gm.agent-wx.app`. Issuer, canonical resource, and the base of every URL handed out. Never derived from `Host` |
+| `AGENT_GM_LISTEN_ADDR` | `0.0.0.0:8080` | bind address |
+| `AGENT_GM_DATA_DIR` | `/data` | holds `agent-gm.sqlite3`, `session.enc`, `media-cache/`, `backups/` |
+| `AGENT_GM_ADMIN_SECRET` | *(required)* | owner bootstrap credential, ≥43 chars |
+| `AGENT_GM_DATA_KEY` | *(required)* | 256-bit, 64 hex or base64. Not rotatable |
+| `AGENT_GM_TRUSTED_PROXY_CIDRS` | empty | §12.3. Invalid value refuses to start |
+| `AGENT_GM_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
+| `AGENT_GM_LOG_FORMAT` | `json` | `json` \| `text` |
+| `AGENT_GM_UNSAFE_TRACE` | unset | `1` permits `libgm` trace logging. §12.2 |
+| `AGENT_GM_BACKEND` | `libgm` | `libgm` \| `fake`. `fake` refuses to start unless `AGENT_GM_ALLOW_FAKE=1` |
+| `AGENT_GM_PAIRING_TIMEOUT` | `5m` | §3.2 |
+| `AGENT_GM_URL` / `AGENT_GM_ACCESS_TOKEN` / `AGENT_GM_REFRESH_TOKEN_FILE` / `AGENT_GM_CLIENT_ID` / `AGENT_GM_CREDENTIALS_FILE` | — | CLI side only |
+
+Runtime settings, mutable through `PATCH /v1/admin/settings`, each reporting
+its effective value, source (`default` \| `environment` \| `database`),
+mutability and restart requirement:
+
+| Key | Default | Bounds |
+|---|---|---|
+| `backfill.concurrency` | 2 | 1–8 |
+| `backfill.conversation_page_size` | 100 | 10–500 |
+| `backfill.message_page_size` | 100 | 10–500 |
+| `backfill.max_messages_per_conversation` | 2000 | 100–100000 |
+| `backfill.horizon` | 365d | 7d–3650d |
+| `backfill.include_archive` | true | — |
+| `operations.idempotency_ttl` | 30d | 1d–365d |
+| `operations.pending_timeout` | 24h | 1h–7d |
+| `operations.wait_timeout` | 60s | 5s–10m |
+| `media.upload_max_bytes` | 104857600 | mutable downward only |
+| `media.cache_max_bytes` | 2 GiB | — |
+| `media.inline_mcp_image_max_bytes` | 1 MiB | — |
+| `oauth.*` | §9.6 | |
+| `backup.keep` | 7 | 1–100 |
+| `logging.level` | `info` | reloadable without restart |
+
+A retired key becomes an unknown key: setting one answers `invalid_request`
+naming its replacement, rather than silently writing a key nothing reads.
+
+### 15.2 Backup and restore
+
+`POST /v1/admin/backup` (or `agm admin backup`) writes
+`<data_dir>/backups/agent-gm-<timestamp>-<id>.sqlite3` using the **SQLite
+backup API**, not a file copy: pages are copied under the database's own
+locking and the copy restarts if a writer changes a page it has already taken,
+so the result is a usable database while the server keeps serving. The
+snapshot has no `-wal` sidecar and opens on its own. The caller does not
+choose the path.
+
+After each successful backup the newest `backup.keep` snapshots are kept and
+older ones deleted, each removal audited as `admin.backup_pruned`. Pruning
+never touches a file not named `agent-gm-<timestamp>-<id>.sqlite3`, and a file
+it cannot delete is logged and left rather than failing a backup that had
+already succeeded. **Retention counts calls, not days** — an hourly cron with
+`backup.keep=7` keeps seven hours.
+
+**A complete backup is three things and they move together:**
+
+1. the snapshot (or the whole `data/` directory),
+2. `session.enc`,
+3. `AGENT_GM_DATA_KEY`.
+
+Without (3), (2) is unreadable and cached media is unreadable. Restore = put
+all three back. If only (1) and (3) survive, the server starts unpaired and
+the owner re-pairs; because `account_key` is derived from the phone (§4.1),
+re-pairing the same phone keeps every existing `conv_` and `msg_` ID.
+
+### 15.3 Health and diagnosis
+
+`GET /healthz` for liveness. `GET /v1/health` for everything else:
+`session.state`, `google.*` (§3.7), `backfill`, `counters`
+(`dropped_events`, `unknown_events`, `pending_operations`), `version`,
+`commit`, `source_url`, and the `client_source` this request resolved to.
+
+`agm session --watch` streams state changes for an operator watching a
+reconnect.
+
+### 15.4 Runbook
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `session envelope cannot be decrypted` at startup | `AGENT_GM_DATA_KEY` differs from the key that sealed `session.enc` | restore the original key. **There is no in-place rotation.** |
+| every write is `not_paired`, `session.state=bad_credentials` | tachyon token or cookies dead | `agm pair` again |
+| `session.state=unpaired`, `RevokePairData` in the audit log | the phone unpaired this device, or another device took the slot | `agm pair` again; see §3.2 |
+| new conversations fail with `config_version_stale` | the pinned `libgm` `ConfigVersion` is older than Google's | **bump the pin** (§3.6). This is the known status-4 failure and no amount of retrying fixes it |
+| every send is `not_default_sms_app` | Google Messages is not the phone's default SMS app | change it on the phone; `agm health` reports `is_default_sms_app` |
+| group creation always fails but direct chats work | the phone's *Group messaging* is set to "Send an SMS reply to all recipients" | set it to MMS on the phone (§11.4). Agent GM can only report this; it fails at Google |
+| sends time out with `phone_not_responding` | the phone is asleep or offline | wait; the operations are `pending` and the echo will settle them. **Do not resend.** |
+| `dropped_events` climbing | ingest is slower than the event stream | a bug; capture `agm admin diagnostics` and file it |
+| every caller collapses to one source in the audit log | `AGENT_GM_TRUSTED_PROXY_CIDRS` does not cover the tunnel container | fix the CIDR; compare `client_source` in `/v1/health` against the address you came from |
+| the process refuses to start naming a CIDR | a mistyped proxy list | fix it. This is deliberate (§12.3) |
+| a WAL checkpoint reports `busy` | a long-lived reader | not an error; the next pass finishes it |
+
+Hourly upkeep task: **optimize the FTS index, then checkpoint the WAL with
+`TRUNCATE`, in that order** — `optimize` writes, so checkpointing first would
+leave its pages in the log for the next pass to carry. The pass measures the
+log *file size*, not pragma page counts, because a successful `TRUNCATE`
+resets the log and therefore reports zero pages checkpointed, which is
+indistinguishable from having done nothing.
+
+### 15.5 Upgrading
+
+Migrations are the whole mechanism (§4.3). Pull the new image tag by digest,
+recreate the container, and the process migrates before it binds. Downgrade is
+not supported: a database at a higher `user_version` refuses to open.
+
+Upgrading the `libgm` pin is a **deliberate slice**, never part of a routine
+upgrade — see §3.6 for the required steps and the live gate.
+
+### 15.6 If the public URL ever has to change
+
+This is a migration, not a config edit. Changing `AGENT_GM_PUBLIC_URL`:
+
+1. invalidates every access and refresh token (they are audience-bound),
+2. orphans every registered OAuth client, because a client's redirect and the
+   issuer it verified are tied to the old origin,
+3. means claude.ai and ChatGPT connectors must be **removed and re-added by
+   hand**, each requiring a fresh enrollment code and a fresh approval.
+
+The procedure is: issue new enrollment codes, change the variable, restart,
+re-add each connector, then revoke the stale authorizations and clients. There
+is no way to make old tokens keep working, and no attempt should be made.
+
+---
