@@ -86,7 +86,7 @@ debated.
   is no user table and no tenant column; authorization is still the single
   question "is this token the owner's?" plus scopes. Multiple accounts are the
   owner's own accounts, not other people's, and a token that can read one can
-  read all of them (D28 — per-account scoping is deferred, not refused).
+  read all of them (D29 — per-account scoping is deferred, not refused).
 - **N5 — No outbox, no reconciliation loop.** Agent MX needed an outbox because
   it had to reconcile two systems of record (Matrix and Google). Agent GM has
   one. Sends are synchronous (§6.1).
@@ -2122,7 +2122,7 @@ The cursor encodes `(sent_at_ms, id)` so it is stable across equal timestamps.
 | `POST` | `/v1/auth/admin-session` | none — presents `AGENT_GM_ADMIN_SECRET` in the body | `{"secret": "..."}`. Returns an access token, a refresh token and the granted scopes. **See §9.7 for what an admin session carries.** |
 | `POST` | `/v1/auth/refresh` | none — presents the admin refresh token in the body | rotates it. Reuse of a spent token revokes the session. OAuth refresh tokens are refused here (§9.6) |
 | `GET` | `/v1/auth/whoami` | `messages:read` | `{authorization_id, kind, scopes, client_id, expires_at}` |
-| `POST` | `/v1/auth/sign-out` | `messages:read` | revokes the calling authorization's tokens. Same scope as `whoami`: a token that cannot read cannot ask who it is |
+| `POST` | `/v1/auth/logout` | `messages:read` | revokes the calling authorization's tokens. Named `logout`, not `sign-out`, on purpose: it ends a *token's* session and has nothing to do with signing a Google **account** out (§4.7). Same scope as `whoami`: a token that cannot read cannot ask who it is |
 | `GET` | `/v1/accounts` | `messages:read` | every account, whatever its state. `{id, google_account, label, state, state_reason, pairing_id, phone_id, phone_responding, paired_at, last_event_at}`. `google_account` is served because the owner needs to tell their accounts apart; it is never an ID and never in a URL |
 | `GET` | `/v1/accounts/{account_id}` | `messages:read` | one of them, plus that account's `google`, `backfill`, `sweep` and `counters` blocks — the same per-account object `GET /v1/health` embeds. The list route omits those four to keep a many-account listing small; that asymmetry is deliberate and is why `get_session` (§8.2) exists alongside `list_accounts` |
 | `PATCH` | `/v1/accounts/{account_id}` | `admin` | `{"label"?}` — a human name for a listing. Nothing else is mutable |
@@ -2424,17 +2424,20 @@ exclusions, and the reason for each:
 | `POST /v1/conversations/{id}/typing` | no lasting effect and no result a model can act on |
 | `GET /v1/messages/{id}/attachments` | its data is already inside `get_message`; a tool would only add a round trip |
 | `GET`, `DELETE /v1/uploads/{id}` | an agent that has just called `create_upload` already holds everything they would return |
-| `GET /v1/auth/whoami`, `POST /v1/auth/sign-out` | **credential self-management.** A model does not choose its own token, cannot act on the answer, and must not be able to log its client out mid-conversation. The client owns its credential; the model does not |
+| `GET /v1/auth/whoami`, `POST /v1/auth/logout` | **credential self-management.** A model does not choose its own token, cannot act on the answer, and must not be able to log its client out mid-conversation. The client owns its credential; the model does not |
 | `POST /v1/auth/admin-session`, `POST /v1/auth/refresh` | credential *issuance*. Reachable only by presenting a secret or a refresh token, neither of which a model holds |
-| `GET /v1/accounts/{account_id}/events` | a stream; MCP tools are request/response. `get_session` answers the same question at a point in time |
+| `GET /v1/accounts/{account_id}/events` and its all-accounts form | a **stream**; MCP tools are request/response. `get_session` and `list_accounts` answer the same question at a point in time |
+| `GET /v1/attachments/{id}/content` | served as an MCP **resource**, `agm://attachments/{id}`, not as a tool. Bytes belong in a resource so a client can fetch them without putting them through the model's context |
+| `GET /v1/operations` | `get_operation` covers the ID-addressed case, the only one a model reaches: it holds the `operation_id` the write returned. Listing operations is an owner's audit question, served by `agm operations list` |
 | all `/v1/pairing/*` | `admin` scope. Pairing is a physical act at the owner's browser and phone (§11.4); no token an agent can hold reaches these |
-| `PATCH`, `DELETE /v1/accounts/{id}`, `/sign-out`, `/reconnect`, `/refresh-cookies`, `/events` | `admin` scope, or a stream. Signing an account out and **deleting** its history are owner acts with confirmation prompts; a model must not be able to do either. `list_accounts` and `get_session` give it everything it can act on |
+| `PATCH`, `DELETE /v1/accounts/{id}`, `/sign-out`, `/reconnect`, `/refresh-cookies` | `admin` scope. Signing an account out and **deleting** its history are owner acts with confirmation prompts; a model must not be able to do either. `list_accounts` and `get_session` give it everything it can act on |
 | every `/v1/admin/*` | `admin` scope, same reason. The two diagnostics an agent genuinely needs — backfill progress and the two settings that break sending — are served by `get_health` instead, without exposing the raw Google view |
 
-So the rule is: **every `/v1` route carrying a `messages:*` scope has a tool,
-except the three named in the first three rows above.** Every `admin`-scoped
-route and every credential route has none, by design. §16 Slice 3 test 16 is a
-two-way table test over exactly that statement.
+So the rule is: **every `/v1` route carrying a `messages:*` scope is served to
+MCP in exactly one of three ways — as a tool, as a resource, or as a named
+exclusion above.** Every `admin`-scoped route and every credential route is
+served in none of the three, by design. §16 Slice 3 test 16 is a two-way table
+test over exactly that statement, with three categories rather than two.
 
 **Reads — `messages:read`**
 
@@ -2604,16 +2607,20 @@ reproduced verbatim in `docs/mcp.md` so the two can be diffed by a test.
 > account only — the other person keeps their copy, always.
 >
 > 1. **Find the conversation.** `list_conversations` with `participant` set
->    to a phone number — add `account_id` to look in one account, or leave it
->    out to search them all (`+15105550123`, or the bare digits, or a national
->    form) returns the threads that number is in, newest activity first. With
->    only a name, use `query`, a substring match over the thread name and
->    every participant's name and number. `list_contacts` maps names to
+>    to a phone number (`+15105550123`, the bare digits, or a national form)
+>    returns the threads that number is in, newest activity first. Add
+>    `account_id` to look in one account, or leave it out to look in all of
+>    them — results carry `account_id` either way. With only a name, use
+>    `query`, a substring match over the thread name and every participant's
+>    name and number. `sender: "me"` means the owner in whichever account a
+>    message belongs to, so it works across accounts as well as within one.
+>    `list_contacts` maps names to
 >    numbers.
 > 2. **Read it.** `list_messages` with that `conversation_id`. Newest first,
 >    so the first item is the latest message. Pass the result's `next_cursor`
 >    back as `cursor` for the next page; page size defaults to 50 and caps at
->    100. `search_messages` needs `q` and searches the whole account.
+>    100. `search_messages` needs `q`; it searches **every** account unless
+>    you pass `account_id`.
 > 3. **Reply.** `send_message` with the `conversation_id`, `text`, and a
 >    `client_request_id` you invent. Add `reply_to_message_id` to thread a
 >    reply — **but replies are an RCS feature; on an `sms_mms` conversation
@@ -2630,8 +2637,10 @@ reproduced verbatim in `docs/mcp.md` so the two can be diffed by a test.
 > 5. **Send a photo or a file.** `create_upload` with the filename, mime type
 >    and byte length; run the `curl` command it returns, with `FILE` replaced
 >    by the path; then `send_message` with `upload_ids: ["upl_…"]` and
->    optionally `text` as a caption. You cannot attach a file through this
->    protocol any other way, and base64 through the model is not acceptable.
+>    optionally `text` as a caption. An upload is **not** tied to an account —
+>    the conversation you send it into decides that — but it can be sent only
+>    once. You cannot attach a file through this protocol any other way, and
+>    base64 through the model is not acceptable.
 > 6. **Start a new thread.** `start_conversation` with `recipients` as E.164
 >    phone numbers. One recipient is a direct chat; two or more is a group,
 >    and `name` is only accepted for a group. **If a thread with exactly
@@ -2857,7 +2866,17 @@ callback carrying `error`, `state`, and the RFC 9207 `iss`:
 The page sets `agm_oauth_context`, a signed cookie with `Path=/oauth`,
 `HttpOnly`, `Secure`, `SameSite=Lax`. The form carries the signed context, an
 anti-CSRF `form_token`, hidden echoes of the OAuth parameters, one `scope`
-checkbox per requested scope, and an `enrollment_code` text input.
+checkbox per requested scope, an `enrollment_code` text input, and — **because
+scopes are global across accounts (D29)** — a fixed disclosure line above the
+scope checkboxes, rendered verbatim:
+
+> *"This will let the client read and send as **any** Google account on this
+> server, including accounts added later."*
+
+followed by the current accounts' labels and addresses, so the owner approves
+knowing what is in scope. That sentence is part of the screen's contract and is
+asserted as a string by §16 Slice 3, which is what makes §9.7's claim to
+honesty testable rather than aspirational.
 
 `POST /oauth/authorize` verifies, **in this order**: `Origin` when present,
 the cookie, the signed context, that the cookie's handle hashes to the
@@ -2887,7 +2906,9 @@ the value is returned, and only its SHA-256 is stored. `expires_in` is a
 duration string or seconds, defaulting to `settings.oauth.enrollment_default_ttl`
 (15m, bounds 1m–24h), capped at 24 hours. `scopes` replaces the default
 ceiling `messages:read messages:write`; `allow_scopes` extends it; they are
-mutually exclusive. **`admin` can never be enrolled.**
+mutually exclusive. **`admin` can never be enrolled.** Enrollment codes carry
+**no account dimension**, consistent with D29: a code caps which scopes may be
+granted, never which accounts they reach.
 
 `GET`/`DELETE /v1/admin/enrollment-codes[/{id}]` list, show and revoke.
 Revocation takes its reason as the query parameter `?reason=`, and repeating
@@ -3021,14 +3042,15 @@ read a message would be useless. Two consequences:
 A `messages:write` token that lacks `messages:delete` neither sees the two
 delete tools in `tools/list` nor may call them.
 
-**Scopes are global across accounts** (D28). A token holding `messages:read`
+**Scopes are global across accounts** (D29). A token holding `messages:read`
 reads every account this server holds; one holding `messages:write` can send
 from any of them. Per-account scoping — `messages:write:acct_…` — is
 **deferred, not refused**: it needs a scope grammar, a UI for choosing accounts
 at the authorization screen, and enrollment ceilings that can name accounts
 that may not exist yet. Until then the honest statement is the one the
-authorization screen makes: *"this will let the client read and send as any
-Google account on this server."* An owner who needs a genuinely separated
+authorization screen renders verbatim above its scope checkboxes (§9.4),
+naming the accounts currently in scope and saying that later ones are
+included too. An owner who needs a genuinely separated
 account runs a second Agent GM.
 
 ### 9.8 Budgets on unauthenticated endpoints
