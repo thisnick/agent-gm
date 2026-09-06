@@ -137,6 +137,7 @@ func (q ConversationQuery) sql() (string, []any) {
 	switch {
 	case q.ParticipantID != "":
 		b.and(`EXISTS (SELECT 1 FROM participants p
+		                -- all-accounts: a part_ ID already carries its account (section 4.1).
 		                WHERE p.conversation_id = c.id AND p.id = ?)`, q.ParticipantID)
 	case q.ParticipantPhone != "":
 		// With account_id this is participants(account_id, phone_e164);
@@ -148,6 +149,8 @@ func (q ConversationQuery) sql() (string, []any) {
 			                  AND p.conversation_id = c.id)`, q.AccountID, q.ParticipantPhone)
 		} else {
 			b.and(`EXISTS (SELECT 1 FROM participants p
+			                -- all-accounts: a raw number is not account-specific, so it
+			                -- matches in every account and the rows carry account_id (7.6).
 			                WHERE p.phone_e164 = ? AND p.conversation_id = c.id)`, q.ParticipantPhone)
 		}
 	}
@@ -222,8 +225,8 @@ type MessageQuery struct {
 	Limit               int
 }
 
-func (q MessageQuery) where() builder {
-	var b builder
+func (q MessageQuery) where() *builder {
+	b := &builder{}
 	if q.AccountID != "" {
 		b.and("m.account_id = ?", q.AccountID)
 	}
@@ -247,7 +250,11 @@ func (q MessageQuery) where() builder {
 			b.and(`m.sender_participant IN (SELECT p.id FROM participants p
 			                                 WHERE p.account_id = ? AND p.is_me = 1)`, q.AccountID)
 		} else {
-			b.and(`m.sender_participant IN (SELECT p.id FROM participants p WHERE p.is_me = 1)`)
+			b.and(`m.sender_participant IN (SELECT p.id FROM participants p
+			                                 -- all-accounts: sender=me is resolved per account,
+			                                 -- so a cross-account query means EVERY account's
+			                                 -- own participant (section 7.6).
+			                                 WHERE p.is_me = 1)`)
 		}
 	case q.SenderPhone != "":
 		if q.AccountID != "" {
@@ -256,6 +263,8 @@ func (q MessageQuery) where() builder {
 				q.AccountID, q.SenderPhone)
 		} else {
 			b.and(`m.sender_participant IN (SELECT p.id FROM participants p
+			                                 -- all-accounts: a raw number is not account-specific
+			                                 -- and matches in every account (section 7.6).
 			                                 WHERE p.phone_e164 = ?)`, q.SenderPhone)
 		}
 	}

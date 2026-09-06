@@ -309,7 +309,9 @@ func (s *Store) SetOperationTmpID(ctx context.Context, operationID, tmpID string
 	now := s.clock.Now().UnixMilli()
 	return s.Write(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx,
-			`UPDATE operations SET tmp_id = ?, updated_at_ms = ? WHERE id = ?`,
+			`UPDATE operations SET tmp_id = ?, updated_at_ms = ?
+			 -- all-accounts: an op_ ID already carries its account (section 4.1).
+			 WHERE id = ?`,
 			tmpID, now, operationID)
 		return err
 	})
@@ -336,7 +338,9 @@ func (s *Store) SettleOperation(ctx context.Context, operationID string, st Sett
 	now := s.clock.Now().UnixMilli()
 	var out Operation
 	err := s.Write(ctx, func(tx *sql.Tx) error {
-		row := tx.QueryRowContext(ctx, `SELECT `+operationColumns+` FROM operations WHERE id = ?`, operationID)
+		row := tx.QueryRowContext(ctx, `SELECT `+operationColumns+`
+			 -- all-accounts: an op_ ID already carries its account (section 4.1).
+			 FROM operations WHERE id = ?`, operationID)
 		cur, err := scanOperation(row)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrOperationNotFound
@@ -363,6 +367,7 @@ func (s *Store) SettleOperation(ctx context.Context, operationID string, st Sett
 		}
 
 		_, err = tx.ExecContext(ctx, `
+			-- all-accounts: an op_ ID already carries its account (section 4.1).
 			UPDATE operations SET
 			    status            = ?,
 			    terminal          = ?,
@@ -383,7 +388,9 @@ func (s *Store) SettleOperation(ctx context.Context, operationID string, st Sett
 		if err != nil {
 			return err
 		}
-		row = tx.QueryRowContext(ctx, `SELECT `+operationColumns+` FROM operations WHERE id = ?`, operationID)
+		row = tx.QueryRowContext(ctx, `SELECT `+operationColumns+`
+			 -- all-accounts: an op_ ID already carries its account (section 4.1).
+			 FROM operations WHERE id = ?`, operationID)
 		out, err = scanOperation(row)
 		return err
 	})
@@ -438,6 +445,7 @@ func (s *Store) RecoverRunningOperations(ctx context.Context) ([]Operation, erro
 			return nil
 		}
 		if _, err := tx.ExecContext(ctx, `
+			-- all-accounts: crash recovery is process-wide, not per account (section 6.6).
 			UPDATE operations
 			   SET status = 'unknown', terminal = 1,
 			       terminal_at_ms = COALESCE(terminal_at_ms, ?),
@@ -447,7 +455,9 @@ func (s *Store) RecoverRunningOperations(ctx context.Context) ([]Operation, erro
 		}
 		for _, id := range ids {
 			o, err := scanOperation(tx.QueryRowContext(ctx,
-				`SELECT `+operationColumns+` FROM operations WHERE id = ?`, id))
+				`SELECT `+operationColumns+`
+				 -- all-accounts: crash recovery is process-wide (section 6.6).
+				 FROM operations WHERE id = ?`, id))
 			if err != nil {
 				return err
 			}
@@ -489,6 +499,7 @@ func (s *Store) ReapPendingOperations(ctx context.Context, timeoutMS int64) ([]O
 		}
 		for _, id := range ids {
 			if _, err := tx.ExecContext(ctx, `
+				-- all-accounts: the pending_timeout reaper is process-wide (section 6.6).
 				UPDATE operations
 				   SET status = 'unknown', terminal = 1,
 				       terminal_at_ms = COALESCE(terminal_at_ms, ?),
@@ -497,7 +508,9 @@ func (s *Store) ReapPendingOperations(ctx context.Context, timeoutMS int64) ([]O
 				return err
 			}
 			o, err := scanOperation(tx.QueryRowContext(ctx,
-				`SELECT `+operationColumns+` FROM operations WHERE id = ?`, id))
+				`SELECT `+operationColumns+`
+				 -- all-accounts: the pending_timeout reaper is process-wide (section 6.6).
+				 FROM operations WHERE id = ?`, id))
 			if err != nil {
 				return err
 			}

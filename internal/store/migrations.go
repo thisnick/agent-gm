@@ -429,8 +429,13 @@ var migration0002 = migration{
 		    INSERT INTO messages_fts(rowid, text, subject) VALUES (new.rowid, new.text, new.subject);
 		 END`,
 		// Rows written before this migration are indexed once, here, rather
-		// than by a hand-written data migration.
-		`INSERT INTO messages_fts(rowid, text, subject) SELECT rowid, text, subject FROM messages`,
+		// than by a hand-written data migration. It reads every account's
+		// messages on purpose -- a migration is not a query on behalf of a
+		// caller, so the account-predicate rule of section 13.2 does not
+		// apply to it and the marker says so explicitly rather than leaving
+		// the scan looking like an oversight.
+		`-- all-accounts: a migration indexes every row, for every account
+		 INSERT INTO messages_fts(rowid, text, subject) SELECT rowid, text, subject FROM messages`,
 	},
 }
 
