@@ -5007,6 +5007,26 @@ below 2:
 
 ### 18.2 Open questions for the owner
 
+**Owner answers, 2026-09-06 ("lgtm").** Every question below is now decided;
+the table is kept as the record of what was asked.
+
+| # | Decision |
+|---|---|
+| OQ-1 backfill depth | Keep the defaults: 2000 messages per conversation, 365-day horizon, applied per account |
+| OQ-2 pruning | None. Revisit when the database is measurably large |
+| OQ-3 OAuth approval | CLI only (`agm admin authorization-requests approve`). No approval page in v1 |
+| OQ-4 npm | Publish as `@agent-gm/cli` under the `agent-gm` org; publish from CI only |
+| OQ-5 GHCR image | Public |
+| OQ-6 concurrent accounts | Default `accounts.max_concurrent = 8`; extra accounts `parked` |
+| OQ-7 outage notification | No notification channel; state is visible in `agm health` and `GET /v1/health` |
+| test numbers / group | The three approved numbers stand (private notes); the live-gate group is kept as a standing test thread |
+| phone Group messaging | Owner confirms it is set to MMS |
+
+The owner also asked that work be published to GitHub continuously: every
+accepted slice is pushed, and implementers push their branch at the end of
+each working session rather than only at review time.
+
+
 Seven questions remain. Everything the first review could answer from the
 pinned source has been answered and moved into §18.1 or §18.3.
 
