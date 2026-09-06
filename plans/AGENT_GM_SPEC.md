@@ -211,7 +211,6 @@ type Backend interface {
     // pairing
     StartGooglePairing(ctx context.Context, cookies map[string]string, deviceIndex int, emoji func(string)) (PairedDevice, error)
     RefreshGoogleCookies(ctx context.Context, cookies map[string]string) error
-    Unpair(ctx context.Context) error
 
     // reads
     ListConversations(ctx context.Context, folder Folder, count int) ([]Conversation, error)
@@ -302,17 +301,17 @@ of contract, and adding a call is a spec change.
 | `libgm.NewAuthData()` | `() *AuthData` | fresh `AuthData` with a new AES-CTR request-crypto helper and a new ECDSA refresh key. Used only when pairing from scratch. |
 | `libgm.NewClient` | `(authData *AuthData, pk *PushKeys, logger zerolog.Logger) *Client` | the client. Agent GM always passes `pk == nil` (no web push; see §3.4). |
 | `(*Client).SetEventHandler` | `(EventHandler)` where `EventHandler = func(evt any)` | registers the single event sink. **Called synchronously; must not block or make outgoing requests.** |
-| `(*Client).FetchConfig` | `(ctx) error` | fetches Google's live `Config`, stores it on `c.Config`, and parses `DeviceInfo.DeviceID` into `AuthData.SessionID`. Logs (at trace) when the compiled-in `util.ConfigMessage` differs from live. Agent GM calls this once before `Connect` and surfaces the compiled/live version pair in `GET /v1/health` (§3.7). |
-| `(*Client).Connect` | `() error` | refreshes the tachyon token synchronously so bad credentials surface immediately, then starts long polling. **This is the only connect path Agent GM uses.** |
-| `(*Client).ConnectBackground` | `() error` | one-shot poll for push-woken processes. Agent GM does **not** use it. |
+| `(*Client).FetchConfig` | `(ctx) error` | fetches Google's live `Config`, stores it on `c.Config`, and parses `DeviceInfo.DeviceID` into `AuthData.SessionID` (`client.go:389`). Logs (at trace) when the compiled-in `util.ConfigMessage` differs from live. Agent GM calls this **once per account, before that account's `Connect`**, and surfaces the compiled/live pair per account in `GET /v1/health` (§3.7). |
+| `(*Client).Connect` | `() error` | refreshes the tachyon token synchronously so bad credentials surface immediately, then starts long polling. **The only connect path Agent GM uses**, once per account. |
+| `(*Client).ConnectBackground` | `() error` | **not called**; a one-shot poll for push-woken processes. |
 | `(*Client).Disconnect` | `()` | closes long polling and fails every in-flight response waiter with `ErrConnectionClosed`. |
 | `(*Client).Reconnect` | `() error` | close + re-check login + restart polling. Agent GM calls this only from its own supervisor after `ListenFatalError` that is not a credential error. |
 | `(*Client).IsConnected` | `() bool` | long-poll connection is non-nil. Upstream notes it is imprecise during reconnects; Agent GM treats it as advisory only. |
 | `(*Client).IsLoggedIn` | `() bool` | `AuthData != nil && AuthData.Browser != nil && AuthData.HasCookies()`. This is the authoritative "are we paired" check. |
-| `(*Client).CurrentSessionID` | `() string` | the session handler's current UUID; changes on every `SetActiveSession`. Recorded in the audit log on connect. |
-| `(*Client).SetProxy` | `(string) error` | unused; Agent GM has no proxy support. |
-| `(*Client).SetPingInterval` | `(time.Duration)` | clamped to `[1m, 4h)`. Agent GM leaves the default 1m. |
-| `(*Client).SetDataReceiveCheckInterval` | `(time.Duration)` | intervals under 5m ignored. Agent GM leaves the default `DefaultBugleDefaultCheckInterval` = 2h55m. |
+| `(*Client).CurrentSessionID` | `() string` | the session handler's current UUID; changes on every `SetActiveSession`. Recorded in that account's `account.state_changed` audit row on connect, with its `account_id` (§12.4). |
+| `(*Client).SetProxy` | `(string) error` | **not called**; Agent GM has no proxy support. |
+| `(*Client).SetPingInterval` | `(time.Duration)` | **not called**; clamped to `[1m, 4h)` upstream, and Agent GM leaves the default 1m. |
+| `(*Client).SetDataReceiveCheckInterval` | `(time.Duration)` | **not called**; intervals under 5m are ignored upstream, and Agent GM leaves the default `DefaultBugleDefaultCheckInterval` = 2h55m. |
 
 `libgm.AuthData` is the entire session. Its JSON tags are the on-disk format
 Agent GM persists (§3.3). Fields: `RequestCrypto` (`*crypto.AESCTRHelper`),
@@ -332,14 +331,25 @@ payloads (`pair.go:93,115`), never as a runtime network value.
 | `(*Client).DoGaiaPairing` | `(ctx, emojiCallback func(string)) error` | Google-account flow, start to finish: `StartGaiaPairing`, hand the emoji to the callback, `FinishGaiaPairing`, emit `events.PairSuccessful`, reconnect in a goroutine. **This is the call Agent GM uses for the Google-account flow.** |
 | `(*Client).StartGaiaPairing` | `(ctx) (string, *PairingSession, error)` | requires cookies (`ErrNoCookies` otherwise); signs in, enumerates the account's devices, **selects one by last-seen and `GaiaHackyDeviceSwitcher` — it does not error on several (§3.2)** — and returns the emoji to display. `pair_google.go:321-414`. |
 | `(*Client).FinishGaiaPairing` | `(ctx, *PairingSession) (string, error)` | completes UKEY2, derives the request-crypto keys, sets `AuthData.PairingID`, returns `"<mobile sourceID>/<destRegDevice int>"` as the phone ID. |
-| `(*Client).Unpair` | `(ctx) error` | dispatches to `UnpairGaia` when cookies are present, else `UnpairBugle` (`pair.go:159-166`). Agent GM only ever pairs with cookies (D19), so in practice it **always** takes the `UnpairGaia` branch; `UnpairBugle` is unreachable. **The only unpair call Agent GM makes.** |
+| `(*Client).PairCallback` | — | **not called.** Listed only because leaving it nil is load-bearing: see the prose below |
 | `(*Client).GaiaHackyDeviceSwitcher` | `int` field (`client.go:143`) | selects among several primary-looking devices as `primaryDevices[switcher % len]` after a newest-first sort (`pair_google.go:364`). Agent GM exposes it as `agm pair --device-index N` and as `device_index` on `POST /v1/pairing/start`. |
 
-`PairCallback` is **not** in this contract. It fires only from
+**Symbols in this table that Agent GM deliberately does *not* call** are marked
+"not called" and are listed only because *not* calling them is part of the
+contract: `PairCallback`, `SetProxy`, `ConnectBackground`, `SetPingInterval`
+and `SetDataReceiveCheckInterval`. `PairCallback` in particular fires only from
 `completePairing`, reached only via `handlePairingEvent` on a
 `BugleRoute_PairEvent` — the withdrawn QR flow (D19). The gaia path emits
-`PairSuccessful` directly from `DoGaiaPairing` (`pair_google.go:310`), so the
-callback is unreachable here and Agent GM never sets it.
+`PairSuccessful` directly from `DoGaiaPairing` (`pair_google.go:310`), so it is
+unreachable here and Agent GM never sets it.
+
+**`Unpair`, `UnpairGaia` and `UnpairBugle` are out of contract.** Agent GM has
+no unpair operation: signing an account out (§4.7) shreds the local session and
+leaves Google's device list alone, and removing an account deletes Agent GM's
+copy of the data. Neither tells Google to revoke the pairing — that is done in
+the Google Messages app on the phone, which is the only place the owner can see
+the full device list anyway. `RevokePairData` arriving *from* the phone is
+handled (§3.4); Agent GM never sends the corresponding request.
 
 Upstream behaviours Agent GM depends on and must not re-implement:
 
@@ -356,7 +366,7 @@ Google-account pairing errors, all from `pair_google.go`, all mapped in §3.5:
 
 | Symbol | Signature | Returns |
 |---|---|---|
-| `(*Client).ListConversations` | `(ctx, count int, folder gmproto.ListConversationsRequest_Folder) (*gmproto.ListConversationsResponse, error)` | `.Conversations []*conversations.Conversation`, `.Cursor *Cursor`. **First call in a process sends `MessageType_BUGLE_ANNOTATION`, every later call `BUGLE_MESSAGE`** — the library tracks this with `conversationsFetchedOnce`. Agent GM must therefore call `ListConversations` at least once per process before relying on live conversation events. |
+| `(*Client).ListConversations` | `(ctx, count int, folder gmproto.ListConversationsRequest_Folder) (*gmproto.ListConversationsResponse, error)` | `.Conversations []*conversations.Conversation`, `.Cursor *Cursor`. **The first call on each `Client` sends `MessageType_BUGLE_ANNOTATION`, every later call `BUGLE_MESSAGE`** — the library tracks it with `conversationsFetchedOnce`, which is **per `Client`, therefore per account** (`client.go:141`). Agent GM must call `ListConversations` at least once **per account's client** before relying on that account's live conversation events; one call on one account does nothing for another. |
 | `(*Client).GetConversation` | `(ctx, conversationID string) (*gmproto.Conversation, error)` | one conversation, already unwrapped from the response. |
 | `(*Client).GetConversationType` | `(ctx, conversationID string) (*gmproto.GetConversationTypeResponse, error)` | used only to disambiguate SMS vs RCS when a conversation record is incomplete. |
 | `(*Client).FetchMessages` | `(ctx, conversationID string, count int64, cursor *gmproto.Cursor) (*gmproto.ListMessagesResponse, error)` | `.Messages []*Message`, `.TotalMessages int64`, `.Cursor *Cursor`. This is the backfill primitive (§5.2). |
@@ -445,7 +455,7 @@ result — the underlying HTTP request runs to completion.
 #### Events — `pkg/libgm/event_handler.go`, `pkg/libgm/events/`
 
 See §3.4 for the full event catalogue.
-### 3.2 Pairing flows and what the owner does on the phone
+### 3.2 Pairing, and what the owner does on the phone
 
 Agent GM implements **one** pairing flow: the Google-account (gaia) flow.
 `agm pair` drives it end to end (§11.4), and `agm pair --paste` is the
@@ -486,8 +496,9 @@ Upstream's own capture URL is
 `https://accounts.google.com/AccountChooser?continue=https://messages.google.com/web/config`
 (`login.go:229`).
 
-1. Owner runs `agm pair` — the default (§11.4) — or
-   `POST /v1/pairing/start {"method":"google", ...}`.
+1. Owner runs `agm pair` (§11.4), or `POST /v1/pairing/start` with the
+   captured cookies (§7.5). **This adds an account, or resumes an existing
+   one** (§4.7).
 2. Agent GM calls `AuthData.SetCookies` and then
    `DoGaiaPairing(ctx, emojiCallback)` (`pair_google.go:300-320`).
 3. `StartGaiaPairing` (`pair_google.go:321-414`) signs in and enumerates the
@@ -633,9 +644,11 @@ account is refused with `pairing_wrong_account` and changes nothing.
 When cookies die without a refresh, the long poll emits
 `events.GaiaLoggedOut` — delivered as a `GET_UPDATES` data event whose
 unencrypted payload is exactly `{0x72, 0x00}`
-(`event_handler.go:226-232`, `hackyLoggedOutBytes`). Agent GM marks the
-session `signed_out`; reads keep working, writes return `not_paired`, and the
-fix is a cookie refresh, not a re-pair.
+(`event_handler.go:226-232`, `hackyLoggedOutBytes`). Agent GM sets **that account's** state to `signed_out`. Its reads keep
+working; its writes are refused with `unsupported_capability` and
+`details.reason = "not_signed_in"` — **not** `not_paired`, which means the
+server holds no accounts at all (§7.2, §7.8). Other accounts are unaffected.
+The fix is a cookie refresh, not a re-pair (above).
 
 #### Concurrent Google Messages Web use
 
@@ -654,8 +667,10 @@ resync. The cost is bandwidth and backfill churn, not the pairing.
 `Unpair(ctx)` (`pair.go:159-166`) dispatches to `UnpairGaia` when cookies are
 present, else `UnpairBugle`. If the *phone* ends the pairing, the long poll
 produces `events.PingFailed` wrapping `events.ErrRequestedEntityNotFound`, or
-a `*gmproto.RevokePairData` event (`pair.go:50-51`). Agent GM treats both as
-session invalidation: mark `unpaired`, stop the poller, require a fresh pair.
+a `*gmproto.RevokePairData` event (`pair.go:50-51`). Agent GM treats both as invalidation **of that account**: set its state to
+`signed_out`, stop *its* poller and ingest goroutine, and require a fresh pair
+for it. Its history is untouched (§4.7), and every other account keeps
+running.
 
 Agent GM never pairs implicitly. `agm pair` is always explicit, always
 interactive or `--yes`-gated, and always writes an audit record.
@@ -863,11 +878,13 @@ cited is not a library claim and belongs in §18.1 as a field observation.
 Every item here is cited. Where Agent GM behaves on something that is *not*
 in the pinned tree, it says so and points at §18.1.
 
-- **`ListConversations` must be called once per process before live
-  conversation events are trustworthy.** The first call sends
-  `MessageType_BUGLE_ANNOTATION` and later calls `BUGLE_MESSAGE`
-  (`methods.go:9-20`, `client.go:141` `conversationsFetchedOnce`). Agent GM
-  always issues one on connect.
+- **`ListConversations` must be called once per account before that account's
+  live conversation events are trustworthy.** The first call on a `Client`
+  sends `MessageType_BUGLE_ANNOTATION` and later calls `BUGLE_MESSAGE`
+  (`methods.go:9-20`, `client.go:141` `conversationsFetchedOnce`), and the flag
+  lives on the `Client`, of which there is one per account. Agent GM issues one
+  on every account's connect. Satisfying the rule for one account leaves
+  another account's conversation events untrustworthy.
 - **`SendMessageResponse.Status`** is `UNKNOWN=0, SUCCESS=1, FAILURE_2=2,
   FAILURE_3=3, FAILURE_4=4` (`gmproto/client.pb.go`). `FAILURE_2` and
   `FAILURE_3` are transient and retried on `[3s, 8s, 20s]`
