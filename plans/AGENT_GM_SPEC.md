@@ -1488,7 +1488,10 @@ is no in-place rotation.
 Two public fields are computed rather than stored raw, because the raw values
 are `gmproto` internals that mean nothing to a caller (§18.1 rubric):
 
-- **`conversation_type`** is `sms_mms` for `ConversationType_SMS(1)`, `rcs` for
+- **`conversation_type`** — the column; it is served as **`type`** on the
+  conversation DTO and filtered by **`type`** on `GET /v1/conversations`
+  (§7.6), because inside a conversation object the noun is already implied.
+  It is `sms_mms` for `ConversationType_SMS(1)`, `rcs` for
   `RCS(2)`, `unknown` for `0`. Google's own SMS conversation carries MMS too,
   which is why the public value names both.
 - **`capabilities.force_rcs`** is true exactly when
@@ -1991,6 +1994,18 @@ Success:
 ```json
 { "data": {}, "next_cursor": null, "warnings": [], "request_id": "req_..." }
 ```
+
+**A listing puts its rows in `data.items`**, never in `data` as a bare array:
+
+```json
+{ "data": { "items": [ { "id": "conv_..." } ] },
+  "next_cursor": "…", "warnings": [], "request_id": "req_..." }
+```
+
+`data` is an object on every route, so a listing that later needs to carry a
+sibling of its rows — `coverage` on search (§7.6) is already one — adds a key
+rather than changing its shape, and a client's parser never has to ask which
+of the two kinds of `data` it is holding.
 
 Error:
 
@@ -3359,7 +3374,9 @@ agm auth login [--admin] [--server <url>] [--scopes ...] [--no-browser]
 agm auth logout
 agm auth whoami
 
-agm admin settings list|get|set
+agm admin settings list
+agm admin settings get <key>
+agm admin settings set <key>=<value> [<key>=<value>...]
 agm admin enrollment-codes create|list|show|revoke
 agm admin authorization-requests list|show|approve|deny
 agm admin authorizations list|show|revoke
@@ -3387,7 +3404,9 @@ with `--account`. `agm pair` covers `POST`/`GET`/`DELETE /v1/pairing/*` —
 abandoning is Ctrl-C, which issues the `DELETE`. `agm reconnect` is
 `POST /v1/accounts/{id}/reconnect`. `agm session --watch` consumes
 `GET /v1/accounts/{id}/events`, or the all-accounts form when `--account` is
-omitted. `agm operations wait` polls
+omitted. `agm admin settings set` takes one or more `key=value` pairs and sends them
+as one `PATCH`, so the whole-body validation of §7.7 applies: any invalid key
+rejects the command and changes nothing. `agm operations wait` polls
 `GET /v1/operations/{id}` on the client side and takes its default bound from
 the server's `operations.wait_timeout` setting, reported by
 `GET /v1/admin/settings`.

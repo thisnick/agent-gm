@@ -194,6 +194,51 @@ func (s *Store) TouchAccountEvent(ctx context.Context, accountID string, at time
 	})
 }
 
+// SetAccountLastSweep records when this account's reconciliation sweep last
+// ran (spec section 5.4 step 4).
+//
+// It moves only forward, like TouchAccountEvent: two sweeps for one account
+// can overlap -- a timer sweep and a BROWSER_ACTIVE sweep, say -- and the
+// slower one finishing second must not rewind the record and cause the next
+// sweep to re-walk ground the faster one already covered.
+//
+// It is a column on accounts and never a server_meta key: two accounts would
+// race on one row and the first to finish would mark the whole server swept
+// (spec sections 4.2, 5.2).
+func (s *Store) SetAccountLastSweep(ctx context.Context, accountID string, at time.Time) error {
+	ms := at.UnixMilli()
+	return s.Write(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx,
+			`UPDATE accounts
+			    SET last_sweep_at_ms = MAX(COALESCE(last_sweep_at_ms, 0), ?),
+			        updated_at_ms = ?
+			  WHERE id = ?`, ms, ms, accountID)
+		return err
+	})
+}
+
+// SetAccountBackfillComplete records when THIS account finished its initial
+// backfill (spec section 5.2 step 7).
+//
+// Unlike the sweep timestamp this is set once and is not monotonic: a
+// re-backfill after a re-pair legitimately re-stamps it, and an operator
+// asking "when did this account last finish walking its history?" wants the
+// latest answer rather than the first. Passing the zero time clears it, which
+// is what re-opening a backfill does.
+func (s *Store) SetAccountBackfillComplete(ctx context.Context, accountID string, at time.Time) error {
+	now := s.clock.Now().UnixMilli()
+	var value any
+	if !at.IsZero() {
+		value = at.UnixMilli()
+	}
+	return s.Write(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx,
+			`UPDATE accounts SET backfill_complete_at_ms = ?, updated_at_ms = ? WHERE id = ?`,
+			value, now, accountID)
+		return err
+	})
+}
+
 // SetAccountLabel sets the owner's human label. It is never an ID.
 func (s *Store) SetAccountLabel(ctx context.Context, accountID, label string) error {
 	now := s.clock.Now().UnixMilli()
