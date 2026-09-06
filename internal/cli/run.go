@@ -632,7 +632,15 @@ func printUsage(w io.Writer) {
 
 func printCommandHelp(w io.Writer, c *command) {
 	_, _ = fmt.Fprintf(w, "agm %s -- %s\n\n", c.Name(), c.summary)
-	_, _ = fmt.Fprintf(w, "Usage: agm %s %s [flags]\n", c.Name(), positionalUsage(c))
+	// A command that takes no arguments reads "Usage: agm health [flags]".
+	// Splicing positionalUsage in unconditionally gives "agm health no
+	// arguments [flags]", which is the sentence an error message wants and
+	// not the one a usage line does.
+	if len(c.pos) == 0 {
+		_, _ = fmt.Fprintf(w, "Usage: agm %s [flags]\n", c.Name())
+	} else {
+		_, _ = fmt.Fprintf(w, "Usage: agm %s %s [flags]\n", c.Name(), positionalUsage(c))
+	}
 	if len(c.flags) > 0 {
 		_, _ = fmt.Fprintln(w, "\nFlags:")
 		for _, f := range c.flags {
