@@ -149,7 +149,10 @@ func (s *Store) UpsertConversation(ctx context.Context, accountID string, c gm.C
 		if len(c.Participants) == 0 {
 			return nil
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM participants WHERE conversation_id = ?`, id); err != nil {
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM participants
+			   -- all-accounts: scoped by conversation_id, which carries the account (section 4.1).
+			   WHERE conversation_id = ?`, id); err != nil {
 			return err
 		}
 		for _, p := range c.Participants {
@@ -157,15 +160,15 @@ func (s *Store) UpsertConversation(ctx context.Context, accountID string, c gm.C
 				INSERT INTO participants (id, account_id, conversation_id, source_id, contact_id,
 				    display_name, first_name, phone_e164, formatted_number, identifier_type,
 				    is_me, is_visible)
-				VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-				ParticipantID(id, p.SourceID), accountID, id, p.SourceID, nullString(p.ContactID),
+				VALUES (?,?,?,?,NULL,?,?,?,?,?,?,?)`,
+				ParticipantID(id, p.SourceID), accountID, id, p.SourceID,
 				nullString(p.DisplayName), nullString(p.FirstName), nullString(p.PhoneE164),
 				nullString(p.FormattedNumber), nullString(p.IdentifierType), p.IsMe, p.IsVisible)
 			if err != nil {
 				return err
 			}
 		}
-		return nil
+		return linkParticipantContacts(ctx, tx, accountID, id)
 	})
 	return id, err
 }
@@ -199,7 +202,9 @@ func (s *Store) UpsertMessage(ctx context.Context, accountID, convSourceID strin
 		var existingHash, existingState, existingDirection string
 		var existingRaw int32
 		row := tx.QueryRowContext(ctx,
-			`SELECT content_hash, delivery_state, delivery_state_raw, direction FROM messages WHERE id = ?`, id)
+			`SELECT content_hash, delivery_state, delivery_state_raw, direction
+			   -- all-accounts: a msg_ ID already carries its account (section 4.1).
+			   FROM messages WHERE id = ?`, id)
 		switch err := row.Scan(&existingHash, &existingState, &existingRaw, &existingDirection); {
 		case errors.Is(err, sql.ErrNoRows):
 			_, err := tx.ExecContext(ctx, `
@@ -240,6 +245,7 @@ func (s *Store) UpsertMessage(ctx context.Context, accountID, convSourceID strin
 		}
 
 		_, err := tx.ExecContext(ctx, `
+			-- all-accounts: a msg_ ID already carries its account (section 4.1).
 			UPDATE messages SET
 			    kind                = ?,
 			    sender_participant  = COALESCE(?, sender_participant),
@@ -271,6 +277,7 @@ func (s *Store) BumpConversationActivity(ctx context.Context, conversationID, la
 	now := s.clock.Now().UnixMilli()
 	return s.Write(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
+			-- all-accounts: a conv_ ID already carries its account (section 4.1).
 			UPDATE conversations
 			   SET latest_message_id = CASE WHEN ? > last_activity_ms THEN ? ELSE latest_message_id END,
 			       last_activity_ms  = MAX(last_activity_ms, ?),
@@ -318,7 +325,9 @@ type ConversationFilter struct {
 // Conversations lists conversations, newest activity first with the ID as the
 // tiebreaker. Ordering is never by ingestion order.
 func (s *Store) Conversations(ctx context.Context, f ConversationFilter) ([]Conversation, error) {
-	q := `SELECT ` + conversationColumns + ` FROM conversations WHERE deleted_at_ms IS NULL`
+	q := `SELECT ` + conversationColumns + `
+	  -- all-accounts: section 7.3 makes omitting account_id the default for reads.
+	  FROM conversations WHERE deleted_at_ms IS NULL`
 	var args []any
 	if f.AccountID != "" {
 		q += ` AND account_id = ?`
@@ -350,7 +359,9 @@ func (s *Store) Conversations(ctx context.Context, f ConversationFilter) ([]Conv
 
 // Conversation reads one conversation by its conv_ ID.
 func (s *Store) Conversation(ctx context.Context, id string) (Conversation, error) {
-	row := s.read.QueryRowContext(ctx, `SELECT `+conversationColumns+` FROM conversations WHERE id = ?`, id)
+	row := s.read.QueryRowContext(ctx, `SELECT `+conversationColumns+`
+		   -- all-accounts: a conv_ ID already carries its account (section 4.1).
+		   FROM conversations WHERE id = ?`, id)
 	c, err := scanConversation(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, fmt.Errorf("conversation %s: %w", id, sql.ErrNoRows)
@@ -399,7 +410,9 @@ func (s *Store) Messages(ctx context.Context, f MessageFilter) ([]Message, error
 	if f.AccountID == "" && f.ConversationID == "" && !f.AllAccounts {
 		return nil, errors.New("store.Messages: pass an AccountID, a ConversationID, or set AllAccounts")
 	}
-	q := `SELECT ` + messageColumns + ` FROM messages WHERE 1=1`
+	q := `SELECT ` + messageColumns + `
+	  -- all-accounts: section 7.3 makes omitting account_id the default for reads.
+	  FROM messages WHERE 1=1`
 	var args []any
 	if f.AccountID != "" {
 		q += ` AND account_id = ?`
@@ -434,7 +447,9 @@ func (s *Store) Messages(ctx context.Context, f MessageFilter) ([]Message, error
 
 // Message reads one message by its msg_ ID.
 func (s *Store) Message(ctx context.Context, id string) (Message, error) {
-	row := s.read.QueryRowContext(ctx, `SELECT `+messageColumns+` FROM messages WHERE id = ?`, id)
+	row := s.read.QueryRowContext(ctx, `SELECT `+messageColumns+`
+		   -- all-accounts: a msg_ ID already carries its account (section 4.1).
+		   FROM messages WHERE id = ?`, id)
 	return scanMessage(row)
 }
 
@@ -451,6 +466,7 @@ func (s *Store) Participants(ctx context.Context, conversationID string) ([]gm.P
 	rows, err := s.read.QueryContext(ctx,
 		`SELECT source_id, contact_id, display_name, first_name, phone_e164,
 		        formatted_number, identifier_type, is_me, is_visible
+		   -- all-accounts: scoped by conversation_id, which carries the account (section 4.1).
 		   FROM participants WHERE conversation_id = ? ORDER BY source_id`, conversationID)
 	if err != nil {
 		return nil, err

@@ -3339,6 +3339,7 @@ agm messages delete <msg-id> [--yes]
 agm messages add-reaction <msg-id> <emoji>
 agm messages remove-reaction <msg-id> <emoji> | --reaction <react-id>
 
+agm attachments list <msg-id>
 agm attachments show <att-id>
 agm attachments download <att-id> [--output <path>]
 
@@ -3371,7 +3372,11 @@ agm version
 command**, with one stated exception: `GET`/`DELETE /v1/uploads/{id}` have no
 command, for the same reason they have no MCP tool (§8.2) — `agm messages send --file` performs the whole reserve /
 `PUT` / send sequence in one process and never surfaces an `upl_` ID for a
-human to inspect or cancel. `agm messages list` with no
+human to inspect or cancel. `agm attachments list <msg-id>` is
+`GET /v1/messages/{id}/attachments`; MCP folds that data into `get_message`
+(§8.2) but the CLI keeps the command, because the rule above is "every `/v1`
+route has a command" and an owner asking what a message carried should not
+have to read a whole message DTO. `agm messages list` with no
 conversation ID is `GET /v1/messages` across every account, or one account
 with `--account`. `agm pair` covers `POST`/`GET`/`DELETE /v1/pairing/*` —
 abandoning is Ctrl-C, which issues the `DELETE`. `agm reconnect` is

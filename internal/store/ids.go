@@ -24,6 +24,7 @@ const (
 	PrefixContact      = "contact_"
 	PrefixParticipant  = "part_"
 	PrefixOperation    = "op_"
+	PrefixUpload       = "upl_"
 )
 
 // v5 derives a UUIDv5 from the frozen namespace and the joined components.
@@ -91,6 +92,20 @@ func ReactionID(messageID, participantID, canonicalEmojiOrTypeName string) strin
 // OperationID is UUIDv7: Agent GM creates it, so it is not derived.
 func OperationID() string {
 	return PrefixOperation + uuid.Must(uuid.NewV7()).String()
+}
+
+// UploadID is UUIDv7: an upload reservation is created locally, so it is not
+// derived. It carries no account (spec section 10.2): the account is fixed at
+// send time by the conversation named in the send, not at reservation time.
+func UploadID() string {
+	return PrefixUpload + uuid.Must(uuid.NewV7()).String()
+}
+
+// AuditID is a bare UUIDv7 -- audit rows are the one object in spec section
+// 4.1's table with no typed prefix, because an audit ID never appears in a
+// path or as a caller-supplied parameter.
+func AuditID() string {
+	return uuid.Must(uuid.NewV7()).String()
 }
 
 // HasPrefix reports whether an ID carries the expected typed prefix. An ID
