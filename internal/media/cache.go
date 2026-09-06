@@ -110,6 +110,19 @@ func (c *Cache) Put(ctx context.Context, attachmentID string, data []byte, nowMs
 	if err != nil {
 		return CacheEntry{}, err
 	}
+	// The root is created and tightened separately from the fan-out
+	// directories under it: MkdirAll would create the root with the process
+	// umask, and MkdirAll on a root that already exists returns success
+	// without touching its mode -- which is how a data directory ends up
+	// world-readable long after the code that made it was fixed. Cached
+	// media is decrypted message content on disk (spec section 10.3), so its
+	// at-rest model is the file mode.
+	if err := os.MkdirAll(c.Dir, 0o700); err != nil {
+		return CacheEntry{}, fmt.Errorf("creating the cache directory: %w", err)
+	}
+	if err := os.Chmod(c.Dir, 0o700); err != nil {
+		return CacheEntry{}, fmt.Errorf("securing the cache directory: %w", err)
+	}
 	if err := os.MkdirAll(filepath.Dir(abs), 0o700); err != nil {
 		return CacheEntry{}, fmt.Errorf("creating the cache directory: %w", err)
 	}

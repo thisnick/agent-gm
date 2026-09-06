@@ -31,6 +31,7 @@ type harness struct {
 	sessions *store.SessionStore
 	sup      *accounts.Supervisor
 	dir      string
+	clock    clock.Clock
 }
 
 func newHarness(t *testing.T, clk clock.Clock) *harness {
@@ -53,7 +54,7 @@ func newHarness(t *testing.T, clk clock.Clock) *harness {
 	// Tests drive Apply themselves so nothing races the ingest goroutine and
 	// nothing sleeps. TestIngestGoroutineDrainsEvents covers the loop.
 	sup.ManualIngest = true
-	return &harness{store: st, sessions: sessions, dir: dir, sup: sup}
+	return &harness{store: st, sessions: sessions, dir: dir, sup: sup, clock: clk}
 }
 
 // pump applies every buffered event on the account's backend synchronously,

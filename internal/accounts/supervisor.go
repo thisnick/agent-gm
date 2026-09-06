@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/thisnick/agent-gm/internal/clock"
@@ -39,14 +40,34 @@ type Account struct {
 	Address string
 	Backend gm.Backend
 
-	sup      *Supervisor
-	ingest   *core.Ingester
-	cancel   context.CancelFunc
-	done     chan struct{}
-	running  bool
+	sup     *Supervisor
+	ingest  *core.Ingester
+	cancel  context.CancelFunc
+	done    chan struct{}
+	running bool
 	sessMu  sync.Mutex
 	dmCache map[string]bool
+
+	// healthMu guards the cached GET /v1/health values. They are read by an
+	// HTTP handler and written by this account's own goroutines.
+	healthMu        sync.Mutex
+	google          *GoogleHealth
+	phoneResponding bool
+	sweeps          int
+	backfillPaused  bool
 }
+
+// Running reports whether this account holds a client and a goroutine. A
+// `parked` account holds neither, which is the part of spec section 4.7 worth
+// asserting rather than the state string alone.
+func (a *Account) Running() bool {
+	a.sup.mu.Lock()
+	defer a.sup.mu.Unlock()
+	return a.running
+}
+
+// HasClient reports whether this account's backend is connected.
+func (a *Account) HasClient() bool { return a.Backend.IsConnected() }
 
 // Supervisor holds every account.
 type Supervisor struct {
@@ -61,24 +82,61 @@ type Supervisor struct {
 	// "retrying a listen error" are different things.
 	MaxConcurrent int
 
+	// Settings is the one runtime setting this package reads. A nil Settings
+	// means MaxConcurrent is whatever was set on this struct.
+	Settings MaxConcurrentSource
+
+	// Audit receives account.state_changed on EVERY transition, plus
+	// account.paired, account.resumed, account.signed_out and
+	// account.pair_failed. A nil Auditor simply does not audit.
+	Audit Auditor
+
+	// Sweep runs the reconciliation sweep for one connected account, on
+	// connect -- including after a re-pair, with since = last_event_at_ms --
+	// and on that account's own timer.
+	Sweep Sweeper
+
+	// Backfill is one backfill worker per connected account.
+	Backfill Backfiller
+
+	// PairingTimeout is AGENT_GM_PAIRING_TIMEOUT, measured against the
+	// injected clock.
+	PairingTimeout time.Duration
+
+	// SweepInterval is settings.ingest.sweep_interval, per account.
+	SweepInterval time.Duration
+
 	// ManualIngest stops Start from launching the per-account event
-	// goroutine, so a test can drive Apply itself and never race the loop.
-	// Production leaves it false.
+	// goroutine and the per-account sweep timer, so a test can drive Apply
+	// itself and never race the loop. Production leaves it false.
 	ManualIngest bool
 
-	mu       sync.Mutex
-	accounts map[string]*Account
+	feed       feed
+	goroutines atomic.Int64
+
+	mu          sync.Mutex
+	accounts    map[string]*Account
+	pairings    map[string]bool
+	rebalancing bool
 }
+
+// Goroutines is how many per-account goroutines the supervisor is running. A
+// `parked` account contributes none, and a test asserts that rather than
+// trusting the state string.
+func (s *Supervisor) Goroutines() int64 { return s.goroutines.Load() }
 
 // New builds a supervisor.
 func New(st *store.Store, sessions *store.SessionStore, clk clock.Clock, log core.Logger) *Supervisor {
 	return &Supervisor{
-		store:         st,
-		sessions:      sessions,
-		clock:         clk,
-		log:           log,
-		MaxConcurrent: DefaultMaxConcurrent,
-		accounts:      map[string]*Account{},
+		store:          st,
+		sessions:       sessions,
+		clock:          clk,
+		log:            log,
+		MaxConcurrent:  DefaultMaxConcurrent,
+		PairingTimeout: PairingTimeoutFromEnv(),
+		SweepInterval:  DefaultSweepInterval,
+		accounts:       map[string]*Account{},
+		pairings:       map[string]bool{},
 	}
 }
 
@@ -112,10 +170,24 @@ func (s *Supervisor) List() []*Account {
 // captured cookies, which go from the capture into this call and nowhere
 // else. emoji is handed the one emoji character to show the owner.
 func (s *Supervisor) Pair(ctx context.Context, backend gm.Backend, cookies map[string]string, deviceIndex int, emoji func(string)) (*Account, error) {
+	return s.PairAs(ctx, "", backend, cookies, deviceIndex, emoji)
+}
+
+// PairAs is Pair with the account the caller expects. `agm pair --account
+// <id>` and POST /v1/pairing/start's account_id make the intent explicit: a
+// signed-in address that hashes to a different acct_ ID is refused with
+// pairing_wrong_account and changes nothing (spec sections 3.2, 4.7).
+//
+// An empty expectedID accepts whichever account signs in, which is how a
+// first pairing and an ordinary re-pair work.
+func (s *Supervisor) PairAs(ctx context.Context, expectedID string, backend gm.Backend, cookies map[string]string, deviceIndex int, emoji func(string)) (*Account, error) {
 	persister, ok := backend.(gm.SessionPersister)
 	if !ok {
 		return nil, errors.New("backend cannot persist a session")
 	}
+	// Cleanup runs on a context the caller cannot cancel: a pairing abandoned
+	// BY a cancellation still has to delete its row.
+	cleanupCtx := context.WithoutCancel(ctx)
 
 	// The emoji callback fires between StartGaiaPairing and FinishGaiaPairing,
 	// by which time AuthData.Mobile is populated. That is the moment the
@@ -124,10 +196,22 @@ func (s *Supervisor) Pair(ctx context.Context, backend gm.Backend, cookies map[s
 	// account is resumed (spec section 3.2).
 	var pendingID string
 	var pendingNew bool
+	var wrongAccount string
+	var resumed bool
 	wrapped := func(e string) {
 		address := persister.AccountAddress()
 		if gm.PlausibleAccountAddress(address) {
 			id := store.AccountID(address)
+			// The expected account is checked the moment the identity is
+			// known and BEFORE any row is created, so a refusal really does
+			// change nothing.
+			if expectedID != "" && id != expectedID {
+				wrongAccount = id
+				if emoji != nil {
+					emoji(e)
+				}
+				return
+			}
 			if existing, err := s.store.Account(ctx, id); err != nil {
 				// A brand-new account starts life in `pairing`. Only a new
 				// account passes through it.
@@ -138,6 +222,8 @@ func (s *Supervisor) Pair(ctx context.Context, backend gm.Backend, cookies map[s
 						CreatedAtMS: now, UpdatedAtMS: now,
 					})
 					pendingID, pendingNew = id, true
+					s.markPairing(id, true)
+					s.announce(ctx, id, "", StatePairing, ReasonNone)
 				}
 			} else {
 				// Re-pairing an existing account does not move it to
@@ -145,7 +231,7 @@ func (s *Supervisor) Pair(ctx context.Context, backend gm.Backend, cookies map[s
 				// new pairing and flips straight to connected on success, so
 				// a caller polling never sees it become less usable than it
 				// already was.
-				pendingID = existing.ID
+				pendingID, resumed = existing.ID, true
 			}
 		}
 		if emoji != nil {
@@ -153,28 +239,57 @@ func (s *Supervisor) Pair(ctx context.Context, backend gm.Backend, cookies map[s
 		}
 	}
 
+	// A row that has never been connected is deleted; a row that had been
+	// connected reverts to its previous state, which is what not touching it
+	// achieves. Every failure path below goes through this.
+	abandon := func(reason string) {
+		s.markPairing(pendingID, false)
+		if pendingNew && pendingID != "" {
+			_ = s.store.DeletePairingAccount(cleanupCtx, pendingID)
+			s.audit(cleanupCtx, AuditPairFailed, map[string]any{
+				"account_id": pendingID, "outcome": reason,
+			})
+		}
+	}
+
 	dev, err := backend.StartGooglePairing(ctx, cookies, deviceIndex, wrapped)
 	if err != nil {
-		// A row that has never been connected is deleted; a row that had been
-		// connected reverts to its previous state, which is what not touching
-		// it achieves.
-		if pendingNew && pendingID != "" {
-			_ = s.store.DeletePairingAccount(ctx, pendingID)
-		}
+		abandon("pairing_failed")
 		return nil, err
+	}
+	if wrongAccount != "" {
+		// Nothing was created for the wrong account, and the expected
+		// account's own row was never touched.
+		abandon("pairing_wrong_account")
+		if p, ok := backend.(gm.SessionPersister); ok {
+			p.Shred()
+		}
+		return nil, gm.Classify(gm.ErrWrongAccount)
+	}
+	// A pairing the caller gave up on -- DELETE /v1/pairing/{id}, or a
+	// cancelled request -- leaves no row and no session file. The library may
+	// well have finished by now; that is exactly why this is checked.
+	if cerr := ctx.Err(); cerr != nil {
+		abandon("cancelled")
+		if p, ok := backend.(gm.SessionPersister); ok {
+			p.Shred()
+		}
+		return nil, gm.Classify(gm.ErrPairingCancelled)
 	}
 	// The address a backend hands back is validated here as well as inside
 	// the adapter: an implausible one creates no account row and no session
 	// file, because acct_ is derived from it (spec 3.2).
 	address, err := gm.AccountAddressFromPairing(dev.AccountAddress)
 	if err != nil {
-		if pendingNew && pendingID != "" {
-			_ = s.store.DeletePairingAccount(ctx, pendingID)
-		}
+		abandon("no_account_address")
 		return nil, err
 	}
 
 	id := store.AccountID(address)
+	if expectedID != "" && id != expectedID {
+		abandon("pairing_wrong_account")
+		return nil, gm.Classify(gm.ErrWrongAccount)
+	}
 	now := s.clock.Now().UnixMilli()
 	acct := store.Account{
 		ID:              id,
@@ -188,9 +303,23 @@ func (s *Supervisor) Pair(ctx context.Context, backend gm.Backend, cookies map[s
 	if !dev.DeviceLastSeen.IsZero() {
 		acct.GaiaDeviceLastSeenMS = dev.DeviceLastSeen.UnixMilli()
 	}
+	prev := State("")
+	if row, rerr := s.store.Account(ctx, id); rerr == nil {
+		prev = row.State
+	}
 	if err := s.store.UpsertAccount(ctx, acct); err != nil {
+		abandon("store_error")
 		return nil, err
 	}
+	s.markPairing(id, false)
+	s.announce(ctx, id, prev, StateConnected, ReasonNone)
+	kind := AuditPaired
+	if resumed {
+		// A re-pair resumes the same acct_ row: no second account, no
+		// duplicated history (spec section 4.7).
+		kind = AuditResumed
+	}
+	s.audit(ctx, kind, map[string]any{"account_id": id, "phone_id": dev.PhoneID})
 
 	a := s.register(id, address, backend)
 	if err := a.PersistSession(ctx); err != nil {
@@ -200,6 +329,22 @@ func (s *Supervisor) Pair(ctx context.Context, backend gm.Backend, cookies map[s
 		return a, err
 	}
 	return a, nil
+}
+
+func (s *Supervisor) markPairing(id string, live bool) {
+	if id == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pairings == nil {
+		s.pairings = map[string]bool{}
+	}
+	if live {
+		s.pairings[id] = true
+	} else {
+		delete(s.pairings, id)
+	}
 }
 
 // Adopt registers an already-paired backend, for a restart where the session
@@ -217,11 +362,12 @@ func (s *Supervisor) register(id, address string, backend gm.Backend) *Account {
 		return existing
 	}
 	a := &Account{
-		ID:      id,
-		Address: address,
-		Backend: backend,
-		sup:     s,
-		dmCache: map[string]bool{},
+		ID:              id,
+		Address:         address,
+		Backend:         backend,
+		sup:             s,
+		dmCache:         map[string]bool{},
+		phoneResponding: true,
 		ingest: &core.Ingester{
 			Store:     s.store,
 			AccountID: id,
@@ -241,6 +387,16 @@ func (s *Supervisor) register(id, address string, backend gm.Backend) *Account {
 // account. Satisfying the rule for one account leaves another account's
 // conversation events untrustworthy (spec section 3.7).
 func (s *Supervisor) Start(ctx context.Context, a *Account) error {
+	err := s.start(ctx, a)
+	// Parking is re-evaluated whenever an account connects or disconnects
+	// (spec section 4.7).
+	s.rebalance(ctx)
+	return err
+}
+
+// start is Start without the rebalance, so the rebalance itself can call it
+// without recursing.
+func (s *Supervisor) start(ctx context.Context, a *Account) error {
 	s.mu.Lock()
 	if a.running {
 		s.mu.Unlock()
@@ -249,8 +405,9 @@ func (s *Supervisor) Start(ctx context.Context, a *Account) error {
 	if s.MaxConcurrent > 0 && s.runningCountLocked() >= s.MaxConcurrent {
 		s.mu.Unlock()
 		// Not an error, and not degraded: waiting for a slot is its own
-		// state, and a parked account is fully readable.
-		return s.store.SetAccountState(ctx, a.ID, store.StateParked, store.ReasonCapacity)
+		// state, and a parked account is fully readable. It holds no client
+		// and no goroutine, which is why nothing below this line runs.
+		return s.transition(ctx, a.ID, StateParked, ReasonCapacity)
 	}
 	a.running = true
 	s.mu.Unlock()
@@ -259,13 +416,13 @@ func (s *Supervisor) Start(ctx context.Context, a *Account) error {
 		s.mu.Lock()
 		a.running = false
 		s.mu.Unlock()
-		reason := store.ReasonListenError
-		state := store.StateError
+		reason := ReasonListenError
+		state := StateError
 		var ge *gm.Error
 		if errors.As(err, &ge) && ge.SignsOutAccount {
-			state, reason = store.StateSignedOut, store.ReasonCredentials
+			state, reason = StateSignedOut, ReasonCredentials
 		}
-		_ = s.store.SetAccountState(ctx, a.ID, state, reason)
+		_ = s.transition(ctx, a.ID, state, reason)
 		return err
 	}
 	// Persist on every successful Connect (spec section 3.3).
@@ -277,13 +434,77 @@ func (s *Supervisor) Start(ctx context.Context, a *Account) error {
 		loopCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 		a.cancel = cancel
 		a.done = make(chan struct{})
+		s.goroutines.Add(1)
 		go a.loop(loopCtx)
+		// One sweep timer per connected account, when there is a sweeper to
+		// run. It also refreshes the cached `google` block.
+		if s.Sweep != nil && s.SweepInterval > 0 {
+			s.goroutines.Add(1)
+			go a.sweepTimer(loopCtx)
+		}
 	}
 
 	if _, err := a.Backend.ListConversations(ctx, gm.FolderInbox, 100); err != nil {
 		return err
 	}
-	return s.store.SetAccountState(ctx, a.ID, store.StateConnected, "")
+
+	// The cached `google` block is refreshed on connect, so GET /v1/health
+	// answers from memory rather than waiting on a phone (spec section 7.5).
+	a.refreshGoogle(ctx)
+
+	// A re-pair or a restart resumes: a full reconciliation sweep runs with
+	// since = accounts.last_event_at_ms (spec sections 4.7, 5.4). A brand-new
+	// account has no last event, so `since` is the zero time and the sweep
+	// covers everything.
+	if s.Sweep != nil {
+		var since time.Time
+		if row, err := s.store.Account(ctx, a.ID); err == nil && row.LastEventAtMS > 0 {
+			since = time.UnixMilli(row.LastEventAtMS).UTC()
+		}
+		if err := s.Sweep.Sweep(ctx, a.ID, since); err != nil {
+			a.warn("the reconciliation sweep failed", err)
+		} else {
+			a.noteSweep(ctx, s.clock.Now())
+		}
+	}
+	if s.Backfill != nil {
+		if err := s.Backfill.Start(ctx, a.ID); err != nil {
+			a.warn("starting backfill failed", err)
+		}
+	}
+	return s.transition(ctx, a.ID, StateConnected, ReasonNone)
+}
+
+// sweepTimer is one account's sweep timer: it refreshes the cached `google`
+// block and runs the reconciliation sweep every settings.ingest.sweep_interval
+// (spec sections 5.4, 7.5). One timer per connected account; a slow phone on
+// one account never delays another's.
+func (a *Account) sweepTimer(ctx context.Context) {
+	defer a.sup.goroutines.Add(-1)
+	interval := a.sup.SweepInterval
+	if interval <= 0 {
+		return
+	}
+	for {
+		if err := a.sup.clock.Sleep(ctx, interval); err != nil {
+			return
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		a.refreshGoogle(ctx)
+		if a.sup.Sweep != nil {
+			var since time.Time
+			if row, err := a.sup.store.Account(ctx, a.ID); err == nil && row.LastEventAtMS > 0 {
+				since = time.UnixMilli(row.LastEventAtMS).UTC()
+			}
+			if err := a.sup.Sweep.Sweep(ctx, a.ID, since); err != nil {
+				a.warn("the reconciliation sweep failed", err)
+			} else {
+				a.noteSweep(ctx, a.sup.clock.Now())
+			}
+		}
+	}
 }
 
 func (s *Supervisor) runningCountLocked() int {
@@ -314,6 +535,13 @@ func (s *Supervisor) Stop(a *Account) {
 	if a.done != nil {
 		<-a.done
 	}
+	a.cancel, a.done = nil, nil
+	// The account is no longer connected, so its cached Google block is no
+	// longer a fact about a live phone: GET /v1/health serves null.
+	a.clearGoogle()
+	if s.Backfill != nil {
+		s.Backfill.Stop(a.ID)
+	}
 }
 
 // StopAll persists every session and stops every account, which is what
@@ -342,7 +570,15 @@ func (s *Supervisor) SignOut(ctx context.Context, a *Account) error {
 	if err := s.store.SetSessionPresent(ctx, a.ID, false); err != nil {
 		return err
 	}
-	return s.store.SetAccountState(ctx, a.ID, store.StateSignedOut, store.ReasonCredentials)
+	if err := s.transition(ctx, a.ID, StateSignedOut, ReasonCredentials); err != nil {
+		return err
+	}
+	s.audit(ctx, AuditSignedOut, map[string]any{
+		"account_id": a.ID, "session_shredded": true,
+	})
+	// Signing out frees a slot, so parking is re-evaluated.
+	s.rebalance(ctx)
+	return nil
 }
 
 // PersistSession writes this account's session file. It is called on
@@ -371,6 +607,7 @@ func (a *Account) Ingester() *core.Ingester { return a.ingest }
 // loop drains this account's events. One goroutine per account, applying each
 // event as a store write and stamping account_id on every row.
 func (a *Account) loop(ctx context.Context) {
+	defer a.sup.goroutines.Add(-1)
 	defer close(a.done)
 	for {
 		select {
@@ -396,7 +633,7 @@ func (a *Account) Apply(ctx context.Context, ev gm.Event) {
 				a.warn("ingest conversation failed", err)
 			}
 		}
-		a.setState(ctx, store.StateConnected, "")
+		a.setState(ctx, StateConnected, ReasonNone)
 
 	case *gm.EventAuthTokenRefreshed:
 		if err := a.PersistSession(ctx); err != nil {
@@ -404,28 +641,28 @@ func (a *Account) Apply(ctx context.Context, ev gm.Event) {
 		}
 
 	case *gm.EventListenTemporaryError:
-		a.setState(ctx, store.StateDegraded, store.ReasonListenError)
+		a.setState(ctx, StateDegraded, ReasonListenError)
 
 	case *gm.EventListenRecovered:
-		a.setState(ctx, store.StateConnected, "")
+		a.setState(ctx, StateConnected, ReasonNone)
 
 	case *gm.EventListenFatalError:
 		// The match is on the error value, never the string: a 403 in the
 		// retry branch loops forever on dead credentials.
 		if e.CredentialsDead {
-			a.setState(ctx, store.StateSignedOut, store.ReasonCredentials)
+			a.setState(ctx, StateSignedOut, ReasonCredentials)
 		} else {
-			a.setState(ctx, store.StateError, store.ReasonListenError)
+			a.setState(ctx, StateError, ReasonListenError)
 		}
 
 	case *gm.EventPingFailed:
 		switch {
 		case e.EntityNotFound:
 			// The phone no longer knows this pairing.
-			a.setState(ctx, store.StateSignedOut, store.ReasonRevokedByPhone)
+			a.setState(ctx, StateSignedOut, ReasonRevokedByPhone)
 		case e.ErrorCount > 1:
 			// Upstream deliberately ignores the first failure.
-			a.setState(ctx, store.StateError, store.ReasonListenError)
+			a.setState(ctx, StateError, ReasonListenError)
 		}
 
 	case *gm.EventPairSuccessful:
@@ -437,15 +674,15 @@ func (a *Account) Apply(ctx context.Context, ev gm.Event) {
 		// Cookies dead. Reads keep working; writes are refused with
 		// not_signed_in. This deletes nothing, and the fix is a cookie
 		// refresh, not a re-pair.
-		a.setState(ctx, store.StateSignedOut, store.ReasonCookiesExpired)
+		a.setState(ctx, StateSignedOut, ReasonCookiesExpired)
 
 	case *gm.EventRevokePairData:
-		a.setState(ctx, store.StateSignedOut, store.ReasonRevokedByPhone)
+		a.setState(ctx, StateSignedOut, ReasonRevokedByPhone)
 
 	case *gm.EventAccountChange:
 		// IsFake means it was synthesised at startup, not a real change.
 		if !e.IsFake {
-			a.setState(ctx, store.StateAccountChanged, store.ReasonAccountSwitched)
+			a.setState(ctx, StateAccountChanged, ReasonAccountSwitched)
 		}
 
 	case *gm.EventConversation:
@@ -465,13 +702,38 @@ func (a *Account) Apply(ctx context.Context, ev gm.Event) {
 		}
 
 	case *gm.EventUserAlert:
+		// THIS account's backfill is paused while a phone-side database sync
+		// is outstanding and resumes on that phone's SYNC_COMPLETE. One
+		// sleepy phone never stalls another account (spec section 5.2).
+		switch {
+		case e.Alert.PausesBackfill():
+			a.healthMu.Lock()
+			a.backfillPaused = true
+			a.healthMu.Unlock()
+			if a.sup.Backfill != nil {
+				a.sup.Backfill.Pause(a.ID)
+			}
+		case e.Alert == gm.AlertMobileDatabaseSyncComplete:
+			a.healthMu.Lock()
+			a.backfillPaused = false
+			a.healthMu.Unlock()
+			if a.sup.Backfill != nil {
+				a.sup.Backfill.Resume(a.ID)
+			}
+		}
 		a.touch(ctx)
 
-	case *gm.EventPhoneNotResponding, *gm.EventPhoneRespondingAgain,
-		*gm.EventNoDataReceived, *gm.EventHackySetActiveMayFail,
+	case *gm.EventPhoneNotResponding:
+		// phone_responding is a health fact, not a state: a phone asleep is
+		// not an account fault (spec section 7.5).
+		a.setPhoneResponding(false)
+
+	case *gm.EventPhoneRespondingAgain:
+		a.setPhoneResponding(true)
+
+	case *gm.EventNoDataReceived, *gm.EventHackySetActiveMayFail,
 		*gm.EventSettings, *gm.EventTyping:
-		// Health and ephemeral signals. The health document and the
-		// reconciliation sweep they feed arrive with Slice 2.
+		// Ephemeral signals; none of them moves this account's state.
 
 	case *gm.EventUnknown:
 		a.ingest.CountUnknown()
@@ -494,10 +756,65 @@ func (a *Account) isDM(ctx context.Context, convSourceID string) bool {
 	return !c.IsGroup
 }
 
-func (a *Account) setState(ctx context.Context, st store.AccountState, reason string) {
-	if err := a.sup.store.SetAccountState(ctx, a.ID, st, reason); err != nil &&
+func (a *Account) setState(ctx context.Context, st State, reason Reason) {
+	if err := a.sup.transition(ctx, a.ID, st, reason); err != nil &&
 		!errors.Is(err, store.ErrAccountNotFound) {
 		a.warn("setting account state failed", err)
+	}
+}
+
+// transition moves one account's state and, when the state or the reason
+// actually changed, writes account.state_changed and publishes to the feed.
+//
+// Every transition is audited with from, to and state_reason, which is what
+// makes `degraded` and `error` diagnosable after the fact without reading
+// logs (spec sections 4.7, 12.4).
+func (s *Supervisor) transition(ctx context.Context, accountID string, to State, reason Reason) error {
+	from := State("")
+	fromReason := ReasonNone
+	if row, err := s.store.Account(ctx, accountID); err == nil {
+		from, fromReason = row.State, Reason(row.StateReason)
+	}
+	if err := s.store.SetAccountState(ctx, accountID, to, string(reason)); err != nil {
+		return err
+	}
+	if from == to && fromReason == reason {
+		// Not a transition: re-asserting a state is not a state change, and
+		// an SSE subscriber must not see an event for one.
+		return nil
+	}
+	s.announce(ctx, accountID, from, to, reason)
+	return nil
+}
+
+// announce writes the audit row and publishes to the state-change feed. It is
+// separate from transition because creating a `pairing` row is a state change
+// with no previous row to read.
+func (s *Supervisor) announce(ctx context.Context, accountID string, from, to State, reason Reason) {
+	s.audit(ctx, AuditStateChanged, map[string]any{
+		"account_id":   accountID,
+		"from":         string(from),
+		"to":           string(to),
+		"state_reason": string(reason),
+	})
+	s.feed.publish(StateChange{
+		AccountID: accountID, From: from, To: to, Reason: reason, At: s.clock.Now(),
+	})
+}
+
+func (s *Supervisor) audit(ctx context.Context, kind string, fields map[string]any) {
+	if s.Audit == nil {
+		return
+	}
+	if err := s.Audit.Append(ctx, kind, fields); err != nil {
+		s.warn("writing an audit row failed", fmt.Sprint(fields["account_id"]), err)
+	}
+}
+
+func (s *Supervisor) warn(msg, accountID string, err error) {
+	if s.log != nil {
+		// Logs carry the acct_ ID, never the Google account address.
+		s.log.Warn(msg, "account_id", accountID, "error", err.Error())
 	}
 }
 

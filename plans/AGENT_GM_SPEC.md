@@ -1483,6 +1483,20 @@ Refusing to start with `session envelope cannot be decrypted` means the key
 differs from the one that sealed the session. Restore the original key; there
 is no in-place rotation.
 
+**What is *not* encrypted at rest, stated plainly because the omission is
+load-bearing.** Message text, subjects, conversation names, participant
+numbers and every other column of §4.2 are stored in plain SQLite. Only the
+session envelope and `attachments.decryption_key` are sealed. The at-rest
+protection for everything else is the **file mode**: Agent GM creates the data
+directory `0700`, and `agent-gm.sqlite3` with its `-wal` and `-shm` sidecars
+`0600`, and tightens them on every start rather than only at creation —
+`os.MkdirAll` succeeds without touching a directory that already exists, which
+is exactly how a deployment ends up with a `0775` data directory nobody chose.
+A path under the data directory that is looser than that at startup is
+**warned about and not fatal**: Agent GM tightens what it creates, so a
+warning means something outside it loosened the file, and refusing to start
+would turn a fixable disclosure into an outage.
+
 ### 4.6 Derived conversation fields
 
 Two public fields are computed rather than stored raw, because the raw values
@@ -3705,6 +3719,7 @@ profile's token to a new origin.
 |---|---|---|
 | `AGENT_GM_ADMIN_SECRET` | environment only. ≥43 characters; the server refuses shorter | yes — changing it revokes every previous admin bootstrap authorization on next start |
 | `AGENT_GM_DATA_KEY` | environment only. 256 bits as 64 hex or base64 | **no.** §4.5 |
+| The SQLite database itself | `<data_dir>/agent-gm.sqlite3`, mode `0600` in a `0700` directory, with its `-wal` and `-shm` sidecars. **Message text, subjects and conversation names are not encrypted at rest** (§4.5 encrypts the session envelope and the attachment keys and nothing else), so on a shared host the file mode *is* the at-rest model for every message the owner has ever sent or received | n/a |
 | Google session (`AuthData`), one per account | `sessions/<acct>.enc`, sealed with the single data key, mode `0600` in a `0700` directory. The account ID is AEAD associated data, so files cannot be swapped between accounts | by re-pairing, per account |
 | **Google account cookies**, one set per account | inside `AuthData`, therefore inside `sessions/<acct>.enc`, **for the whole life of that pairing** (§3.2). Never on disk unencrypted, never logged | by `agm pair --refresh-cookies` |
 | Short-lived Chrome profile (the default flow) | a fresh temporary directory on the **client** machine, mode `0700`, for the length of one capture only. It contains a logged-in Google session while Chrome is open and is deleted when Chrome closes, on every path (D33) | n/a — it does not outlive the command |
@@ -4365,12 +4380,25 @@ naming its replacement, rather than silently writing a key nothing reads.
 ### 15.2 Backup and restore
 
 `POST /v1/admin/backup` (or `agm admin backup`) writes
-`<data_dir>/backups/agent-gm-<timestamp>-<id>.sqlite3` using the **SQLite
-backup API**, not a file copy: pages are copied under the database's own
-locking and the copy restarts if a writer changes a page it has already taken,
-so the result is a usable database while the server keeps serving. The
-snapshot has no `-wal` sidecar and opens on its own. The caller does not
-choose the path.
+`<data_dir>/backups/agent-gm-<timestamp>-<id>.sqlite3` **inside the
+database's own transaction, not as a file copy**, so the result is a
+consistent snapshot taken while the server keeps serving. The snapshot has no
+`-wal` sidecar and opens on its own — which is the property a restore depends
+on, and the reason a file copy is ruled out: a copy of a WAL-mode database
+without its log is missing every transaction still in it, and it opens
+perfectly well while quietly being out of date. The caller does not choose the
+path.
+
+> **Mechanism.** `VACUUM INTO`, not `sqlite3_backup_init`.
+> `modernc.org/sqlite` at the pinned version does not export the online
+> backup API from its driver package — the symbol exists only inside the
+> vendored C translation under `lib/`, which is not importable — so it is not
+> reachable from Agent GM at all. `VACUUM INTO` runs in one read transaction,
+> does not block writers in WAL mode, and produces a single standalone file,
+> which is every property this section requires. It has no
+> restart-on-write behaviour and does not need one: it copies within a single
+> transaction rather than page by page across many, so there is no window in
+> which a writer can invalidate a page already taken.
 
 After each successful backup the newest `backup.keep` snapshots are kept and
 older ones deleted, each removal audited as `admin.backup_pruned`. Pruning

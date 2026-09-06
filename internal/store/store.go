@@ -50,8 +50,8 @@ func (e ErrSchemaTooNew) Error() string {
 
 // Open opens (and migrates) the database under the data directory.
 func Open(dataDir string, clk clock.Clock) (*Store, error) {
-	if err := os.MkdirAll(dataDir, 0o700); err != nil {
-		return nil, fmt.Errorf("creating %s: %w", dataDir, err)
+	if err := SecureDataDir(dataDir); err != nil {
+		return nil, err
 	}
 	path := filepath.Join(dataDir, "agent-gm.sqlite3")
 
@@ -84,7 +84,23 @@ func Open(dataDir string, clk clock.Clock) (*Store, error) {
 		done:   make(chan struct{}),
 	}
 
+	// The driver creates the database and its log files with the process
+	// umask, which on a normal host leaves them world-readable. Message text
+	// is NOT encrypted at rest (spec section 4.5), so the at-rest model for
+	// every message this server holds is the file mode -- tighten it before
+	// the first write rather than after.
+	if err := secureDatabaseFiles(path); err != nil {
+		_ = s.close()
+		return nil, err
+	}
+
 	if err := s.migrate(); err != nil {
+		_ = s.close()
+		return nil, err
+	}
+	// The -wal and -shm files do not exist until the first WAL write, which
+	// the migration has now done.
+	if err := secureDatabaseFiles(path); err != nil {
 		_ = s.close()
 		return nil, err
 	}
@@ -94,6 +110,106 @@ func Open(dataDir string, clk clock.Clock) (*Store, error) {
 
 // Path is the database file.
 func (s *Store) Path() string { return s.path }
+
+// DirMode and FileMode are the at-rest permissions for everything under the
+// data directory.
+//
+// They are not a hardening extra. Message text, subjects and conversation
+// names are stored in plain SQLite (spec section 4.5 encrypts the session
+// envelope and the attachment keys, and says so precisely because the rest is
+// not encrypted), so on a shared host the file mode IS the at-rest model for
+// every message the owner has ever sent or received. A database left 0644 is
+// readable by every account on the machine.
+const (
+	DirMode  os.FileMode = 0o700
+	FileMode os.FileMode = 0o600
+)
+
+// SecureDataDir creates the data directory if it is absent and tightens it if
+// it is present.
+//
+// The Chmod is not redundant with the MkdirAll: a directory that already
+// exists -- made by a deployment script, a Docker volume, or `mkdir -p data`
+// in a shell -- keeps whatever mode it was created with, and MkdirAll returns
+// success without touching it. That is exactly how a live deployment ends up
+// with a 0775 data directory nobody chose.
+func SecureDataDir(dir string) error {
+	if err := os.MkdirAll(dir, DirMode); err != nil {
+		return fmt.Errorf("creating %s: %w", dir, err)
+	}
+	if err := os.Chmod(dir, DirMode); err != nil {
+		return fmt.Errorf("securing %s: %w", dir, err)
+	}
+	return nil
+}
+
+// secureDatabaseFiles tightens the database and its WAL sidecars. A file that
+// does not exist yet is not an error: -wal and -shm appear at the first WAL
+// write.
+func secureDatabaseFiles(path string) error {
+	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+		if err := os.Chmod(p, FileMode); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("securing %s: %w", p, err)
+		}
+	}
+	return nil
+}
+
+// PermissionWarning is one path that is more permissive than it should be.
+type PermissionWarning struct {
+	Path string
+	Mode os.FileMode
+	Want os.FileMode
+}
+
+func (w PermissionWarning) String() string {
+	return fmt.Sprintf("%s is mode %04o, which is more permissive than %04o", w.Path, w.Mode.Perm(), w.Want)
+}
+
+// CheckPermissions reports anything under the data directory that is readable
+// or writable by somebody other than the owner.
+//
+// It **warns rather than fails**, deliberately. Agent GM tightens what it
+// creates, so a warning here means something outside Agent GM loosened it --
+// a restore, a bind mount with its own ownership, an operator's `chmod -R`.
+// Refusing to start would turn a fixable disclosure into an outage, and an
+// operator who cannot start the server cannot read the message telling them
+// why. So it starts, and says so once, loudly, at startup.
+func CheckPermissions(dataDir string) []PermissionWarning {
+	var out []PermissionWarning
+	check := func(path string, want os.FileMode) {
+		fi, err := os.Stat(path)
+		if err != nil {
+			return
+		}
+		if fi.Mode().Perm()&^want != 0 {
+			out = append(out, PermissionWarning{Path: path, Mode: fi.Mode(), Want: want})
+		}
+	}
+	check(dataDir, DirMode)
+	db := filepath.Join(dataDir, "agent-gm.sqlite3")
+	for _, p := range []string{db, db + "-wal", db + "-shm"} {
+		check(p, FileMode)
+	}
+	check(filepath.Join(dataDir, "sessions"), DirMode)
+	check(filepath.Join(dataDir, MediaCacheDirName), DirMode)
+	check(filepath.Join(dataDir, BackupDirName), DirMode)
+
+	// A session file is one Google account's credential (spec section 12.1),
+	// so it is checked individually rather than only through its directory.
+	entries, err := os.ReadDir(filepath.Join(dataDir, "sessions"))
+	if err == nil {
+		for _, e := range entries {
+			if !e.IsDir() {
+				check(filepath.Join(dataDir, "sessions", e.Name()), FileMode)
+			}
+		}
+	}
+	return out
+}
+
+// MediaCacheDirName is the cached-media directory under the data directory.
+const MediaCacheDirName = "media-cache"
 
 // Reader is the read-only pool. Every query it serves must carry an
 // account_id predicate or an explicit all-accounts marker (spec section 13.2).

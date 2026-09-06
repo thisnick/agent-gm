@@ -129,6 +129,22 @@ func openRuntime() (*runtimeEnv, int) {
 		fmt.Fprintf(os.Stderr, "agent-gm: %v\n", err)
 		return nil, exitLocalConfig
 	}
+	// Agent GM tightens what it creates (store.SecureDataDir,
+	// secureDatabaseFiles), so a warning here means something OUTSIDE Agent
+	// GM loosened it: a restore, a bind mount with its own ownership, an
+	// operator's chmod -R. It warns rather than refusing to start, because
+	// refusing would turn a fixable disclosure into an outage and an
+	// operator who cannot start the server cannot read the message telling
+	// them why.
+	for _, w := range store.CheckPermissions(cfg.DataDir) {
+		logger.Warn().
+			Str("path", w.Path).
+			Str("mode", fmt.Sprintf("%04o", w.Mode.Perm())).
+			Str("want", fmt.Sprintf("%04o", w.Want)).
+			Msg("a file under the data directory is readable by more than its owner; " +
+				"message text is not encrypted at rest, so the file mode is the at-rest model")
+	}
+
 	r := &runtimeEnv{cfg: cfg, store: st, sessions: sessions, log: logger,
 		libLog: logging.Library(logger, logOpts), clock: clk}
 	r.sup = accounts.New(st, sessions, clk, nil)
