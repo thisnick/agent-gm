@@ -2141,8 +2141,8 @@ The cursor encodes `(sent_at_ms, id)` so it is stable across equal timestamps.
 | `POST` | `/v1/accounts/{account_id}/refresh-cookies` | `admin` | `{"cookies": {...}}`. Re-authenticates that account (§3.2). A different Google address is `pairing_wrong_account` |
 
 Account `state` vocabulary is §4.7's: `pairing`, `connected`, `degraded`,
-`error`, `signed_out`, `account_changed`. There is no server-level "unpaired"
-state — an Agent GM with no accounts is a healthy Agent GM with no accounts.
+`error`, `signed_out`, `parked`, `account_changed`. There is no server-level
+"unpaired" state — an Agent GM with no accounts is a healthy Agent GM with no accounts.
 
 `GET /v1/accounts` and `GET /v1/health` are `messages:read`, and both return
 every account's `google_account`. Under D29 a `messages:read` token therefore
@@ -2365,7 +2365,7 @@ capability, validate the request, *then* create the operation.
 
 | Reason | Meaning |
 |---|---|
-| `not_signed_in` | **the account this touches is `signed_out`, `error` or `account_changed`** (§4.7). Its history stays readable; only writes are refused. Distinct from the service-level `not_paired`, which means there are no accounts at all |
+| `not_signed_in` | **the account this touches is `signed_out`, `error`, `parked` or `account_changed`** (§4.7) — every state that reads but does not write. Its history stays readable; only writes are refused. `parked` is in the list because a parked account holds no client to write with; an agent that wants to know *why* reads the account's `state` and `state_reason`, which distinguish "waiting for a slot" (`capacity`) from the rest. Distinct from the service-level `not_paired`, which means there are no accounts at all |
 | `conversation_read_only` | `Conversation.ReadOnly` is set |
 | `conversation_deleted` | delete-for-me has been applied locally |
 | `not_my_message` | deleting a message the owner did not send |
@@ -3309,6 +3309,7 @@ agm pair [--account <acct-id>] [--device-index N] [--timeout 5m]
                                                # adds an account, or resumes one
 agm pair --refresh-cookies --account <acct-id> # re-auth without re-pairing
 agm pair --paste [--paste-file <path>]         # fallback: curl / JSON paste
+                                               # combines with --refresh-cookies
 
 agm accounts list [--all]
 agm accounts show <acct-id>
@@ -3590,6 +3591,11 @@ decision being made:
 > credential, and why §15.2 treats a backup of it accordingly.
 
 #### `agm pair --refresh-cookies --account <acct-id>`
+
+`--refresh-cookies` says *what to do with a capture*; `--paste` says *where
+the capture comes from*. They combine: `agm pair --refresh-cookies --account
+<id> --paste` re-authenticates an existing pairing from a paste, which is the
+only way to refresh cookies on a machine with no Chrome.
 
 When cookies expire the session goes `signed_out` and writes fail, but **the
 pairing survives** (§3.2). This re-runs the capture in a **fresh, short-lived**
