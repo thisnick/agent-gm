@@ -173,7 +173,7 @@ API.
 | `internal/mcp` | MCP server, tool registry, schemas, instructions block, isError mapping | duplicate core logic |
 | `internal/oauth` | OAuth 2.1 AS + protected-resource metadata, DCR, PKCE, enrolment, tokens | be reachable without TLS in production |
 | `internal/media` | upload/download tickets, the media cache on disk, content sniffing, size limits | hold the store's write lock |
-| `internal/cli` | `agm` subcommands, output formatting, exit codes, QR rendering | talk to `gm` or `store` directly — it goes through REST |
+| `internal/cli` | `agm` subcommands, output formatting, exit codes, the Chrome cookie capture | talk to `gm` or `store` directly — it goes through REST |
 | `internal/audit` | append-only audit log writer and its redaction rules | be optional |
 | `internal/config` | environment and file config, defaults, validation | read secrets from anywhere but env/file |
 
@@ -202,8 +202,6 @@ type Backend interface {
     IsDefaultSMSApp(ctx context.Context) (bool, error)    // IsBugleDefault
 
     // pairing
-    StartQRPairing(ctx context.Context) (qrPayload string, err error)
-    RefreshQRPairing(ctx context.Context) (qrPayload string, err error)
     StartGooglePairing(ctx context.Context, cookies map[string]string, deviceIndex int, emoji func(string)) (PairedDevice, error)
     RefreshGoogleCookies(ctx context.Context, cookies map[string]string) error
     Unpair(ctx context.Context) error
@@ -320,9 +318,6 @@ payloads (`pair.go:93,115`), never as a runtime network value.
 
 | Symbol | Signature | Returns / meaning |
 |---|---|---|
-| `(*Client).StartLogin` | `() (string, error)` | QR flow. Registers a phone relay, adopts the returned tachyon token, **starts a not-logged-in long poll goroutine**, and returns the QR payload string (`util.QRCodeURLBase` + base64 of a marshalled `gmproto.URLData` carrying the pairing key, AES key and HMAC key). |
-| `(*Client).RefreshPhoneRelay` | `() (string, error)` | re-mints an expiring QR without restarting the flow; returns a new QR string. |
-| `(*Client).GenerateQRCodeData` | `(pairingKey []byte) (string, error)` | the encoder behind both of the above. Not called directly. |
 | `(*Client).DoGaiaPairing` | `(ctx, emojiCallback func(string)) error` | Google-account flow, start to finish: `StartGaiaPairing`, hand the emoji to the callback, `FinishGaiaPairing`, emit `events.PairSuccessful`, reconnect in a goroutine. **This is the call Agent GM uses for the Google-account flow.** |
 | `(*Client).StartGaiaPairing` | `(ctx) (string, *PairingSession, error)` | requires cookies (`ErrNoCookies` otherwise); signs in, enumerates the account's devices, **selects one by last-seen and `GaiaHackyDeviceSwitcher` — it does not error on several (§3.2)** — and returns the emoji to display. `pair_google.go:321-414`. |
 | `(*Client).FinishGaiaPairing` | `(ctx, *PairingSession) (string, error)` | completes UKEY2, derives the request-crypto keys, sets `AuthData.PairingID`, returns `"<mobile sourceID>/<destRegDevice int>"` as the phone ID. |
@@ -332,11 +327,9 @@ payloads (`pair.go:93,115`), never as a runtime network value.
 
 Upstream behaviours Agent GM depends on and must not re-implement:
 
-- After QR pairing, `completePairing` **sleeps 2 seconds before reconnecting**,
-  with the comment that reconnecting too quickly makes the phone fail to
-  recognise the session and unpairs the bridge (`pair.go:completePairing`).
-  Agent GM does not reconnect on its own after `PairSuccessful`.
-- `DoGaiaPairing` reconnects in its own goroutine on success.
+- `DoGaiaPairing` reconnects in its own goroutine on success
+  (`pair_google.go:311-318`). Agent GM does not reconnect on its own after
+  `PairSuccessful`.
 
 Google-account pairing errors, all from `pair_google.go`, all mapped in §3.5:
 `ErrNoCookies`, `ErrNoDevicesFound`, `ErrIncorrectEmoji`, `ErrPairingCancelled`,
@@ -438,46 +431,16 @@ result — the underlying HTTP request runs to completion.
 See §3.4 for the full event catalogue.
 ### 3.2 Pairing flows and what the owner does on the phone
 
-Agent GM supports both upstream flows. **The Google-account flow is the
-default** (§11.4, D19), because `agm pair` can drive it end to end from one
-command; **QR remains available as `agm pair --qr`**. The trade the owner has
-accepted is stated below and repeated in §11.4 and §12.1: the Google-account
-flow keeps live Google account cookies in `session.enc` for the life of the
-pairing, where QR keeps only a tachyon token.
+Agent GM implements **one** pairing flow: the Google-account (gaia) flow.
+`agm pair` drives it end to end (§11.4), and `agm pair --paste` is the
+fallback for a machine with no Chrome. **There is no second flow**, and D19
+records why.
 
-#### Flow A — QR pairing (`Bugle` network, no Google cookies)
+The cost of the only remaining flow is stated here and repeated in §11.4,
+§12.1 and §15.2: it keeps live Google account cookies in `session.enc` for the
+life of the pairing.
 
-1. Owner runs `agm pair --qr`, or
-   `POST /v1/pairing/start {"method":"qr"}`.
-2. Agent GM builds a client with `NewAuthData()`, calls `FetchConfig`, then
-   `StartLogin()` (`pair.go:18-31`), which registers a phone relay, adopts the
-   returned tachyon token, starts a not-logged-in long poll, and **returns the
-   QR payload string**. The payload is `util.QRCodeURLBase` plus base64 of a
-   marshalled `gmproto.URLData` carrying the pairing key, AES key and HMAC key
-   (`pair.go:33-46`).
-3. The CLI renders that string as a QR code in the terminal (§11.4). The REST
-   response returns the string plus a PNG data URL.
-4. **On the phone:** open Google Messages → profile picture or overflow menu →
-   *Device pairing* → *QR code scanner* → scan the terminal.
-5. The already-running long poll receives a `BugleRoute_PairEvent` carrying
-   `RPCPairData_Paired`; `completePairing` (`pair.go:56-79`) adopts the token,
-   fills `AuthData.Mobile`/`Browser`, emits
-   `events.PairSuccessful{PhoneID, QRData}`, **sleeps 2 seconds**, and
-   reconnects.
-6. Agent GM persists `AuthData` on `PairSuccessful` and on every
-   `events.AuthTokenRefreshed` (§3.3).
-7. QR codes expire. Agent GM calls `RefreshPhoneRelay()` (`pair.go:111-132`)
-   every 60 seconds and redraws.
-
-There is **no `events.QR` event.** `events.QR` exists in the tree
-(`events/qr.go:7`) but has zero emitters at this pin; the QR string is only
-ever a *return value*. An implementer must not wait for it.
-
-The pairing session is abandoned if no `PairSuccessful` arrives within
-`AGENT_GM_PAIRING_TIMEOUT` (default 5 minutes); Agent GM discards the
-half-built `AuthData` and returns `pairing_timeout`.
-
-#### Flow B — Google-account pairing (`GDitto` network, requires cookies)
+#### Google-account pairing (`GDitto` network, requires cookies)
 
 **The required cookie set is exact** (`pkg/connector/login.go:200-210`):
 
@@ -547,12 +510,11 @@ part of `IsLoggedIn()` (`client.go:361`) and selects the unpair path
 
 > **Therefore `session.enc` holds live, full-privilege Google account
 > cookies**, not a scoped token, for as long as the pairing lives. That is a
-> far larger blast radius than the QR flow's tachyon token. **The owner has
-> accepted this trade** (D19, 2026-09-06) in exchange for a pairing that runs
-> from one command. It is stated again in §11.4, §12.1 and `docs/pairing.md`,
-> and it is what the owner is consenting to when the headless `--server` form
-> sends cookies to a remote Agent GM. An owner who does not want it uses
-> `agm pair --qr`.
+> the whole Google account rather than a scoped token. **This is inherent to
+> the only pairing flow Google still offers** (D19), not a choice between
+> options. It is stated again in §11.4, §12.1, §15.2 and `docs/pairing.md`,
+> and it is what the owner consents to when the headless `--server` form sends
+> cookies to a remote Agent GM.
 
 **Cookie expiry does not require a re-pair.** Upstream re-authenticates an
 existing pairing with fresh cookies (`pkg/connector/login.go:246-289`):
@@ -666,7 +628,7 @@ the **first** unanswered ping, or `alertTimeoutCount` (default **4**,
 `client.go:184`) missed pings in a row. The runbook timing in §15.4 depends on
 knowing this is not a single fixed threshold.
 
-**Pairing** (`pkg/libgm/pair.go`, `pkg/libgm/events/qr.go`)
+**Pairing** (`pkg/libgm/pair.go`, `pkg/libgm/pair_google.go`)
 
 | Event | Meaning |
 |---|---|
@@ -675,10 +637,10 @@ knowing this is not a single fixed threshold.
 | `*events.GaiaLoggedOut{}` | Google cookies dead → session `logged_out`, offer a cookie refresh (§3.2) |
 | `*events.AccountChange{*gmproto.AccountChangeOrSomethingEvent, IsFake bool}` | the phone's active Google account changed. `IsFake=true` means it was synthesised at startup from `EncryptedData2` (`event_handler.go:105-118`), not a real change. A real change to a different account marks the session `account_changed` and blocks writes |
 
-`*events.QR` and `*events.BrowserActive` are **defined but never emitted** at
-this pin (`grep -rn "events.QR{"` and `NewBrowserActive` have zero callers
-outside `pkg/libgm/gmtest/main.go:131`). Agent GM must not subscribe to
-either. Browser activity arrives as a `UserAlertEvent`, below.
+`*events.BrowserActive` is **defined but never emitted** at this pin
+(`NewBrowserActive` has zero callers outside `pkg/libgm/gmtest/main.go:131`).
+Agent GM must not subscribe to it. Browser activity arrives as a
+`UserAlertEvent`, below.
 
 **Data** (`pkg/libgm/event_handler.go:handleUpdatesEvent`)
 
@@ -1783,8 +1745,8 @@ The cursor encodes `(sent_at_ms, id)` so it is stable across equal timestamps.
 | `GET` | `/v1/session/events` | `messages:read` | **SSE**, one `session` event per state change plus a 30s heartbeat. The only streaming route; it carries no message data, so it needs no replay ring and no cursor. Backs `agm session --watch` |
 | `POST` | `/v1/session/reconnect` | `admin` | force `Reconnect()` |
 | `POST` | `/v1/session/unpair` | `admin` | `libgm.Unpair`. Requires `{"confirm": true}`. Audited |
-| `POST` | `/v1/pairing/start` | `admin` | `{"method": "google", "cookies": {...}, "device_index"?: 0}` — **the default** (D19) — or `{"method": "qr"}`. `method` has no server-side default and must be given: the CLI, not the API, is what makes one of them the default. Google → `{pairing_id, method, emoji}`. QR → `{pairing_id, method, qr: {payload, png_data_url}, expires_at}` |
-| `GET` | `/v1/pairing/{pairing_id}` | `admin` | poll: `{state: waiting\|paired\|failed\|expired, qr?, emoji?, error?}`. A refreshed QR appears here |
+| `POST` | `/v1/pairing/start` | `admin` | `{"cookies": {...}, "device_index"?: 0}` → `{pairing_id, emoji}`. There is one flow, so there is no `method` field; a body carrying one is `invalid_request` naming it |
+| `GET` | `/v1/pairing/{pairing_id}` | `admin` | poll: `{state: waiting\|paired\|failed\|expired, emoji?, error?}` |
 | `DELETE` | `/v1/pairing/{pairing_id}` | `admin` | abandon an in-flight pairing |
 | `POST` | `/v1/pairing/refresh-cookies` | `admin` | `{"cookies": {...}}`. Re-authenticates the **existing** pairing (§3.2). A different Google account is `pairing_wrong_account` |
 
@@ -2838,7 +2800,6 @@ operation is pending and must not be resent.
 agm pair [--device-index N] [--timeout 5m]     # default: Chrome over CDP
 agm pair --refresh-cookies                     # re-auth without re-pairing
 agm pair --paste [--paste-file <path>]         # fallback: curl / JSON paste
-agm pair --qr                                  # the QR path, still supported
 agm pair --forget-browser
 agm unpair [--yes]
 agm session [--watch]
@@ -2939,35 +2900,10 @@ stderr, so stdout stays machine-readable.
 
 ### 11.4 Pairing UX
 
-**`agm pair` with no flags is the Google-account flow, driven through a
-dedicated Chrome profile** (D19). It is one command from start to paired. The
-fallbacks, in the order the CLI itself offers them, are `--paste` and `--qr`.
-
-#### `agm pair --qr` — the QR path
-
-```console
-$ agm pair
-Pairing Agent GM with your phone.
-
-  Open Google Messages on your Android phone
-    -> profile picture or overflow menu
-    -> Device pairing
-    -> QR code scanner
-  then scan this:
-
-    █▀▀▀▀▀█ ▀▄█▀▄ ▄ █▀▀▀▀▀█
-    █ ███ █ ▀ ▄█▀██ █ ███ █
-    █ ▀▀▀ █ █▄▀ ▄▀▄ █ ▀▀▀ █
-    ▀▀▀▀▀▀▀ █ █ █▄█ ▀▀▀▀▀▀▀
-    ... (1 module = 1 half-block, so a version-6 code fits 80x24)
-
-  Waiting for the phone... (the code refreshes every 60s; Ctrl-C to stop)
-```
-
-Rendered with half-block characters (`▀`, `▄`, `█`, space), which halves the
-height. `--qr-ascii` falls back to two spaces per module for terminals without
-Unicode block support; `--qr-file <path.png>` writes a PNG. On
-`RefreshPhoneRelay` the terminal is redrawn in place.
+**`agm pair` is the Google-account flow, driven through a dedicated Chrome
+profile** (D19). It is one command from start to paired, and it is the only
+flow. The one fallback, which the CLI offers itself when it cannot find
+Chrome, is `--paste`.
 
 #### `agm pair` — the default: dedicated Chrome over CDP
 
@@ -3061,7 +2997,7 @@ The default pairing flow signs in to your Google account in a dedicated
 Chrome profile and reads the seven session cookies Google Messages for web
 uses. Five of them are httpOnly, so only a real browser can produce them.
 
-Three ways forward, best first:
+Two ways forward, best first:
 
   1. Run this same command from a machine that has Chrome, pointing at this
      server -- only the cookies travel, over TLS:
@@ -3075,16 +3011,11 @@ Three ways forward, best first:
          agm pair --paste                 # reads the paste from stdin
          agm pair --paste-file ./curl.txt
 
-  3. Pair with a QR code instead. No Google account cookies at all -- Agent
-     GM then stores only a Messages token. Scanning happens on the phone:
-
-         agm pair --qr
-
 Set AGENT_GM_CHROME to a binary path if Chrome is somewhere unusual.
 ```
 
-The exit code is `9` (local configuration) if the owner declines all three,
-not `2`: nothing about the command was malformed.
+The exit code is `9` (local configuration) if the owner takes neither, not
+`2`: nothing about the command was malformed.
 
 **`agm pair --paste` is the documented fallback**, for a machine with no
 Chrome at all. It reads from stdin, or from `--paste-file <path>`, and accepts
@@ -3095,12 +3026,6 @@ object with your cookies, or a cURL command copied from browser devtools"*
 copied to disk. If the paste is missing a required cookie the CLI names the
 missing ones and the domain each comes from (§3.2), because a paste scoped to
 `.google.com` alone silently omits `OSID`.
-
-**`agm pair --qr` is the third path**, and the only one that needs no Google
-account credentials at all. The owner scans a code on the phone, and
-`session.enc` then holds only a tachyon token scoped to Google Messages rather
-than account cookies. An owner not comfortable with the cookie trade of D19
-uses it.
 
 #### Headless servers
 
@@ -3118,7 +3043,7 @@ decision being made:
 > directory **and** `AGENT_GM_DATA_KEY` has the owner's Google account. That is
 > why `session.enc` is mode `0600`, why §12.2 redacts cookies from every log
 > and audit payload, why §15.2 treats a backup of it as equivalent to a
-> credential, and why QR is the default.
+> credential, and why §15.2 treats a backup of it accordingly.
 
 #### `agm pair --refresh-cookies`
 
@@ -3232,9 +3157,9 @@ and error messages.
 credential.** Anyone holding both the data directory and `AGENT_GM_DATA_KEY`
 can act as that Google account, not merely as this Messages session. This
 governs §15.2 (a backup of `session.enc` is a credential backup and is stored
-accordingly). The owner accepted this in D19 in exchange for a one-command
-pairing; `agm pair --qr` is the alternative, and its `session.enc` holds a
-tachyon token scoped to Google Messages and nothing else.
+accordingly). There is no lower-privilege alternative: the gaia flow is the
+only pairing Google Messages still offers (D19), so this exposure is inherent
+to running Agent GM at all and must be planned for rather than avoided.
 
 ### 12.2 Logging
 
@@ -3368,8 +3293,7 @@ It must:
   `GetOrCreateConversation` status 3 then 1, and status 4.
 - Emit any event in §3.4 on demand, including `IsOld=true` replays,
   `RevokePairData`, `GaiaLoggedOut`, `AccountChange`, and the alert types.
-- Run both pairing flows: hand out a QR string, refresh it, then "scan" it;
-  and hand out an emoji, then accept or reject it with each
+- Run the pairing flow: hand out an emoji, then accept or reject it with each
   `GaiaPairingErrorCode`.
 - Be able to drop events, so the `dropped_events` counter is tested, and to
   **abandon the rest of a batch** the way the library's dedup does (§3.4), so
@@ -3518,8 +3442,8 @@ asserts, against that tree and not against Agent GM's own code:
 17. The listen loop still makes **401 and 403** fatal.
 18. `deduplicateUpdate`'s callers still `return` out of the batch loop on a
     hit — the loss behaviour §5.4's sweep exists for.
-19. `events.QR` and `events.NewBrowserActive` still have no callers outside
-    `pkg/libgm/gmtest`, so §3.4 is right not to subscribe to them.
+19. `events.NewBrowserActive` still has no callers outside `pkg/libgm/gmtest`,
+    so §3.4 is right not to subscribe to it.
 20. `connector/login.go` still re-authenticates an existing pairing from fresh
     cookies, gated on a non-nil tachyon token and a non-nil `PairingID`.
 
@@ -3803,8 +3727,8 @@ all three back.
 **On the gaia pairing flow, a backup of `session.enc` is a backup of the
 owner's Google account credential** (§3.2, §12.1), not merely of a Messages
 session. Store it the way a credential is stored, and never in the same place
-as `AGENT_GM_DATA_KEY`. On the QR flow it holds a tachyon token scoped to
-Google Messages, which is a much smaller thing to lose. If only (1) and (3) survive, the server starts unpaired and
+as `AGENT_GM_DATA_KEY`. There is no pairing flow that stores anything less
+(D19), so this is the standing handling rule, not a per-flow caveat. If only (1) and (3) survive, the server starts unpaired and
 the owner re-pairs; because `account_key` is derived from the phone (§4.1),
 re-pairing the same phone keeps every existing `conv_` and `msg_` ID.
 
@@ -3829,7 +3753,7 @@ reconnect.
 | starting a conversation fails with `google_undocumented_status` and the ConfigVersions match | Google returned a status the pinned proto has no name for | record `details.status` and the request, and report it upstream. Do not invent a meaning |
 | `session.state=logged_out` on a Google-account pairing | the Google cookies expired | `agm pair --refresh-cookies`. **A full re-pair is not needed** (§3.2) |
 | paired against the wrong Android phone | the account has several and the library picked the most recently seen | `agm pair --device-index 1` (§11.4) |
-| `agm pair` reports no Chrome found | no Chrome or Chromium on this machine | use `--server` from a machine that has one, or `--paste`, or `--qr` (§11.4). Set `AGENT_GM_CHROME` if Chrome is in an unusual place |
+| `agm pair` reports no Chrome found | no Chrome or Chromium on this machine | use `--server` from a machine that has one, or `--paste` (§11.4). Set `AGENT_GM_CHROME` if Chrome is in an unusual place |
 | every send is `not_default_sms_app` | Google Messages is not the phone's default SMS app | change it on the phone; `agm health` reports `is_default_sms_app` |
 | a group send fans out as separate SMS threads | the phone's *Group messaging* is set to "Send an SMS reply to all recipients" | set it to MMS on the phone (§11.4). Agent GM can only report what Google returns |
 | sends time out with `phone_not_responding` | the phone is asleep or offline | wait; the operations are `pending` and the echo will settle them. **Do not resend.** |
@@ -3912,8 +3836,8 @@ idempotency, the audit log.
    compile-time `var _ gm.Backend = (*fake.Backend)(nil)` plus a test that
    calls every method once. If a method is unimplementable against the fake,
    it does not belong in the interface.
-6. **Live gate (coordinator only).** `agent-gm spike pair` — the **default
-   Google-account flow** (D19) — launches system Chrome with the dedicated
+6. **Live gate (coordinator only).** `agent-gm spike pair` — the only pairing
+   flow (D19) — launches system Chrome with the dedicated
    `--user-data-dir` and a loopback CDP port; the owner signs in; the spike
    waits for `OSID`, captures exactly the seven cookies across
    `messages.google.com` and `www.google.com`, terminates Chrome, prints the
@@ -3921,26 +3845,22 @@ idempotency, the audit log.
    and persists `session.enc` at mode `0600`. Nothing writes the cookies to
    any file but `session.enc`, asserted by watching the process's `openat`
    calls for the duration.
-7. **Live gate.** `agent-gm spike pair --qr` from a clean data directory
-   renders a QR in an 80×24 terminal; the owner scans it; the process reports
-   `Paired`. The QR path is a supported alternative (D19) and is proven in
-   this slice, not deferred.
-8. **Live gate.** On a machine with Chrome hidden from `PATH`,
-   `agent-gm spike pair` prints the three-option no-Chrome message of §11.4 in
+7. **Live gate.** On a machine with Chrome hidden from `PATH`,
+   `agent-gm spike pair` prints the two-option no-Chrome message of §11.4 in
    the stated order and exits `9` — it does not report a missing binary.
-9. **Live gate.** `agent-gm spike list` returns the owner's real conversation
+8. **Live gate.** `agent-gm spike list` returns the owner's real conversation
    list, and the row for `<APPROVED_DIRECT_NUMBER>` is present with a `conv_`
    ID.
-10. **Live gate.** `agent-gm spike send <conv> "agent-gm slice 1 test"` to
+9. **Live gate.** `agent-gm spike send <conv> "agent-gm slice 1 test"` to
    **`<APPROVED_DIRECT_NUMBER>` and no other number** returns
    `SendMessageResponse_SUCCESS`; `spike watch` shows the remote echo carrying
    the same bare-UUID `TmpID` we sent, then at least one delivery-status
    update.
-11. **Live gate.** The owner replies from that phone; `spike watch` prints the
+10. **Live gate.** The owner replies from that phone; `spike watch` prints the
    inbound message within 10 seconds, with the right text and sender.
-12. **Live gate.** Restart the process; `session.enc` reloads, `Connect`
+11. **Live gate.** Restart the process; `session.enc` reloads, `Connect`
     succeeds without re-pairing, and `IsLoggedIn()` is true.
-13. **Live gate.** `agent-gm spike diag` prints the compiled and live
+12. **Live gate.** `agent-gm spike diag` prints the compiled and live
     `ConfigVersion` and `is_default_sms_app` from a real round trip; both are
     recorded in the slice report. (The fake can produce these too — test 3
     covers that — but the *live* values are the point here.)
@@ -4089,8 +4009,7 @@ model.
 33. `POST /v1/admin/backup` produces a file that opens standalone, and pruning
     keeps exactly `backup.keep` and audits each removal.
 34. `no-real-numbers` passes over the whole tree.
-35. **Live gate.** `agm pair` (the default Google-account flow) from a clean
-    data directory, then
+35. **Live gate.** `agm pair` from a clean data directory, then
     `agm conversations list`, then `agm messages send` one text to
     `<APPROVED_DIRECT_NUMBER>` with `--wait --wait-for sent`, then
     `agm messages send --file` of a small JPEG to the same number, then the
@@ -4098,11 +4017,10 @@ model.
     add-reaction` and `remove-reaction`. Then `agm messages delete` on Agent
     GM's own test message, with the owner confirming the effect sentence
     first. Then `agm conversations archive` and `unarchive`.
-36. **Live gate.** The other two pairing paths both work from a clean data
-    directory: `agm pair --paste`, fed a cURL command copied from devtools on
-    stdin, reaches `connected`; and a paste missing `OSID` is refused with a
-    message naming `OSID` and `messages.google.com` rather than a generic
-    failure. Then `agm pair --qr` pairs by scanning.
+36. **Live gate.** The fallback path works from a clean data directory:
+    `agm pair --paste`, fed a cURL command copied from devtools on stdin,
+    reaches `connected`; and a paste missing `OSID` is refused with a message
+    naming `OSID` and `messages.google.com` rather than a generic failure.
 37. **Live gate.** `agm pair --refresh-cookies` re-authenticates the existing
     pairing **without** a re-pair and without a new emoji; a capture from a
     different Google account is `pairing_wrong_account` and changes nothing.
@@ -4320,7 +4238,7 @@ add missing tools to `devbox.json` rather than installing on the host.
 | D16 | Deployment integration (Compose service, tunnel config) stays in `openclaw-custom` | This repository must be usable by any host |
 | D17 | The npm package is a downloading wrapper, not a bundle | Six platform binaries in one tarball is 100 MB+ for a CLI. Checksums are pinned into the tarball so a compromised release page cannot re-target an old version |
 | D18 | The interface-layering rubric is reduced to one axis | With no Matrix and no second provider, axes A and B are meaningless |
-| **D19** | **The Google-account flow is the default pairing path** (`agm pair`): system Chrome, a dedicated profile, the seven cookies read over CDP, then gaia pairing and the emoji. `agm pair --paste` is the fallback; `agm pair --qr` stays available. **Owner decision, 2026-09-06** | It is one command from start to paired, and it needs nothing done on the phone but tapping an emoji, where QR needs the phone's camera and a menu three levels deep. The cost is real and is stated wherever it matters (§3.2, §11.4, §12.1, §15.2): `session.enc` then holds **live Google account cookies** for the life of the pairing (`http.go:58`, `client.go:73-81,407`) — the whole Google account, not a scoped token — where QR's holds only a tachyon token. The owner has weighed that and chosen convenience; `--qr` exists for anyone who would not. Cookie expiry does **not** force a re-pair (`connector/login.go:246-289`), which is what makes the default sustainable |
+| **D19** | **The Google-account (gaia) flow is the only pairing path.** `agm pair` launches system Chrome with a dedicated profile, reads the seven cookies over CDP, starts gaia pairing and prints the emoji; `agm pair --paste` is the fallback. **QR pairing is removed: Google Messages no longer supports it.** Owner decision, 2026-09-06 | Google withdrew the QR device-pairing option, so there is nothing to choose between. Corroborating the withdrawal from the pinned tree: `events.QR` exists at `events/qr.go:7` but has **zero emitters** at `be48a58`, and the QR payload was only ever a return value of `StartLogin`/`RefreshPhoneRelay` — the reviewer's F-3, which flagged that Agent GM would have waited on an event that never fires. Consequence, stated wherever it matters (§3.2, §11.4, §12.1, §15.2): `session.enc` holds **live Google account cookies** for the life of the pairing (`http.go:58`, `client.go:73-81,407`) — the whole Google account, not a scoped token. There is no lower-privilege alternative to plan for, only handling rules to follow. Cookie expiry does **not** force a re-pair (`connector/login.go:246-289`), which is what makes a single flow sustainable |
 | **D20** | **OAuth client resolution is DCR-only** | Agent MX had three tiers — preregistered, Client ID Metadata Document, DCR — and an SSRF-safe outbound fetcher to support the middle one. Dropping CIMD removes all outbound HTTP from the OAuth layer, which eliminates the SSRF surface rather than defending it. Every client this server will see registers itself |
 | **D21** | **`conv_` is the conversation prefix** | Agent MX retired `conv_` for `room_` because a conversation there was a *facet of a Matrix room*. Here there is no room and a conversation is the primary noun, so `conv_` is simply correct. This is a reversal of an Agent MX decision, recorded so it is not read as an oversight |
 | **D22** | **`tmp_id` is a bare UUID, not the operation ID** | `util.GenerateTmpID()` is `uuid.NewString()` with the comment *"Matches what the native app does"* (`util/func.go:9-12`). A prefixed opaque ID would diverge from every other client of this protocol for no benefit |
@@ -4405,9 +4323,10 @@ Two smaller confirmations, not blockers:
 
 Recorded so they are not re-asked:
 
-- *Which pairing flow is primary?* The Google-account flow, by owner decision
-  on 2026-09-06 — D19. The premise of the original question was wrong in any
-  case: cookie refresh **does not** require a re-pair.
+- *Which pairing flow is primary?* There is only one — the Google-account
+  flow; the alternative was withdrawn upstream (D19, owner decision
+  2026-09-06). The premise of the original question was wrong in any case:
+  cookie refresh **does not** require a re-pair.
 - *Must the owner give up Google Messages for web?* **No.** Nothing at the pin
   describes a paired-device slot or eviction. Concurrent use causes
   `BROWSER_INACTIVE`/`BROWSER_ACTIVE` flapping and extra resyncs — bandwidth,
@@ -4433,4 +4352,5 @@ history; the name lint of §13.5 exempts this file for exactly that reason.
 | `matrix_unavailable`, `/readyz` blockers, `/v1/admin/matrix/*`, `/v1/admin/sync/*` | Nothing Matrix to be unavailable |
 | **Error codes `authentication_required`, `operation_failed`, `history_incomplete`** | `authentication_required` folded into `invalid_token` (one answer to a bad credential); `operation_failed` is redundant now that an operation carries the real error object (§6.5); `history_incomplete` survives as a **warning** on list and search responses, not a code |
 | **`--wait-for accepted`** | There is no `accepted` state, because there is no queue (D4). The default moved from `accepted` to `sent`, and `read` was added, because those are states Google actually reports |
+| **QR device pairing** | Google Messages withdrew it (D19). Agent GM never shipped it; `libgm`'s `StartLogin`, `RefreshPhoneRelay` and `GenerateQRCodeData` are out of contract, and `events.QR` had no emitters at the pin in any case |
 | Interface-layering axes A and B | D18 |
