@@ -579,8 +579,19 @@ before the pairing is known to succeed:
 |---|---|
 | `POST /v1/pairing/start` accepted, cookies captured | **no account row.** The pairing is tracked by `pairing_id` alone |
 | address extracted and validated (above) | if an account with that `acct_` ID already exists, it is *resumed* (§4.7) and keeps its current state until the pair completes. Otherwise a row is created with `state='pairing'` |
-| `FinishGaiaPairing` succeeds | `state='connected'`, `paired_at_ms` set, session file written |
+| `FinishGaiaPairing` succeeds | `state='connected'`, `state_reason=null`, `paired_at_ms` set, session file written |
 | emoji wrong or cancelled, `GaiaLoggedOut`, `AGENT_GM_PAIRING_TIMEOUT` elapsed, `DELETE /v1/pairing/{id}`, or the process restarts | **the half-built `AuthData` is discarded and a row that has never been `connected` is deleted.** A row that *had* been connected reverts to its previous state |
+
+**Re-pairing an existing account does not move it to `pairing`.** An account
+that is `signed_out` (or `error`, or `parked`) keeps that state for the whole
+of the new pairing and flips straight to `connected` on success, so a caller
+polling `GET /v1/accounts/{id}` never sees it become less usable than it
+already was. The in-flight pairing is visible on `GET /v1/pairing/{id}`, which
+carries the `account_id` once the address is known (§7.5), and the account DTO
+carries **`pairing_id`** — non-null exactly while a pairing is in flight for
+it. That is how the two surfaces are related; without it a caller sees a
+`signed_out` account and a `waiting` pairing with nothing joining them. Only a
+**new** account passes through `pairing`.
 
 Two rules follow, and both are tested (§16):
 
@@ -589,9 +600,9 @@ Two rules follow, and both are tested (§16):
   same sweep on its ordinary interval. `pairing` is never a resting state.
 - **`pairing` accounts do not count toward the §7.3 ambiguity rule.** That rule
   counts accounts in a *usable or recoverable* state — `connected`, `degraded`,
-  `error`, `signed_out`, `account_changed` — so an in-flight or abandoned pair
-  can never start demanding `account_id` on writes for an account that does not
-  exist yet and may never.
+  `parked`, `error`, `signed_out`, `account_changed` — so an in-flight or
+  abandoned pair can never start demanding `account_id` on writes for an
+  account that does not exist yet and may never.
 
 Two caveats, both recorded rather than defended:
 
@@ -1075,6 +1086,9 @@ CREATE TABLE server_meta (
     value          TEXT NOT NULL
 );
 -- keys: pending_reprocess, upstream_commit, config_version_compiled
+-- Nothing account-shaped lives here. Every per-account fact -- pairing time,
+-- last event, last sweep, backfill completion -- is a column on `accounts`,
+-- because two accounts would otherwise race on one row (5.2).
 
 -- accounts -------------------------------------------------------------------
 CREATE TABLE accounts (
@@ -1132,6 +1146,7 @@ CREATE INDEX conversations_filters_all ON conversations(conversation_type, is_gr
 -- participants ---------------------------------------------------------------
 CREATE TABLE participants (
     id                TEXT PRIMARY KEY,               -- part_...
+    account_id        TEXT NOT NULL REFERENCES accounts(id),
     conversation_id   TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
     source_id         TEXT NOT NULL,                  -- Google participantID
     contact_id        TEXT REFERENCES contacts(id),
@@ -1144,8 +1159,10 @@ CREATE TABLE participants (
     is_visible        INTEGER NOT NULL DEFAULT 1,
     UNIQUE (conversation_id, source_id)
 );
-CREATE INDEX participants_phone ON participants(phone_e164);
-CREATE INDEX participants_name  ON participants(display_name COLLATE NOCASE);
+CREATE INDEX participants_phone     ON participants(account_id, phone_e164);
+CREATE INDEX participants_phone_all ON participants(phone_e164);
+CREATE INDEX participants_name      ON participants(display_name COLLATE NOCASE);
+CREATE INDEX participants_me        ON participants(account_id, is_me) WHERE is_me = 1;
 CREATE INDEX participants_conv  ON participants(conversation_id);
 
 CREATE TABLE contacts (
@@ -1161,6 +1178,7 @@ CREATE TABLE contacts (
 );
 CREATE INDEX contacts_phone ON contacts(account_id, phone_e164);
 CREATE INDEX contacts_name  ON contacts(display_name COLLATE NOCASE);
+CREATE INDEX contacts_all   ON contacts(updated_at_ms DESC, id DESC);
 CREATE INDEX contacts_top   ON contacts(account_id, is_top) WHERE is_top = 1;
 CREATE INDEX contacts_top_all ON contacts(is_top) WHERE is_top = 1;
 
@@ -1271,7 +1289,7 @@ CREATE TABLE operations (
 );
 CREATE INDEX operations_pending ON operations(status) WHERE terminal = 0;
 CREATE INDEX operations_caller  ON operations(authorization_id, created_at_ms DESC);
-CREATE INDEX operations_tmp_id  ON operations(tmp_id) WHERE tmp_id IS NOT NULL;
+CREATE INDEX operations_tmp_id  ON operations(account_id, tmp_id) WHERE tmp_id IS NOT NULL;
 
 -- backfill progress ----------------------------------------------------------
 CREATE TABLE backfill_state (
@@ -1286,6 +1304,7 @@ CREATE TABLE backfill_state (
 );
 
 -- uploads --------------------------------------------------------------------
+-- Uploads carry NO account_id, deliberately: see 10.2.
 CREATE TABLE uploads (
     id                  TEXT PRIMARY KEY,             -- upl_...
     authorization_id    TEXT NOT NULL,
@@ -1449,7 +1468,7 @@ base64. It derives, by HKDF-SHA256 with distinct `info` strings:
 | session file envelope (§3.3) | `agent-gm/session/v1`, with the `acct_` ID as AEAD associated data |
 | `attachments.decryption_key` column encryption | `agent-gm/attachment-key/v1` |
 | upload and download ticket signing (§10.3) | `agent-gm/ticket/v1` |
-| pagination cursor signing (§7.3) | `agent-gm/cursor/v1` |
+| pagination cursor signing (§7.4) | `agent-gm/cursor/v1` |
 
 **One data key covers every account**, and it is **not rotatable in place**. A
 database restored without the key that sealed it cannot decrypt any session
@@ -1483,11 +1502,12 @@ are `gmproto` internals that mean nothing to a caller (§18.1 rubric):
 
 | State | Meaning | Reads | Writes |
 |---|---|---|---|
-| `pairing` | a pair is in flight; no session yet | — | — |
+| `pairing` | a pair is in flight; no session yet. Never a resting state (§3.2) | — | — |
 | `connected` | session valid, long poll up | yes | yes |
 | `degraded` | transient listen error; retrying | yes | yes, likely to fail |
 | `error` | the supervisor is retrying `Reconnect` with backoff | yes | refused |
 | `signed_out` | **the owner signed this account out**, or its cookies died | **yes** | refused, `unsupported_capability` / `not_signed_in` |
+| `parked` | **not scheduled**: `accounts.max_concurrent` is reached, so this account holds no client and no goroutine. Not an error, and not transient | yes | refused |
 | `account_changed` | the phone switched Google accounts underneath us | yes | refused |
 
 **Signing out keeps everything.** `agm accounts sign-out <id>`
@@ -1539,15 +1559,29 @@ signs the account out first, then deletes its rows in one transaction
 follow), collects the cached media paths inside that transaction, commits, and
 only then unlinks the files (§10.3's erasure order). Audit rows are **not**
 deleted — they record what happened when it happened (§4.3) — and they keep
-their `account_id`, so the trail of a removed account survives it. The audit
+their `account_id`, so the trail of a removed account survives it.
+
+**Nothing else deletes anything.** Signing out, `--forget-browser`, a
+`RevokePairData` from the phone, cookie expiry, `account_changed`, a failed or
+abandoned re-pair, and `accounts.max_concurrent` parking each delete **zero**
+rows. That negative is half the meaning of "only", so §16 Slice 2 tests it
+directly rather than inferring it from the positive case. The audit
 row for the removal carries the row counts.
 
 **Concurrency.** Accounts are independent. `internal/accounts` supervises one
 `gm.Backend`, one ingest goroutine, one backfill worker and one sweep timer per
 `connected` account. A `signed_out` or `error` account holds no goroutine and
 no `libgm` client. `settings.accounts.max_concurrent` (default 8, bounds 1–32)
-bounds how many run at once; beyond it, accounts are connected in
-`last_event_at_ms` order and the rest stay `degraded` with a stated reason.
+bounds how many run at once. Accounts are connected in `last_event_at_ms`
+order, newest first; the rest are **`parked`** — a state of its own, not
+`degraded`, because "waiting for a slot" and "retrying a listen error" are
+different things and an agent reading `state` must be able to tell them apart.
+A `parked` account is fully readable and its writes are refused with
+`not_signed_in`. Every account DTO also carries **`state_reason`**, a short
+machine-readable string (`capacity`, `listen_error`, `credentials`,
+`revoked_by_phone`, `cookies_expired`, `account_switched`, `crash_recovered`)
+or `null`, so `degraded` and `error` are diagnosable without reading logs.
+Parking is re-evaluated whenever an account connects or disconnects.
 
 ---
 
@@ -1588,25 +1622,36 @@ dedup must be reproducible from either source.
        - a message older than settings.backfill.horizon is seen.
 6. Record per-conversation progress in backfill_state so a restart resumes
    rather than restarting.
-7. Set server_meta.backfill_complete_at.
+7. Set accounts.backfill_complete_at_ms for THIS account. (Never a
+   server_meta key: two accounts would race on one row and the first to
+   finish would mark the whole server complete.)
 ```
 
 Concurrency is `settings.backfill.concurrency` (default 2, bounds 1–8)
-conversations at a time. Backfill is **paused** while a
-`MOBILE_DATABASE_SYNC_STARTED`/`SYNCING` alert is outstanding and resumes on
-`MOBILE_DATABASE_SYNC_COMPLETE` (§3.4), because results during a phone-side
-sync are unstable.
+conversations at a time **per account**, so the worst case is
+`backfill.concurrency × accounts.max_concurrent` in-flight `FetchMessages`
+calls. `backfill.max_messages_per_conversation` and `backfill.horizon` are
+likewise per-server settings **applied to each account**, so a generous horizon
+costs its value times the number of accounts (§15.1 gives every setting a
+scope). **That account's** backfill is paused while a
+`MOBILE_DATABASE_SYNC_STARTED`/`SYNCING` alert from **its** phone is
+outstanding, and resumes on that phone's `MOBILE_DATABASE_SYNC_COMPLETE`
+(§3.4), because results during a phone-side sync are unstable. One sleepy phone
+never stalls another account.
 
-Backfill never blocks reads. `GET /v1/health` reports
-`backfill: {state, conversations_done, conversations_total}`, and every list
-response carries a `history_incomplete` warning until
-`backfill_complete_at` is set, so an empty result during backfill is not read
-as an absent message.
+Backfill never blocks reads. `GET /v1/health` reports a `backfill` block **per
+account** (§7.5), and a list or search response carries a `history_incomplete`
+warning until **every account in its scope** has `backfill_complete_at_ms` set
+— so a cross-account read warns while account B is still backfilling even
+though account A has finished, and an empty result is never read as an absent
+message.
 
 ### 5.3 Live ingestion
 
-One goroutine, `core.ingestLoop`, drains `gm.Events()` and applies each event
-as one store write transaction. It is the **only** writer of message rows.
+**One goroutine per account**, `core.ingestLoop`, drains that account's
+`gm.Events()` and applies each event as one store write transaction, stamping
+its `account_id` on every row. Together they are the **only** writers of
+message rows, and they serialise at the single store writer (§2.4).
 
 For a `*libgm.WrappedMessage`:
 
@@ -1693,12 +1738,13 @@ It is triggered by:
 | `MOBILE_DATABASE_SYNC_COMPLETE` | `last_event_at_ms` |
 | `events.NoDataReceived` | `last_event_at_ms` |
 | `events.ListenRecovered`, and every successful `Connect` | `last_event_at_ms` |
-| a timer, every `settings.ingest.sweep_interval` (default 15m, bounds 1m–6h) | `last_sweep_at_ms` |
-| `POST /v1/admin/backfill` with no body | epoch |
+| a timer per account, every `settings.ingest.sweep_interval` (default 15m, bounds 1m–6h) | that account's `last_sweep_at_ms` |
+| `POST /v1/admin/backfill` with `{"account_id"}` | that account's `last_event_at_ms` |
+| `POST /v1/admin/backfill` with no body | epoch, **for every account** — a full re-backfill of the whole server. This is the most expensive operation Agent GM offers, so the route requires `{"confirm": true}` when the body is otherwise empty, and `agm admin backfill` prints how many accounts and conversations it is about to walk |
 
 The sweep is idempotent by construction — it writes through the same upsert
 functions as §5.3 — so running it more often costs bandwidth and nothing else.
-`GET /v1/health` reports `last_sweep_at` and `sweeps_total`.
+`GET /v1/health` reports `last_sweep_at` and `sweeps_total` **per account**.
 
 ### 5.5 Delivery-status transitions in practice
 
@@ -1911,7 +1957,15 @@ UPDATE operations
  WHERE status='running';
 ```
 
-Each row is audited as `operation.crash_recovered`. Nothing is retried. If the
+**This sweep and the `pending_timeout` reaper are process-wide, not
+per-account, and deliberately so.** A crash is a property of the process, so
+every account's in-flight operations are settled at once, before any listener
+binds and before any account connects. Accounts are independent in their
+*network* behaviour (§4.7); recovery from a process death is not an account
+concern.
+
+Each row is audited as `operation.crash_recovered`, with its `account_id`.
+Nothing is retried. If the
 send did reach Google, the remote echo will arrive on reconnect and correct
 the operation to `succeeded` with a `message_id` — which is exactly why the
 correction transition out of `unknown` exists.
@@ -2041,7 +2095,7 @@ accepted, for confirmation, elsewhere.
 
 Every DTO that can appear in a multi-account result carries `account_id`:
 conversations, messages, contacts, attachments, operations and search results.
-A cursor is bound to the `account_id` filter like any other (§7.3 pagination), so
+A cursor is bound to the `account_id` filter like any other (§7.4), so
 paging cannot silently change which accounts are in scope.
 
 ### 7.4 Pagination
