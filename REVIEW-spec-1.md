@@ -6,16 +6,31 @@ conventions verified against `/home/nick/code/agent-mx`.
 
 ## Verdict
 
-**Accept with required changes.**
+**Accept with required changes.** Do not start Slice 1 against §3 as written.
 
-The spec is unusually careful and its Agent MX port is faithful (zero Matrix
-leakage — see F-21). But §3 opens with "Everything in this section is derived
-from mautrix-gmessages at the pinned commit", and three of its load-bearing
-claims are not in that tree at all: the status-4 stale-ConfigVersion story that
-justifies decision D3, the `events.BrowserActive` takeover signal that is the
-only evidence for OQ-2, and the `events.QR` event. Two more — the
-multiple-devices error and "cookie refresh needs a full re-pair" — are
-contradicted by the code. Fix §3 before Slice 1 starts; the rest is bookkeeping.
+Two independent classes of problem.
+
+**§3 is not derived from the pin, though it says it is.** Its preamble reads
+"Everything in this section is derived from mautrix-gmessages at the pinned
+commit". Three load-bearing claims are absent from that tree entirely — the
+status-4 stale-ConfigVersion story that justifies decision D3 (F-1), the
+`events.BrowserActive` takeover signal that is the sole evidence for OQ-2
+(F-2), and `events.QR` (F-3). Two more are contradicted by the code: the
+multiple-gaia-devices error (F-4) and "refreshing cookies needs a full re-pair"
+(F-5), the latter changing the answer to OQ-1. An implementer following §3
+literally would write code that waits on events that never fire.
+
+**Slice 2 cannot execute itself.** No credential in Slice 2 can hold a
+messaging scope, so nothing can call the routes its own tests exercise (F-22);
+several promised response fields have no column or DTO behind them (F-23); and
+`gm.Backend` is missing the methods that `/v1/health`, `/typing`,
+`contacts?top=` and the media-pending path require, while §2.2 forbids reaching
+past it (F-24).
+
+Everything else is bookkeeping, and there is a great deal of it done right: the
+Agent MX port is faithful clause by clause with zero Matrix leakage (F-21), and
+every constant, signature and enum value in §3 that I could check against
+`be48a58` — thirty-odd of them — was correct.
 
 Findings are `F-n`. Severity: **C**ritical (wrong contract, will produce wrong
 code), **M**ajor, **m**inor.
@@ -225,7 +240,41 @@ Smallest change: `TmpID` is a fresh bare UUID minted per send attempt, stored
 in an indexed `operations.tmp_id` column; correlation in §6.3 is
 `tmp_id → operation_id`, not identity.
 
-### F-14 (m) devbox.json — `AGENT_GM_HOME` is not a spec variable
+### F-14 (M) §7.5, §7.6, §8.2, §4.1 — reactions are a closed enum, not a free string
+
+The spec exposes `emoji` as a free-form string on `POST
+/v1/messages/{id}/reactions`, `DELETE /v1/messages/{id}/reactions/{emoji}`,
+`add_reaction`/`remove_reaction`, and the `reactions[].emoji` read field, and
+derives `react_` IDs as `UUIDv5(ns, message ID ‖ participant ID ‖ fully-qualified
+emoji)` (§4.1:721). Google Messages does not work that way.
+
+`gmproto.EmojiType` is a **closed 14-value enum**: eleven canonical reactions
+with fixed code points (`emojitype.go:3-29`), plus `CUSTOM=8` (arbitrary
+unicode in `ReactionData.Unicode`) and `EMOTIFY=13`. Three consequences the
+spec must handle:
+
+1. **Normalisation.** `UnicodeToEmojiType` accepts both `"❤"` and `"❤️"` as
+   `RED_HEART` (`emojitype.go:53-54`), but `EmojiType.Unicode()` always renders
+   `"❤️"` (`:25-26`). A caller who adds `❤` and then calls
+   `DELETE …/reactions/❤` will miss, and the `react_` UUIDv5 for the same
+   reaction differs between the write and the read. Agent GM must canonicalise
+   through `MakeReactionData` → `EmojiType` → `Unicode()` **before** deriving
+   the ID or matching the path segment, and §4.1 should say
+   "canonical `EmojiType.Unicode()`", not "fully-qualified emoji".
+2. **`EMOTIFY` has no emoji.** Upstream renders it as the literal `:custom:`
+   (`connector/handlegmessages.go:542-543`), and any other unrecognised type
+   with an empty `Unicode()` is **silently skipped**
+   (`handlegmessages.go:546-548`). `reactions[].emoji` needs a defined value
+   for this case — `null` plus a `type` field is the honest shape.
+3. **The eleven canonical reactions are what Google's own picker offers.** The
+   spec should say that anything else becomes `CUSTOM` and may not render on
+   the recipient's phone, rather than implying any emoji works.
+
+Smallest change: add the `EmojiType` table to §3.1, add a `type` field beside
+`emoji` in the reaction read shape, and make §4.1's `react_` derivation use the
+canonical unicode.
+
+### F-15 (m) devbox.json — `AGENT_GM_HOME` is not a spec variable
 
 `devbox.json` exports `AGENT_GM_HOME=$PWD/data`. The spec uses only
 `AGENT_GM_DATA_DIR` (§3.3:482, §4.2:756, §14.1:2774, §15.1:2861). A developer
@@ -311,25 +360,227 @@ enforced as a Slice 3 acceptance item.
 
 ---
 
+## Internal consistency
+
+Cross-referenced every §7 route against §11.3 (CLI) and §8.2 (MCP), every MCP
+tool against §9.7, every promised response field against the §4.2 schema, and
+every §16 acceptance test against §13.1 (fake) and §13.3 (live gates). Spot-checked
+the highest-severity items against the file myself; line numbers are into
+`plans/AGENT_GM_SPEC.md`.
+
+### F-22 (C) Slice 2 has no credential that can call its own routes
+
+§9.7:2058 gives `admin` exactly `/v1/admin/*` and pairing "**and nothing
+else**". Slice 2's only auth mechanism is `POST /v1/auth/admin-session`
+(:2045, :3044). So in Slice 2 nothing can hold `messages:read`/`:write`/
+`:delete`, and therefore **nothing can call any route that slice-2 tests 11–20
+exercise**. Test 22 (:3112, "three scopes do not multiply the allowance") and
+test 18's exit-code matrix (:3101, needs exits 3 and 4) are unreachable for the
+same reason. Smallest change: say explicitly that the admin bootstrap session
+may mint messaging scopes for the owner, or move the messaging routes' tests
+into Slice 3.
+
+### F-23 (C) Undefined DTOs and columns behind promised reads
+
+- **No `operation` object is defined anywhere.** `{operation, message_id}` and
+  `operation: null` are returned by four routes (:1479, :1482, :1483) and one
+  tool (:1588); §6.4 gives statuses only, never a field list.
+- **`messages` has no `updated_at_ms`** (:823-843, verified) yet
+  `delivery.updated_at` is served (:1460) and slice-2 test 2 asserts on it
+  (:3055).
+- **No `backfill_state` table** (:4.2) though §5.2 step 6 (:1083) resumes from
+  it after restart.
+- **No redemption counter**, but download tickets promise `max_redemptions: 5`
+  (:2110, :2192) while §12.1:2442 says tickets are "signed, not stored". A
+  stateless token cannot enforce a 5-use cap; slice-2 test 15 (:3093) is
+  unimplementable as written.
+- `session.paired_at` / `session.last_event_at` (:1402) are in no `server_meta`
+  key (:766-768); `peer_typing_until` (:552) is in no DTO (:1439-1450);
+  `coverage` on `/v1/search/messages` (:1426) is never defined; `media_cache`
+  LRU excludes "unpinned" entries (:2194) with no pin column (:925-930).
+
+### F-24 (C) `gm.Backend` cannot serve what the API promises
+
+The §2.3 interface (:189-223) has no `FetchConfig`, `IsBugleDefault`,
+`CurrentSessionID`, `ListTopContacts`, `GetConversationType`,
+`UpdateConversation`, `SetTyping` or `GetFullSizeImage`. But §7.4 health needs
+the first three (:1401, :655-665), `POST /v1/conversations/{id}/typing`
+(:1480) has **no backend method at all**, `contacts.list?top=true` (:1427)
+needs `ListTopContacts`, and the `media_pending` path (:2124) needs
+`GetFullSizeImage`. §2.2 forbids anything above `gm` from touching `libgm` and
+§13.1's fake implements only `Backend`, so none of it is producible or
+testable. Also `ResolveConversation` (:207) returns no status, yet slice-2 test
+10 (:3076) requires distinguishing `GetOrCreateConversation` status 1 / 3 / 4.
+
+### F-25 (M) Google Messages capabilities that are read but never writable
+
+`conversations.folder`, `.pinned` and `.unread` are stored (:778-780),
+filtered (:1419) and served (:1440), and `UpdateConversation` is declared
+in-contract for "archive/unarchive/mark-unread/pin" (:343) — but **no route,
+tool or CLI command archives, unarchives, pins, unpins or marks unread**.
+Either add them or say in §7.7 why they are read-only.
+
+### F-26 (M) §16 acceptance tests that cannot run where they are placed
+
+- Slice 1 test 4 (:3017) maps §3.5 errors onto §7.2 codes, but §7 REST is
+  "explicitly not in this slice" (:3006).
+- Slice 1 test 10 (:3032) needs a **live** `ConfigVersion` and
+  `is_default_sms_app` — a real round trip — but is not marked a live gate
+  (unlike 5–9), and per F-24 the fake cannot produce either.
+- Slice 2 test 15 (:3093) revokes an authorization between redemptions;
+  authorizations and revocation arrive in Slice 3 (:3043).
+- Slice 2 test 20 (:3105) compares against a REST **`effect` field** that
+  exists in no DTO (`effect` is a table column caption at :1490).
+- Slice 2 test 8 (:3070) waits out a 24 h `pending_timeout` with no fake clock
+  specified in §13.1.
+- Slice 3 test 21 (:3211) needs claude.ai/ChatGPT to reach a deployed
+  container, but the Dockerfile and deployment are Slice 4 (:3220) — while
+  :2986 says `main` advances only when each slice's gate passes.
+- Slice 3 test 19 runs `devbox run conformance` and §12.1:2444 runs
+  `devbox run gen-secret`; **neither script exists in `devbox.json`**, which
+  §13.6:2746 claims is exhaustive. `devbox run test-live` also lacks the
+  `-tags live` that §13.3:2633 requires.
+- Slice 4 test 4 (:3232) installs on darwin-x64 and darwin-arm64 with no macOS
+  runner anywhere in §13, and is not named a live gate.
+
+### F-27 (M) Routes, tools and scopes that do not line up
+
+- `whoami` and `logout` are granted by `messages:read` in §9.7:2055 and exist
+  as CLI commands (:2294-2295), but as **no route and no tool**.
+- `POST /v1/auth/admin-session` (:2045, :3044) is the only Slice 2 credential
+  and appears in **no route table**; `/v1/auth/refresh` (:2047) is referenced
+  only negatively and never defined.
+- `agm session --watch` "streams state changes" (:2265) with no streaming
+  route; `agm operations wait` (:2291) with no wait route, though the *server*
+  setting `operations.wait_timeout` exists (:2886); `agm admin settings get`
+  (:2297) where §7 has only list and `PATCH` (:1502).
+- No MCP tool and no stated exclusion for `GET /v1/messages/{id}/attachments`
+  (:1425), `GET`/`DELETE /v1/uploads/{id}` (:1485), or `GET /v1/health`
+  (:1401) — `get_session` covers pairing state only, so `backfill`,
+  `is_default_sms_app` and `config_version_stale` are MCP-invisible even though
+  §15.4 makes them the primary diagnostic. Only `typing` gets an explicit
+  reason (:1597).
+- `get_operation` is filed under Writes/`messages:write` (:1588), in the
+  `readOnlyHint: true` row (:1630), and in the §7.5 **reads** table (:1430).
+  Three placements of one route.
+- `create_upload` is `openWorldHint: true` (:1631) though a reservation is
+  purely local, contradicting the rationale at :1635.
+
+### F-28 (M) Contradictions between sections
+
+| Where | Contradiction |
+|---|---|
+| :565 vs :2673 | §3.4 "the full enum has **27** values"; §13.4 asserts "`AlertType` still has **28** values". **28 is correct** — I counted 28 `AlertType` constants in `pkg/libgm/gmproto/events.pb.go`. Fix §3.4. |
+| :1199-1200 | worst-case send latency "roughly 4 × 60s + 31s" (= 271 s) but "the HTTP handler enforces a **240**-second deadline" — the final retry can never complete |
+| :2171 vs :1479, :1582, :1730, :2279 | "one attachment per message" vs `upload_ids` being an array on REST, MCP and the instructions block, and `--file` being repeatable |
+| :994 vs :1163, :2566, :3016 | `sending` is defined in §4.4 and promised in §8.3 but appears in **no** walk, no fake script and no test. Verified: the word occurs once in the whole spec |
+| :712-714 vs :1459, :1367 | §4.1 forbids raw Google values on public surfaces; `delivery.state_raw`, `details.google_type` and `details.status` are exactly that |
+| :1261 vs :2315 | "terminal" means `succeeded\|failed\|unknown` for an operation but additionally `delivered` for `--wait-for` — yet `delivered → read` is legal (:1010) |
+| :1352 vs :1516, :1213 | `not_paired` is both a top-level 409 code and an `unsupported_capability` reason; an unpaired send has two answers |
+| :2666 vs :687, :1004 | §13.4 #3 requires every `MessageStatusType` mapped "exactly once, no value unmapped"; §3.7 carves out tombstones and §4.4's `unknown` row absorbs "unmapped values" |
+| :985 vs :2110, :2146 | "millisecond precision" on every JSON surface vs media examples with none |
+| :2190 vs :2110, :2146 | download life 15 min / upload life 2 h vs example expiries of +30 min / +2 h 30 min against one sample clock |
+| :720 vs :2102 | `att_` is a UUIDv5 in §4.1 but rendered `att_01k4…`, the v7/ULID shape of `upl_` |
+| :1821-1826 | "every OAuth error body is `{error, error_description}`" and, three lines later, unknown `/oauth` paths use the REST `not_found` envelope |
+| :1272-1276 | §6.4's transitions omit `pending → failed`, so a `pending` operation whose echo reports failure has nowhere legal to go |
+| :1233 vs :1483, :2233 | idempotency key arrives by header, by body field, and by `?client_request_id=` query param; only two are documented |
+| :2242-2253 | no exit code for `idempotency_conflict` (409), `payload_too_large` (413) or `media_unsupported_type` (415), though slice-2 test 18 wants "every code" |
+| :2868 vs :2581, `implementer.md:31` | `AGENT_GM_ALLOW_FAKE` is required to start with `AGENT_GM_BACKEND=fake` but is in no config table and absent from both §13.1 and the implementer agent's instructions |
+| :2870 vs :2402 | `AGENT_GM_URL` is declared and used nowhere; §11.5's precedence table omits it |
+| `CONTRIBUTING.md:25` | cites "spec §14" for Devbox; §14 is Packaging |
+| `CONTRIBUTING.md:29` | points at `docs/security.md`, in no `docs/README.md` row and no slice |
+| `docs/README.md:22` | assigns `upstream-pin.md` to Slice 1; §16 Slice 1 deliverables (:2999) do not include it |
+| `README.md:15` | states the CLI **is** published as `@agent-gm/cli`, which OQ-6 (:3338) records as undecided |
+
+### F-29 (M) The §13.5 name lint would fail this spec
+
+The lint (:2722-2729) reads "every markdown page under `docs/` and `plans/`"
+and bans `room`, `portal`, `event_id`, `provider`, `redact`, `generation`,
+`outbox`, and "a `mode` argument", exempting only §1.3 and §18 as history.
+`outbox` is a §6.1 heading (:1186), `mode` is a §7.6 column (:1495), and
+`provider` is a §2.2 package rule (:173) — all outside the exemption. Either
+narrow the lint to the served catalogue plus `docs/`, or widen the carve-out.
+`send_mode` (:777, :1440, :1479) also collides with the banned `mode`.
+
+### F-30 (m) Indexes missing for filters the API advertises
+
+`conversations?query=` is defined as a substring match over the thread name
+**and every participant's name and number** (:1419, :1708) with no index on
+`conversations.name` or `participants.display_name` — a full scan plus join on
+the busiest MCP entry point. Also unindexed: `contacts.display_name` (:1427);
+`conversation_type`, `unread`, `is_group`, `deleted_at_ms` (:1419);
+`messages.delivery_state` and `messages.kind` on the account-wide
+`GET /v1/messages` (:1421); `operations(authorization_id)` for the
+caller-scoped `GET /v1/operations/{id}` (:1430); and
+`audit(authorization_id)` (:1505). `search?syntax=literal` is the **default**
+(:1426) and `messages_fts` serves fts5 only, so the default search path has no
+index at all.
+
+### F-31 (m) Reaction uniqueness contradicts SWITCH, and `react_` is dead
+
+`UNIQUE (message_id, participant_id, emoji)` (:881) permits several emoji per
+person per message; §7.6:1482 turns an add into `SWITCH` "if the owner already
+has a different reaction on that message", i.e. one per person, which needs
+`UNIQUE (message_id, participant_id)`. Separately, `react_` IDs are minted
+(:721) and served (:1466) but accepted by **no** route or tool — removal is
+keyed by emoji in the path (:1483, :1586). See also F-14.
+
+### F-32 (m) Two sources of truth for cached media
+
+`attachments.cache_path`/`.size_bytes` (:863, :867) duplicate
+`media_cache_entries.relative_path`/`.size_bytes` (:927-928). §10.3:2210 says
+the eviction sweep finds files "through those rows" without naming the
+authority, and slice-2 test 17 (:3098) asserts "no orphan row", singular.
+
+### F-33 (m) CLI cannot reach several route parameters
+
+`include_deleted` (:1419), `delivery_state` and `include_tombstones` (:1421),
+`force_rcs` (:1479), and search's `sender`/`after`/`before`/`has_attachment`
+(:1426) have no CLI flag (:2268-2279) — yet slice-2 test 11 (:3079) demands a
+route-by-route strict-rejection test. `GET /v1/messages` (account-wide) is
+CLI-unreachable at all, since `agm messages list` requires a conv ID (:2275).
+`DELETE /v1/pairing/{id}` (:1405) and `POST /v1/session/reconnect` (:1407)
+likewise have no command.
+
+---
+
 ## Rubric — "every name means what it means in Google Messages"
 
 **Score: 1 / 2.**
 
-The vocabulary is disciplined, Matrix-free, and the `delivery_state` mapping in
-§4.4 is numerically correct against `MessageStatusType` at the pin. It fails on
-one axis: three names assert Google behaviours that do not exist.
+The vocabulary is disciplined and genuinely Matrix-free (F-21), and the
+`delivery_state` mapping is numerically correct against `MessageStatusType` at
+the pin. It fails on two counts: raw `gmproto` and SQLite internals reach the
+public surface, and several names assert Google behaviours that do not exist.
 
-| Name | Where | Why it fails |
-|---|---|---|
-| `events.BrowserActive` → "another device has taken over" | §3.4 | Google reports session activity, not takeover. Event never fires (F-2) |
-| `pairing_multiple_devices` (error code) | §3.5, §7.2 | Google never reports this condition; the library picks a device (F-4) |
-| "paired-device slot" | §3.2, OQ-2 | Not a Google Messages concept at this pin (F-11) |
-| `config_version_stale` (error code) | §3.7, §7.2 | Names an Agent GM diagnosis as if it were Google's answer (F-1) |
+**Below 2 because of these three, each on a served surface:**
 
-Smallest change to reach 2: delete the first two, restate the third as an
-observed symptom in Agent GM's own vocabulary (it already is —
-`config_version_stale` is fine *if* §3.7 stops claiming Google returns 4 for
-it), and drop the slot language.
+| Name | Where | Why it fails | Smallest change |
+|---|---|---|---|
+| `send_mode: auto \| xms \| xms_latch` | column :777, **public Conversation DTO :1440**, error condition :1479 | `xms`/`xms_latch` are raw `gmproto` internals. They exist nowhere in Google Messages' UI and are opaque to the cold agent §8.3 addresses | drop `send_mode` from the DTO; express `force_rcs` eligibility through `capabilities` (:1447) |
+| `tombstone` — `messages.kind`, `include_tombstones` filter, MCP argument | :827, :1421, :1570, :687 | Google Messages has no "tombstone"; the UI shows in-thread system text. And `m.room.tombstone` is **Matrix** vocabulary — exactly what §13.5's lint exists to ban, and the ban list (:2726) misses it | `kind='system'` / `include_system`; add `tombstone` to the lint |
+| `syntax: "fts5"` | :1426, :1573 | a SQLite extension name as a public JSON Schema enum value. Google Messages search has no "syntax" | `syntax: words` (or drop it and always FTS with a literal fallback) |
+
+**Also failing, from the library pass:** `events.BrowserActive` → "another
+device has taken over" (§3.4, F-2 — Google reports session activity, not
+takeover, and the event never fires); `pairing_multiple_devices` (§3.5, F-4 —
+Google never reports it); "paired-device slot" (§3.2, OQ-2, F-11 — not a Google
+Messages concept); `config_version_stale` (§3.7, F-1 — an Agent GM diagnosis
+named as Google's answer).
+
+**Weaker but worth fixing while the names are cheap:** `folder` /
+`inbox` (:778, Google's UI says All / Archived / Spam & blocked, and `inbox` is
+email vocabulary); `delivery.state_raw` and `details.google_type` /
+`details.status` (:1459, :1367 — raw Google integers on a public surface, which
+§4.1:712 explicitly forbids); `agm messages unreact` (:2283 — disagrees with
+MCP `remove_reaction` and REST `DELETE …/reactions/{emoji}`, and §11.3:2321
+makes same-words-on-all-three a contract); `agm conversations read` (:2272 —
+reads as "read the conversation", means "mark it read"; MCP and REST both get
+it right); `type: sms|rcs` (:776 — makes MMS unnameable although §8.3:1703
+tells the agent about "SMS/MMS"); `participants` on reads vs `recipients` on
+writes (:795, :1442 vs :1478 — two names, one noun); `queued` and `canceled`
+delivery states (:993, :999 — Google's UI says *Sending…*, and offers no
+cancel); `part_` missing from §8.3's "every ID here" list (:1695 vs :1442).
 
 ---
 
@@ -415,8 +666,13 @@ server saw them once". That sentence belongs in §11.4, §12.1 and
   missing conversation body. Soften it or source it.
 - **OQ-10 (approved numbers).** Independent of the owner's answer, the numbers
   must leave the public repo — F-12.
-- Not answerable from source, correctly left to the owner: OQ-3, OQ-4, OQ-5,
-  OQ-6, OQ-7, OQ-9.
+- **OQ-5 (who approves an OAuth authorization request).** Not decidable from
+  source, but note it is currently moot: per F-22 there is no path by which a
+  non-admin authorization can hold a messaging scope at all. Answer F-22 first.
+- **OQ-6 (npm scope).** Not answerable from source, but `README.md:15` already
+  states `@agent-gm/cli` as settled fact — fix that either way (F-28).
+- Not answerable from source, correctly left to the owner: OQ-3, OQ-4, OQ-7,
+  OQ-9.
 
 ---
 
