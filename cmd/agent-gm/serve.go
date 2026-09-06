@@ -10,8 +10,11 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/rs/zerolog"
 
 	"github.com/thisnick/agent-gm/internal/accounts"
 	"github.com/thisnick/agent-gm/internal/api"
@@ -21,6 +24,7 @@ import (
 	"github.com/thisnick/agent-gm/internal/config"
 	"github.com/thisnick/agent-gm/internal/core"
 	"github.com/thisnick/agent-gm/internal/gm"
+	"github.com/thisnick/agent-gm/internal/gm/fake"
 	"github.com/thisnick/agent-gm/internal/logging"
 	"github.com/thisnick/agent-gm/internal/media"
 	"github.com/thisnick/agent-gm/internal/settings"
@@ -183,14 +187,52 @@ func runServe(args []string) int {
 		ConfigVersionCompiled: gm.CompiledConfigVersion().String(),
 		UpstreamCommit:        gm.PinnedUpstreamCommit,
 		Core:                  core.DefaultConfig(),
+		// NewBackend mints the backend a NEW pairing runs on.
+		//
+		// Under AGENT_GM_BACKEND=fake it hands out a fake, because spec
+		// section 13.1 promises that with AGENT_GM_ALLOW_FAKE=1 as well
+		// "the CLI, the REST suite and the MCP conformance run all drive a
+		// real server with no phone". Refusing here made
+		// POST /v1/pairing/start a hard 500 and meant no account could ever
+		// exist against a fake-backed server -- which is to say the promise
+		// was not kept, and the whole acceptance suite had to build its
+		// accounts by writing rows directly.
 		NewBackend: func() (gm.Backend, error) {
 			if cfg.Backend == config.BackendFake {
-				return nil, errors.New("this build is configured with the fake backend; " +
-					"pairing is not available")
+				return fake.New(nextFakeAddress()), nil
 			}
 			return gm.New(libLog), nil
 		},
 	}
+
+	// The real backfill and the real reconciliation sweep. Leaving these nil
+	// is what made both -- including the sweep D26 calls mandatory BECAUSE
+	// the event stream loses messages -- never run in the shipped binary,
+	// while both passed their tests against injected doubles.
+	workers := accounts.NewWorkers(st, func(accountID string) (*core.Account, error) {
+		a, err := sup.Get(accountID)
+		if err != nil {
+			return nil, err
+		}
+		k := cfg.DataKey
+		return &core.Account{
+			ID: accountID, Store: st, Backend: a.Backend, Clock: clk,
+			Config: core.DefaultConfig(), Audit: aud, Source: "server", DataKey: &k,
+		}, nil
+	}, nil)
+	sup.Sweep = workers
+	sup.Backfill = workers
+
+	// Resume every account whose session file is on disk, BEFORE binding.
+	// Without this a restart left every account row in the database and
+	// listed, with no backend behind it: every write failed and no event
+	// stream ran, silently.
+	resumed, err := resumeAccounts(ctx, cfg, st, sessions, sup, libLog)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "agent-gm: %v\n", err)
+		return exitLocalConfig
+	}
+	log.Info().Int("accounts", resumed).Msg("resumed")
 
 	srv := api.NewServer(api.Deps{
 		Authz:     authzSvc,
@@ -264,6 +306,94 @@ func (a settingsAdapter) Duration(ctx context.Context, key string) (time.Duratio
 		return 0, fmt.Errorf("setting %s is a %s, not a duration", key, eff.Value.Kind)
 	}
 	return eff.Value.Dur, nil
+}
+
+// fakeAccountSeq numbers the addresses a fake-backed server pairs as.
+var fakeAccountSeq atomic.Int64
+
+// nextFakeAddress is the Google account address a fake pairing yields.
+//
+// Spec section 13.1 requires the fake to have a **settable**
+// `AuthData.Mobile.SourceID` "so a test can pair two distinct accounts, or
+// re-pair the same one", and both halves matter here:
+//
+//   - AGENT_GM_FAKE_ACCOUNT pins the address, so re-pairing produces the SAME
+//     `acct_` ID and section 16 Slice 2 test 32's "the same acct_ ID is
+//     reused, no second account row appears" is reachable against a real
+//     server;
+//   - unset, each pairing gets a fresh address, so two accounts can be paired
+//     and every multi-account rule -- the ambiguity refusal, per-account
+//     idempotency, `accounts.max_concurrent` -- can be driven end to end.
+//
+// It is reached only under AGENT_GM_BACKEND=fake, which itself requires
+// AGENT_GM_ALLOW_FAKE=1 (section 15.1), so a production deployment cannot be
+// talked into it.
+func nextFakeAddress() string {
+	if pinned := os.Getenv("AGENT_GM_FAKE_ACCOUNT"); pinned != "" {
+		return pinned
+	}
+	return fmt.Sprintf("fake-%d@example.test", fakeAccountSeq.Add(1))
+}
+
+// resumeAccounts reloads every account whose session file is on disk,
+// connects it and starts its ingest goroutine. It never pairs: pairing is a
+// physical act at the owner's browser and phone (spec section 11.4).
+//
+// A session that cannot be decrypted stops the start rather than being
+// skipped. Section 15.4's first runbook row is exactly this, and it says the
+// fix is to restore the original key -- so carrying on with the account
+// silently signed out would hide the one thing the operator needs to know.
+func resumeAccounts(
+	ctx context.Context,
+	cfg config.Config,
+	st *store.Store,
+	sessions *store.SessionStore,
+	sup *accounts.Supervisor,
+	libLog zerolog.Logger,
+) (int, error) {
+	rows, err := st.Accounts(ctx)
+	if err != nil {
+		return 0, err
+	}
+	resumed := 0
+	for _, row := range rows {
+		if !row.SessionPresent {
+			continue
+		}
+		blob, err := sessions.Load(row.ID)
+		if err != nil {
+			if errors.Is(err, store.ErrSessionUndecryptable) {
+				return resumed, fmt.Errorf("%s: session envelope cannot be decrypted; the data "+
+					"key differs from the one that sealed it. Restore the original "+
+					"AGENT_GM_DATA_KEY -- there is no in-place rotation (spec 15.4)", row.ID)
+			}
+			return resumed, fmt.Errorf("%s: %w", row.ID, err)
+		}
+		var backend gm.Backend
+		if cfg.Backend == config.BackendFake {
+			f := fake.New("")
+			if err := f.LoadSession(blob); err != nil {
+				return resumed, fmt.Errorf("%s: %w", row.ID, err)
+			}
+			backend = f
+		} else {
+			b, err := gm.NewFromSession(blob, libLog)
+			if err != nil {
+				return resumed, fmt.Errorf("%s: %w", row.ID, err)
+			}
+			backend = b
+		}
+		a := sup.Adopt(ctx, row.ID, row.GoogleAccount, backend)
+		if err := sup.Start(ctx, a); err != nil {
+			// One account that will not connect is that account's problem,
+			// not the server's: the rest still serve, and its state and
+			// state_reason say why (spec section 4.7).
+			fmt.Fprintf(os.Stderr, "agent-gm: %s could not connect: %v\n", row.ID, err)
+			continue
+		}
+		resumed++
+	}
+	return resumed, nil
 }
 
 // sourceURLBase is where this program's source lives. GET /v1/health serves
