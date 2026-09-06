@@ -489,8 +489,12 @@ half-built `AuthData` and returns `pairing_timeout`.
 `SAPISIDHASH` `Authorization` header (`client.go:66-70`, `http.go:83-86`).
 `OSID` is **host-scoped to `messages.google.com`**, so a capture that reads
 only `.google.com` silently returns an unusable set — this is the most common
-way the flow fails. All seven are `httpOnly`, so `document.cookie` cannot
-reach them; §11.4 describes how the CLI captures them.
+way the flow fails. **Five of the seven — `SID`, `HSID`, `SSID`, `OSID` and `__Secure-1PSIDTS` —
+are `httpOnly`**, so `document.cookie` and any injected-JS approach cannot
+reach them. (`APISID` and `SAPISID` are *not* `httpOnly`: Google's own web apps
+read `SAPISID` from JavaScript to compute the `SAPISIDHASH` header.) Because
+the majority are `httpOnly`, a JS-only capture returns an unusable set, which
+is why §11.4 reads the browser's own cookie store over CDP.
 
 Upstream's own capture URL is
 `https://accounts.google.com/AccountChooser?continue=https://messages.google.com/web/config`
@@ -696,7 +700,7 @@ auto-acks) and never reaches Agent GM.
 The other 19 are recorded in the audit log and otherwise ignored.
 
 **Library-level deduplication loses messages, it does not merely suppress
-duplicates.** `deduplicateUpdate` (`event_handler.go:186-200`) matches on
+duplicates.** `deduplicateUpdate` (`event_handler.go:168-181`) matches on
 (id, SHA-256 of decrypted payload) against the last **8** updates
 (`client.go:138`, `recentUpdates [8]updateDedupItem`) — and on a hit the
 handler loop **`return`s**, abandoning *every remaining part of the batch*
@@ -730,7 +734,7 @@ There is **no `pairing_multiple_devices` code.** Google never reports
 "multiple devices" as an error; the library picks one (§3.2).
 
 `events.RequestError.Is` compares `Type` and `Message` only, not the error
-class (`events/ready.go:75-83`), so `errors.Is` against the three sentinel
+class (`events/ready.go:69-77`), so `errors.Is` against the three sentinel
 values is reliable and is what Agent GM uses.
 
 ### 3.6 The pin, and the policy for changing it
@@ -1856,6 +1860,7 @@ Conversation DTO:
                       "display_name": "Alex", "phone": "+12025550123",
                       "is_me": false } ],
   "peer_typing_until": null,
+  "is_deleted": false, "deleted_at": null,
   "last_activity_at": "2026-09-06T09:41:02.115Z",
   "latest_message_id": "msg_...",
   "capabilities": { "send_text": true, "send_media": true, "reply": true,
@@ -1864,6 +1869,11 @@ Conversation DTO:
                     "delete_message": true, "delete_conversation": true },
   "created_at": "…", "updated_at": "…" }
 ```
+
+`is_deleted` is true once Google's delete-for-me has been applied to this
+thread (`conversations.deleted_at_ms`), which is what `include_deleted`
+filters on. A deleted conversation keeps its ID and its indexed history; only
+Google's copy is gone.
 
 `peer_typing_until` is an RFC 3339 instant or `null`. It is held in memory
 only, never persisted, and is always `null` in a list response — typing is
@@ -1998,17 +2008,30 @@ Checked **before the transport parses anything**:
 
 ### 8.2 Tools
 
-Nineteen tools. Each is a facade over the REST route that serves the same
-data, so the filters, the validation, the error codes and the DTOs are the
-same on both surfaces by construction rather than by discipline.
+**Twenty tools** — ten reads, eight writes, two deletes. Each is a facade over
+the REST route that serves the same data, so the filters, the validation, the
+error codes and the DTOs are the same on both surfaces by construction rather
+than by discipline.
 
-Three REST routes are deliberately **not** tools, each for a stated reason:
-`POST /v1/conversations/{id}/typing` (no lasting effect and no result a model
-can act on); `GET /v1/messages/{id}/attachments` (its data is already inside
-`get_message`, so a second call would only add a round trip); and the upload
-lifecycle routes `GET`/`DELETE /v1/uploads/{id}` (an agent that has just
-called `create_upload` holds everything they would return). Every other `/v1`
-route has a tool.
+**MCP serves the messaging surface, not the whole API.** A `/v1` route has a
+tool if and only if it is something an agent does with messages. The
+exclusions, and the reason for each:
+
+| Excluded route(s) | Reason |
+|---|---|
+| `POST /v1/conversations/{id}/typing` | no lasting effect and no result a model can act on |
+| `GET /v1/messages/{id}/attachments` | its data is already inside `get_message`; a tool would only add a round trip |
+| `GET`, `DELETE /v1/uploads/{id}` | an agent that has just called `create_upload` already holds everything they would return |
+| `GET /v1/auth/whoami`, `POST /v1/auth/logout` | **credential self-management.** A model does not choose its own token, cannot act on the answer, and must not be able to log its client out mid-conversation. The client owns its credential; the model does not |
+| `POST /v1/auth/admin-session`, `POST /v1/auth/refresh` | credential *issuance*. Reachable only by presenting a secret or a refresh token, neither of which a model holds |
+| `GET /v1/session/events` | a stream; MCP tools are request/response. `get_session` answers the same question at a point in time |
+| `POST /v1/session/reconnect`, `POST /v1/session/unpair`, all four `/v1/pairing/*` | `admin` scope. Pairing is a physical act at the owner's phone (§11.4); no token an agent can hold reaches these |
+| every `/v1/admin/*` | `admin` scope, same reason. The two diagnostics an agent genuinely needs — backfill progress and the two settings that break sending — are served by `get_health` instead, without exposing the raw Google view |
+
+So the rule is: **every `/v1` route carrying a `messages:*` scope has a tool,
+except the three named in the first three rows above.** Every `admin`-scoped
+route and every credential route has none, by design. §16 Slice 3 test 16 is a
+two-way table test over exactly that statement.
 
 **Reads — `messages:read`**
 
@@ -2504,6 +2527,9 @@ or an audit payload.
 | `oauth.access_token_ttl` | 15m | 5m–1h |
 | `oauth.refresh_token_idle_ttl` | 30d | 1d–90d |
 | `oauth.refresh_token_absolute_ttl` | 90d | 7d–365d |
+| `admin.access_token_ttl` | 15m | 5m–1h |
+| `admin.refresh_token_idle_ttl` | 30d | 1d–90d |
+| `admin.refresh_token_absolute_ttl` | 90d | 7d–365d |
 | `oauth.authorization_code_ttl` | 2m | 30s–5m |
 | `oauth.authorization_request_ttl` | 15m | 1m–1h |
 | `oauth.enrollment_default_ttl` | 15m | 1m–24h |
@@ -2518,6 +2544,22 @@ The admin bootstrap (`POST /v1/auth/admin-session`, exchanging
 endpoints: an OAuth refresh token at `/v1/auth/refresh` is `invalid_token`,
 and an admin refresh token at `/oauth/token` is `invalid_grant`. Neither
 attempt revokes anything.
+
+**Admin sessions expire on the same schedule as OAuth ones**, under their own
+settings (`admin.access_token_ttl`, `admin.refresh_token_idle_ttl`,
+`admin.refresh_token_absolute_ttl`, §15.1, defaulting to the OAuth values).
+The credential that outranks everything else does not get a longer life than
+the ones it outranks. Admin refresh tokens rotate on every use and reuse of a
+spent one revokes the session, exactly as for OAuth (§9.6).
+
+**An admin refresh may never widen.** `POST /v1/auth/refresh` accepts an
+optional `scopes` that may only narrow further, relative to **the scopes the
+session was minted with**, which are recorded on the session row. Widening —
+including back to the full set after a narrowing — is `invalid_scope` and
+**does not spend the presented token**. Re-widening requires presenting
+`AGENT_GM_ADMIN_SECRET` again. Without this rule a narrowed session is one
+refresh away from full privilege, and the scope-refusal tests of §16 Slice 2
+would prove nothing.
 
 ### 9.7 Scopes
 
@@ -2551,8 +2593,10 @@ delete tools in `tools/list` nor may call them.
 
 ### 9.8 Budgets on unauthenticated endpoints
 
-`/oauth/revoke` and the `refresh_token` grant accept a bearer value from an
-unauthenticated caller. Both carry **60 requests/minute per source, burst 20**
+`/oauth/revoke`, the `refresh_token` grant, and **`POST /v1/auth/refresh`**
+accept a bearer value from an unauthenticated caller: the presented token *is*
+the credential, so an attacker can guess at all three in the same shape. All
+three carry **60 requests/minute per source, burst 20**
 (in memory; a restart forgives an anonymous caller's request debt, which costs
 nothing) plus a **durable limit of 30 unknown or invalid presented tokens per
 15 minutes**, with a cooldown that doubles per further failure in the window
@@ -2567,6 +2611,11 @@ opens**, so a caller presenting a value that belongs to nobody cannot take the
 single writer's lock and queue every other writer behind itself. When the
 token does exist, the transaction re-reads the row before cascading, so
 revocation stays a single atomic decision.
+
+`POST /v1/auth/admin-session` is budgeted separately and more tightly, under
+§12.3's admin-secret failure limit (5 per 15 minutes per source, 20 globally,
+exponential cooldown), because a success there yields more than a success
+anywhere else.
 
 ### 9.9 Browser security headers
 
@@ -2588,16 +2637,16 @@ acceptable. Bytes move by `curl`, with a ticket.
 ticket**:
 
 ```json
-{ "attachment_id": "att_01k4...",
+{ "attachment_id": "att_9f3c...",   // UUIDv5, 4.1
   "filename": "IMG_0421.jpg", "mime_type": "image/jpeg",
   "size": 184320, "sha256": "…", "sha256_available": true,
   "width": 1024, "height": 768, "download_state": "available",
   "inline": false,
-  "resource_uri": "agm://attachments/att_01k4...",
-  "download_url": "https://gm.agent-wx.app/v1/attachments/att_01k4.../content",
-  "token": "agm_dt_…", "token_audience": "download:att_01k4...",
-  "expires_at": "2026-09-06T10:11:07Z", "max_redemptions": 5,
-  "curl": "curl --fail -H 'Authorization: Bearer agm_dt_…' -o 'IMG_0421.jpg' 'https://gm.agent-wx.app/v1/attachments/att_01k4.../content'" }
+  "resource_uri": "agm://attachments/att_9f3c...",
+  "download_url": "https://gm.agent-wx.app/v1/attachments/att_9f3c.../content",
+  "token": "agm_dt_…", "token_audience": "download:att_9f3c...",
+  "expires_at": "2026-09-06T10:11:07.000Z", "max_redemptions": 5,
+  "curl": "curl --fail -H 'Authorization: Bearer agm_dt_…' -o 'IMG_0421.jpg' 'https://gm.agent-wx.app/v1/attachments/att_9f3c.../content'" }
 ```
 
 `GET /v1/attachments/{id}/content` accepts either a `messages:read` access
@@ -2632,7 +2681,7 @@ computed, `sha256` is `null`, `sha256_available` is `false`, and
   "upload_url": "https://gm.agent-wx.app/v1/uploads/upl_01k4.../content",
   "method": "PUT",
   "token": "agm_ut_…", "token_audience": "upload:upl_01k4...",
-  "expires_at": "2026-09-06T12:11:07Z",
+  "expires_at": "2026-09-06T12:11:07.000Z",
   "limits": { "max_bytes": 104857600, "size_bytes": 184320,
               "mime_type": "image/jpeg", "sha256": "…",
               "expires_in_seconds": 7200 },
@@ -2908,11 +2957,12 @@ Unicode block support; `--qr-file <path.png>` writes a PNG. On
 
 #### `agm pair --google` — dedicated Chrome over CDP
 
-The gaia flow needs seven cookies, six of them required, all `httpOnly`, one of
-them (`OSID`) host-scoped to `messages.google.com` (§3.2). Because they are
-`httpOnly`, no injected JavaScript and no `document.cookie` read can reach
-them: the only honest capture is the browser's own cookie store, read through
-the browser's own debugging protocol.
+The gaia flow needs seven cookies, six of them required, one of them (`OSID`)
+host-scoped to `messages.google.com` (§3.2). **Five of the seven are
+`httpOnly`** — only `APISID` and `SAPISID` are readable from JavaScript — so no
+injected script and no `document.cookie` read can produce a usable set. The
+only honest capture is the browser's own cookie store, read through the
+browser's own debugging protocol.
 
 ```console
 $ agm pair --google
@@ -3093,6 +3143,20 @@ profile's token to a new origin.
 
 Generate both with `devbox run gen-secret` (`openssl rand -hex 32`).
 
+**Every secret comparison is constant-time.** Any check of a caller-supplied
+value against a stored one — `AGENT_GM_ADMIN_SECRET`, an enrollment code, an
+access or refresh token, an upload or download ticket, an OAuth authorization
+code, a PKCE verifier's derived challenge, a signed cursor's MAC, an OAuth
+form token or context cookie MAC — is performed with
+`crypto/subtle.ConstantTimeCompare` (or `hmac.Equal`, which wraps it) over
+fixed-length hashes, **never with `==` on strings or `bytes.Equal`**. Values are
+hashed before comparison so the compared lengths are constant and a length
+difference cannot leak. This is the highest-value check in the system, because
+`POST /v1/auth/admin-session` (D25) mints the strongest credential Agent GM
+issues. A unit test enumerates every comparison site and fails on a `==` or a
+`bytes.Equal` against a secret-derived value; the reviewer's plant discipline
+(§13.5) mutates each site to `==` and requires a named test to kill it.
+
 Secrets never appear in `argv`: `--secret-stdin`, `--cookies-file`. Passphrases
 and cookies are read from a TTY prompt, stdin, a file read once, or the CDP
 capture of §11.4, and are excluded from process arguments, logs, audit payloads
@@ -3188,8 +3252,12 @@ boundary:** any process that can reach it can assert an arbitrary
 
 ### 12.4 Audit
 
-`audit_events` records security-relevant metadata: pairing start, success,
-failure and unpair; session invalidation and its cause; every write operation
+`audit_events` records security-relevant metadata:
+**`auth.admin_session_minted`** (source, granted scopes, whether narrowed —
+never the secret), **`auth.admin_session_narrowed`** and
+**`auth.admin_session_refreshed`** (scopes before and after),
+**`auth.admin_secret_failed`** (source and the resulting cooldown state, never
+the presented value); pairing start, success, failure and unpair; session invalidation and its cause; every write operation
 and its outcome; enrollment-code creation, consumption, expiry and
 revocation; authorization request creation, approval, denial and expiry;
 authorization and client revocation; refresh-token reuse detection; settings
@@ -3254,8 +3322,11 @@ It must:
 an injected `Clock` whose test implementation advances on demand. No test
 sleeps, and no test waits out a real 24 hours.
 
-`AGENT_GM_BACKEND=fake` selects it at runtime, so the CLI, the REST suite and
-the MCP conformance run can all drive a real server with no phone.
+`AGENT_GM_BACKEND=fake` **together with `AGENT_GM_ALLOW_FAKE=1`** selects it at
+runtime — both are required, and a `fake` backend without the second refuses to
+start, so a production deployment cannot be talked into serving an empty
+in-memory phone (§15.1). With both set, the CLI, the REST suite and the MCP
+conformance run all drive a real server with no phone.
 
 ### 13.2 Unit and integration
 
@@ -3880,32 +3951,54 @@ model.
     then unlinks; a fault injected between commit and unlink leaves an orphan
     file and **no** orphan `media_cache_entries` row.
 21. The exit-code mapping table of §11.2 in full: every §7.2 code produced
-    against a fake-backed server maps to the stated exit code. Exits 3 and 4
-    come from an expired token and from a narrowed admin session.
-22. `--json` puts exactly one JSON value on stdout and everything else on
+    against a fake-backed server maps to the stated exit code. Exit 3 comes
+    from an expired admin access token (advanced past
+    `admin.access_token_ttl` on the injected clock); exit 4 comes from a
+    **narrowed** admin session calling a route outside its scopes.
+22. **A narrowed admin session cannot re-widen.** `POST /v1/auth/refresh` with
+    `scopes` wider than the session was minted with — including the full set
+    after a narrowing — is `invalid_scope`, **does not spend** the presented
+    refresh token, and leaves the session's scopes unchanged; the next call to
+    the out-of-scope route is still exit 4. Widening requires presenting the
+    admin secret again. Test 21's exit-4 case is void without this.
+23. **Every secret comparison is constant-time.** A test enumerates the
+    comparison sites of §12.1 and fails on `==` or `bytes.Equal` against a
+    secret-derived value; the reviewer plants a `==` at each site and each
+    plant is killed by a named test (§13.5).
+24. `POST /v1/auth/admin-session` mints `admin` plus the three messaging
+    scopes, honours a `scopes` narrowing, rejects a widening, and writes
+    `auth.admin_session_minted`; a wrong secret writes
+    `auth.admin_secret_failed` and neither audit row contains the presented
+    value. Six wrong secrets in 15 minutes from one source trips the §12.3
+    cooldown, which survives a restart.
+25. `POST /v1/auth/refresh` is subject to the §9.8 durable budget: 30 invalid
+    presented tokens in 15 minutes from one source trips a cooldown that
+    survives a restart, and a `429` is indistinguishable between a real and a
+    guessed token.
+26. `--json` puts exactly one JSON value on stdout and everything else on
     stderr, for every command, asserted by parsing stdout as JSON.
-23. Every `/v1` route parameter is reachable from a CLI flag, and every CLI
+27. Every `/v1` route parameter is reachable from a CLI flag, and every CLI
     command maps to a route — asserted by a table test over both inventories,
     so a route added without a flag fails.
-24. `agm messages delete` and `agm conversations delete` print the `effect`
+28. `agm messages delete` and `agm conversations delete` print the `effect`
     string **taken from the route's response**, and refuse without `y` or
     `--yes`; the printed string equals the response field byte for byte.
-25. Trusted-proxy resolution: with the CIDR list set, a forged
+29. Trusted-proxy resolution: with the CIDR list set, a forged
     `X-Forwarded-For` from an untrusted peer is ignored; from a trusted peer
     the **rightmost** non-trusted entry wins; an unparseable entry stops the
     walk at the TCP peer; an invalid CIDR list refuses to start.
-26. Rate limits: exceeding each bucket of §12.3 is `rate_limited` with
+30. Rate limits: exceeding each bucket of §12.3 is `rate_limited` with
     `Retry-After`, and a session holding all four scopes gets one allowance per
     surface, not four.
-27. Sentinel secrets — including each of the seven Google cookie values by
+31. Sentinel secrets — including each of the seven Google cookie values by
     name — appear in no log line, no audit payload, and nowhere in
     `agent-gm.sqlite3`, `-wal` or `-shm`, proven by `strings | grep`.
-28. `PRAGMA foreign_key_check` is empty after every migration; a database at a
+32. `PRAGMA foreign_key_check` is empty after every migration; a database at a
     higher `user_version` refuses to open, naming both numbers.
-29. `POST /v1/admin/backup` produces a file that opens standalone, and pruning
+33. `POST /v1/admin/backup` produces a file that opens standalone, and pruning
     keeps exactly `backup.keep` and audits each removal.
-30. `no-real-numbers` passes over the whole tree.
-31. **Live gate.** `agm pair` (QR) from a clean data directory, then
+34. `no-real-numbers` passes over the whole tree.
+35. **Live gate.** `agm pair` (QR) from a clean data directory, then
     `agm conversations list`, then `agm messages send` one text to
     `<APPROVED_DIRECT_NUMBER>` with `--wait --wait-for sent`, then
     `agm messages send --file` of a small JPEG to the same number, then the
@@ -3913,14 +4006,14 @@ model.
     add-reaction` and `remove-reaction`. Then `agm messages delete` on Agent
     GM's own test message, with the owner confirming the effect sentence
     first. Then `agm conversations archive` and `unarchive`.
-32. **Live gate.** `agm pair --google` on a machine with Chrome: the dedicated
+36. **Live gate.** `agm pair --google` on a machine with Chrome: the dedicated
     profile opens, the owner signs in, exactly seven cookies are captured
     (including `OSID` from `messages.google.com`), Chrome is terminated, the
     emoji is displayed, the owner taps it, and the session reaches
     `connected`. Then `agm pair --google --refresh-cookies` re-authenticates
     **without** a re-pair and without a new emoji. Then `agm pair
     --forget-browser` removes the profile directory.
-33. **Live gate.** `agm conversations start <APPROVED_GROUP_NUMBER_1>
+37. **Live gate.** `agm conversations start <APPROVED_GROUP_NUMBER_1>
     <APPROVED_GROUP_NUMBER_2> --name "agent-gm test"` creates a group. If it
     fails, the failure is diagnosed against the §15.4 runbook rows
     (group-MMS setting, `config_version_stale`, `google_undocumented_status`)
@@ -3988,8 +4081,12 @@ lint and its meta-test; `docs/mcp.md`, `docs/oauth.md`.
     `client_request_id`; every write tool's description ends with the
     fresh-key sentence of §8.2. Asserted by fetching `tools/list` from a
     running server and counting, so a stale description fails the claim.
-16. Every `/v1` route either has a tool or appears in §8.2's stated-exclusion
-    list — a table test over both inventories.
+16. A two-way table test over the route inventory and the tool inventory
+    asserts §8.2's rule exactly: **every `/v1` route whose scope is
+    `messages:read`, `messages:write` or `messages:delete` has a tool, except
+    the three named exclusions; every `admin`-scoped route and every
+    credential route (`/v1/auth/*`) has none.** A tool with no route, or a
+    messaging route with neither a tool nor a listed exclusion, fails it.
 17. A domain failure is a **result** with `isError: true` and
     `structuredContent.error`, not a JSON-RPC error; an unknown tool name
     **is** a JSON-RPC error. Both directions asserted.
