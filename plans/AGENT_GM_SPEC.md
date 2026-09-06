@@ -284,9 +284,11 @@ Agent GM persists (§3.3). Fields: `RequestCrypto` (`*crypto.AESCTRHelper`),
 `RefreshKey` (`*crypto.JWK`), `Browser` and `Mobile` (`*gmproto.Device`),
 `TachyonAuthToken []byte`, `TachyonExpiry time.Time`, `TachyonTTL int64`,
 `WebEncryptionKey []byte`, `SessionID`/`DestRegID`/`PairingID` (`uuid.UUID`),
-`Cookies map[string]string`. `AuthData.IsGoogleAccount()` is
-`DestRegID != uuid.Nil` and selects the `GDitto` network; QR pairing leaves it
-`Nil` and uses the `Bugle` network (`util.QRNetwork` / `util.GoogleNetwork`).
+`Cookies map[string]string`. `AuthData.IsGoogleAccount()` is `DestRegID != uuid.Nil`
+(`client.go:92-94`). `AuthData.AuthNetwork()` (`client.go:96-101`) returns
+`util.GoogleNetwork` ("GDitto") for the gaia flow and the **empty string**
+otherwise; `util.QRNetwork` ("Bugle") appears only inside the two pairing HTTP
+payloads (`pair.go:93,115`), never as a runtime network value.
 
 #### Pairing — `pkg/libgm/pair.go`, `pkg/libgm/pair_google.go`
 
@@ -296,9 +298,10 @@ Agent GM persists (§3.3). Fields: `RequestCrypto` (`*crypto.AESCTRHelper`),
 | `(*Client).RefreshPhoneRelay` | `() (string, error)` | re-mints an expiring QR without restarting the flow; returns a new QR string. |
 | `(*Client).GenerateQRCodeData` | `(pairingKey []byte) (string, error)` | the encoder behind both of the above. Not called directly. |
 | `(*Client).DoGaiaPairing` | `(ctx, emojiCallback func(string)) error` | Google-account flow, start to finish: `StartGaiaPairing`, hand the emoji to the callback, `FinishGaiaPairing`, emit `events.PairSuccessful`, reconnect in a goroutine. **This is the call Agent GM uses for the Google-account flow.** |
-| `(*Client).StartGaiaPairing` | `(ctx) (string, *PairingSession, error)` | requires cookies (`ErrNoCookies` otherwise); signs in, enumerates the account's devices, picks the single primary, returns the emoji to display. Exposed for the CLI when it wants to render the emoji before blocking. |
+| `(*Client).StartGaiaPairing` | `(ctx) (string, *PairingSession, error)` | requires cookies (`ErrNoCookies` otherwise); signs in, enumerates the account's devices, **selects one by last-seen and `GaiaHackyDeviceSwitcher` — it does not error on several (§3.2)** — and returns the emoji to display. `pair_google.go:321-414`. |
 | `(*Client).FinishGaiaPairing` | `(ctx, *PairingSession) (string, error)` | completes UKEY2, derives the request-crypto keys, sets `AuthData.PairingID`, returns `"<mobile sourceID>/<destRegDevice int>"` as the phone ID. |
 | `(*Client).Unpair` | `(ctx) error` | dispatches to `UnpairGaia` if cookies are present, else `UnpairBugle`. **The only unpair call Agent GM makes.** |
+| `(*Client).GaiaHackyDeviceSwitcher` | `int` field (`client.go:143`) | selects among several primary-looking devices as `primaryDevices[switcher % len]` after a newest-first sort (`pair_google.go:364`). Agent GM exposes it as `agm pair --google --device-index N` and as `device_index` on `POST /v1/pairing/start`. |
 | `(*Client).PairCallback` | `atomic.Pointer[func(*gmproto.PairedData)]` | if set, `completePairing` calls it *instead of* emitting `PairSuccessful` and auto-reconnecting. Agent GM leaves it **nil** and consumes the event, so that the library's built-in 2-second settle-then-reconnect (see below) is used. |
 
 Upstream behaviours Agent GM depends on and must not re-implement:
@@ -324,7 +327,8 @@ Google-account pairing errors, all from `pair_google.go`, all mapped in §3.5:
 | `(*Client).FetchMessages` | `(ctx, conversationID string, count int64, cursor *gmproto.Cursor) (*gmproto.ListMessagesResponse, error)` | `.Messages []*Message`, `.TotalMessages int64`, `.Cursor *Cursor`. This is the backfill primitive (§5.2). |
 | `(*Client).ListContacts` | `(ctx) (*gmproto.ListContactsResponse, error)` | the phone's contact list. Request constants are fixed upstream (`i1=1, i2=350, i3=50`). |
 | `(*Client).ListTopContacts` | `(ctx) (*gmproto.ListTopContactsResponse, error)` | 8 most-contacted. Agent GM uses it for `contacts.list?top=true`. |
-| `(*Client).IsBugleDefault` | `(ctx) (*gmproto.IsBugleDefaultResponse, error)` | `.Success` — whether Google Messages is the phone's default SMS app. Surfaced in health; a `false` here explains most send failures. |
+| `(*Client).IsBugleDefault` | `(ctx) (*gmproto.IsBugleDefaultResponse, error)` | `.Success` — whether Google Messages is the phone's default SMS app. Surfaced in `GET /v1/health`; a `false` here explains most send failures. |
+| `(*Client).GetParticipantThumbnail` | `(ctx, participantIDs ...string) (*gmproto.GetThumbnailResponse, error)` | avatars for participants. Used only to populate `contacts.avatar_hash`. |
 
 `gmproto.ListConversationsRequest_Folder`: `UNKNOWN=0`, `INBOX=1`,
 `ARCHIVE=2`, `SPAM_BLOCKED=5`. `gmproto.Cursor` is
@@ -334,7 +338,7 @@ Google-account pairing errors, all from `pair_google.go`, all mapped in §3.5:
 
 | Symbol | Signature | Returns |
 |---|---|---|
-| `(*Client).SendMessage` | `(ctx, *gmproto.SendMessageRequest) (*gmproto.SendMessageResponse, error)` | `.Status` is `UNKNOWN=0, SUCCESS=1, FAILURE_2=2, FAILURE_3=3, FAILURE_4=4`. Upstream comments `FAILURE_4` as "not default sms app?". `.GoogleAccountSwitch` is set when the phone's active Google account changed underneath us. |
+| `(*Client).SendMessage` | `(ctx, *gmproto.SendMessageRequest) (*gmproto.SendMessageResponse, error)` | `.Status` is `UNKNOWN=0, SUCCESS=1, FAILURE_2=2, FAILURE_3=3, FAILURE_4=4`. Upstream renders `FAILURE_4` as the user-facing string `"Google Messages is not your default SMS app"` (`connector/errors.go:41-42`). `.GoogleAccountSwitch` is set when the phone's active Google account changed underneath us. |
 | `(*Client).SendReaction` | `(ctx, *gmproto.SendReactionRequest) (*gmproto.SendReactionResponse, error)` | `.Success bool` only. Action enum: `UNSPECIFIED=0, ADD=1, REMOVE=2, SWITCH=3`. |
 | `(*Client).DeleteMessage` | `(ctx, messageID string) (*gmproto.DeleteMessageResponse, error)` | `.Success bool`. |
 | `(*Client).MarkRead` | `(ctx, conversationID, messageID string) error` | no response body. |
@@ -349,7 +353,7 @@ Google-account pairing errors, all from `pair_google.go`, all mapped in §3.5:
 &gmproto.SendMessageRequest{
     ConversationID: convID,
     MessagePayload: &gmproto.MessagePayload{
-        TmpID:          txnID,   // Agent GM's operation ID, see §4.2
+        TmpID:          txnID,   // a bare UUID, see below
         TmpID2:         txnID,   // must equal TmpID
         ConversationID: convID,
         ParticipantID:  outgoingID, // Conversation.DefaultOutgoingID
@@ -367,9 +371,17 @@ Google-account pairing errors, all from `pair_google.go`, all mapped in §3.5:
 ```
 
 - `TmpID`, `MessagePayload.TmpID` and `MessagePayload.TmpID2` are **all three
-  set to the same value**, mirroring `connector/handlematrix.go:ConvertMatrixMessage`.
-  Agent GM sets them to its operation ID, which is how the remote echo is
-  correlated back to the operation (§6.3).
+  set to the same value**, mirroring
+  `connector/handlematrix.go:ConvertMatrixMessage`.
+- **That value is a bare UUID**, minted per send attempt with
+  `uuid.NewString()`. Upstream generates it with `util.GenerateTmpID()`
+  (`util/func.go:9-12`), whose comment is *"Matches what the native app
+  does"*, and the phone echoes the value back on the remote message
+  (`connector/handlegmessages.go:157,841`, `connector/backfill.go:66,158`).
+  It is **not** Agent GM's `op_`-prefixed operation ID: sending a non-UUID
+  transaction ID diverges from every other client of this protocol for no
+  benefit. Agent GM stores the UUID in an indexed `operations.tmp_id` column
+  and correlates the echo by `tmp_id → operation_id` (§6.3).
 - `ParticipantID` must be the conversation's `DefaultOutgoingID`. Sending with
   the wrong participant ID is how messages end up attributed to the wrong SIM.
 - `ForceRCS` is set only when the conversation is `ConversationType_RCS`, its
@@ -397,90 +409,162 @@ result — the underlying HTTP request runs to completion.
 #### Events — `pkg/libgm/event_handler.go`, `pkg/libgm/events/`
 
 See §3.4 for the full event catalogue.
-
 ### 3.2 Pairing flows and what the owner does on the phone
 
-Agent GM supports both upstream flows. The owner picks one at pair time; there
-is no automatic fallback, because the two produce different `AuthData` shapes
-(cookies vs no cookies) and different networks.
+Agent GM supports both upstream flows. **QR is the primary path** (§11.4,
+D19); the Google-account flow is available for owners who prefer it and
+accept that it stores live Google account cookies (F-7 below).
 
 #### Flow A — QR pairing (`Bugle` network, no Google cookies)
 
-1. Owner runs `agm pair --qr` (or `POST /v1/pairing/start {"method":"qr"}`).
-2. Agent GM constructs a client with `NewAuthData()`, calls `FetchConfig`, then
-   `StartLogin()`, which returns a QR payload string.
+1. Owner runs `agm pair` (QR is the default) or
+   `POST /v1/pairing/start {"method":"qr"}`.
+2. Agent GM builds a client with `NewAuthData()`, calls `FetchConfig`, then
+   `StartLogin()` (`pair.go:18-31`), which registers a phone relay, adopts the
+   returned tachyon token, starts a not-logged-in long poll, and **returns the
+   QR payload string**. The payload is `util.QRCodeURLBase` plus base64 of a
+   marshalled `gmproto.URLData` carrying the pairing key, AES key and HMAC key
+   (`pair.go:33-46`).
 3. The CLI renders that string as a QR code in the terminal (§11.4). The REST
    response returns the string plus a PNG data URL.
-4. **On the phone:** open Google Messages → profile/overflow menu → *Device
-   pairing* → *QR code scanner* → scan the terminal. Google Messages must be
-   the default SMS app for sends to work (`IsBugleDefault`, §3.1).
-5. The library's already-running not-logged-in long poll receives a
-   `BugleRoute_PairEvent` carrying `RPCPairData_Paired`; `completePairing`
-   adopts the token, fills `AuthData.Mobile`/`Browser`, emits
-   `events.PairSuccessful{PhoneID, QRData}`, sleeps 2s, and reconnects.
-6. Agent GM persists `AuthData` on `PairSuccessful` (§3.3) and on every
-   `events.AuthTokenRefreshed`.
-7. QR codes expire. If the owner is slow, Agent GM calls `RefreshPhoneRelay()`
-   every 60 seconds and pushes the new QR to the CLI, which redraws it.
+4. **On the phone:** open Google Messages → profile picture or overflow menu →
+   *Device pairing* → *QR code scanner* → scan the terminal.
+5. The already-running long poll receives a `BugleRoute_PairEvent` carrying
+   `RPCPairData_Paired`; `completePairing` (`pair.go:56-79`) adopts the token,
+   fills `AuthData.Mobile`/`Browser`, emits
+   `events.PairSuccessful{PhoneID, QRData}`, **sleeps 2 seconds**, and
+   reconnects.
+6. Agent GM persists `AuthData` on `PairSuccessful` and on every
+   `events.AuthTokenRefreshed` (§3.3).
+7. QR codes expire. Agent GM calls `RefreshPhoneRelay()` (`pair.go:111-132`)
+   every 60 seconds and redraws.
 
-The pairing session is **abandoned** if no `PairSuccessful` arrives within
-`AGENT_GM_PAIRING_TIMEOUT` (default 5 minutes); Agent GM then discards the
+There is **no `events.QR` event.** `events.QR` exists in the tree
+(`events/qr.go:7`) but has zero emitters at this pin; the QR string is only
+ever a *return value*. An implementer must not wait for it.
+
+The pairing session is abandoned if no `PairSuccessful` arrives within
+`AGENT_GM_PAIRING_TIMEOUT` (default 5 minutes); Agent GM discards the
 half-built `AuthData` and returns `pairing_timeout`.
 
 #### Flow B — Google-account pairing (`GDitto` network, requires cookies)
 
-1. Owner supplies Google cookies for `messages.google.com` — at minimum
-   `SAPISID`, plus the standard auth cookies — via
-   `agm pair --google --cookies-file <path>`. The file is a JSON object of
-   cookie name → value. Agent GM calls `AuthData.SetCookies` and **never logs
-   or echoes it**; the file is read once and not copied.
-2. Agent GM calls `DoGaiaPairing(ctx, emojiCallback)`.
-3. `StartGaiaPairing` signs in, lists the account's devices, and selects the
-   single device with `UnknownInt4 == 1`. If there is none, `ErrNoDevicesFound`;
-   if there is more than one, `ErrHadMultipleDevices`.
+**The required cookie set is exact** (`pkg/connector/login.go:200-210`):
+
+| Cookie | Domain | Required |
+|---|---|---|
+| `SID` | `.google.com` | yes |
+| `HSID` | `.google.com` | yes |
+| `SSID` | `.google.com` | yes |
+| `APISID` | `.google.com` | yes |
+| `SAPISID` | `.google.com` | yes |
+| **`OSID`** | **`messages.google.com`** | yes |
+| `__Secure-1PSIDTS` | `.google.com` | no |
+
+`SAPISID` alone is **not** sufficient. Its separate job is computing the
+`SAPISIDHASH` `Authorization` header (`client.go:66-70`, `http.go:83-86`).
+`OSID` is **host-scoped to `messages.google.com`**, so a capture that reads
+only `.google.com` silently returns an unusable set — this is the most common
+way the flow fails. All seven are `httpOnly`, so `document.cookie` cannot
+reach them; §11.4 describes how the CLI captures them.
+
+Upstream's own capture URL is
+`https://accounts.google.com/AccountChooser?continue=https://messages.google.com/web/config`
+(`login.go:229`).
+
+1. Owner runs `agm pair --google` (§11.4).
+2. Agent GM calls `AuthData.SetCookies` and then
+   `DoGaiaPairing(ctx, emojiCallback)` (`pair_google.go:300-320`).
+3. `StartGaiaPairing` (`pair_google.go:321-414`) signs in and enumerates the
+   account's devices. **Device selection is not "the single primary"**
+   (`pair_google.go:352-364`):
+   - zero devices with `UnknownInt4 == 1` → `ErrNoDevicesFound`;
+   - **more than one → the library sorts by `LastSeen` newest-first, logs a
+     warning, and picks `primaryDevices[c.GaiaHackyDeviceSwitcher % len]`.**
+     It does **not** error.
+   `ErrHadMultipleDevices` is returned **only** wrapped inside
+   `ErrPairingInitTimeout`, and only when the CLIENT_INIT round trip times out
+   with more than one candidate (`pair_google.go:385-397`).
+
+   > **Operational consequence.** A Google account with two Android devices
+   > pairs against whichever was seen most recently, silently. If that is the
+   > wrong phone the only remedy is `Client.GaiaHackyDeviceSwitcher`, surfaced
+   > as `agm pair --google --device-index N` (§11.3). Agent GM logs the chosen
+   > `dest_reg_uuid` and `dest_reg_last_seen` at pair time and records them in
+   > the audit row, so "which phone did we pair?" is answerable afterwards.
 4. The emoji callback fires with **one emoji character**. The CLI prints it
-   very large and says: *"Your phone will show three emoji. Tap this one."*
-5. **On the phone:** a Google Messages notification/dialog appears offering a
-   choice of emoji plus a "this is not me" option. The owner taps the matching
-   emoji within the timeout.
-6. `FinishGaiaPairing` completes UKEY2, derives the AES/HMAC request-crypto keys
-   (key-derivation version 0 or 1; version 1 concatenates the two UKEY2 keys in
-   hash order and HKDFs them with the `Ditto salt/info` constants), sets
-   `AuthData.PairingID`, and returns the phone ID.
+   large and alone.
+5. **On the phone:** Google Messages shows a choice of emoji plus a "this is
+   not me" option. The owner taps the matching emoji.
+6. `FinishGaiaPairing` (`pair_google.go:416-468`) completes UKEY2, derives the
+   request-crypto keys (derivation version 0 or 1), sets `AuthData.PairingID`,
+   and returns `"<mobile sourceID>/<destRegDevice int>"`.
 7. Wrong emoji → `ErrIncorrectEmoji`; "this is not me" or dismissal →
    `ErrPairingCancelled`; expiry → `ErrPairingTimeout`.
 
-Cookies **expire**. When they do, the long poll emits `events.GaiaLoggedOut`
-(delivered as a `GET_UPDATES` data event whose unencrypted payload is exactly
-`0x72 0x00` — upstream's `hackyLoggedOutBytes`). Agent GM marks the session
-`logged_out`, stops polling, and every write returns `not_paired` until the
-owner re-pairs. Refreshing cookies without a full re-pair is **not supported**
-(§18 OQ-4).
+**Cookies are kept for the whole life of the session, not consumed at
+pairing.** They live in `AuthData.Cookies`, are attached to *every* subsequent
+request (`http.go:58`, `client.go:407`,
+`session_handler.go:62,88,151,382`, `longpoll.go:519`), and are rotated in
+place by `UpdateCookiesFromResponse` (`client.go:73-81`). `HasCookies()` is
+part of `IsLoggedIn()` (`client.go:361`) and selects the unpair path
+(`pair.go:164`).
 
-#### Unpairing and the paired-device slot limit
+> **Therefore `session.enc` holds live, full-privilege Google account
+> cookies**, not a scoped token, for as long as the pairing lives. That is a
+> far larger blast radius than the QR flow's tachyon token, and it is the
+> reason QR is primary. It is stated again in §11.4, §12.1 and
+> `docs/pairing.md`, and it is what the owner is consenting to when the
+> headless `--server` form sends cookies to a remote Agent GM.
 
-Google Messages allows a **small, undocumented number of simultaneously paired
-web devices** (observed at 1 active browser session per pairing plus a bounded
-list of remembered devices; Google's UI presents this as a device list with a
-"Remove"/"Unpair all devices" action). Two consequences the owner must know:
+**Cookie expiry does not require a re-pair.** Upstream re-authenticates an
+existing pairing with fresh cookies (`pkg/connector/login.go:246-289`):
+`StartWithOverride` accepts the re-auth only when
+`Session.TachyonAuthToken != nil && Session.PairingID != uuid.Nil` (`:249`);
+`SubmitCookies` then sets the new cookies, calls `FetchConfig`, verifies the
+same account with
+`Config.GetDeviceInfo().GetEmail() == Session.Mobile.GetSourceID()` (`:268`),
+`Connect`s, and saves; on any failure it restores by `SetCookies(nil)`
+(`:289`). Agent GM implements exactly that as
+`agm pair --google --refresh-cookies` and
+`POST /v1/pairing/refresh-cookies`. A refresh against a **different** Google
+account is refused with `pairing_wrong_account` and changes nothing.
 
-- Pairing Agent GM **may evict** an existing paired device, including the
-  Google Messages Web tab in a browser, and pairing that tab may evict Agent GM.
-  The owner should treat Agent GM as *the* paired device for this phone.
-- If Agent GM is unpaired from the phone, the phone stops responding and the
-  long poll produces `events.PingFailed` wrapping
-  `events.ErrRequestedEntityNotFound`, or a `gmproto.RevokePairData` event.
-  Agent GM treats both as **session invalidation**: it marks the session
-  `unpaired`, stops the poller, and requires a fresh pair.
+When cookies die without a refresh, the long poll emits
+`events.GaiaLoggedOut` — delivered as a `GET_UPDATES` data event whose
+unencrypted payload is exactly `{0x72, 0x00}`
+(`event_handler.go:226-232`, `hackyLoggedOutBytes`). Agent GM marks the
+session `logged_out`; reads keep working, writes return `not_paired`, and the
+fix is a cookie refresh, not a re-pair.
+
+#### Concurrent Google Messages Web use
+
+**Agent GM does not evict Google Messages Web, and Messages Web does not evict
+Agent GM.** Nothing at this pin describes a paired-device slot limit, and the
+gaia device enumeration explicitly expects and tolerates several devices
+(above). What concurrent use *does* cause is session flapping: the phone emits
+`BROWSER_INACTIVE(1)`, `BROWSER_INACTIVE_FROM_TIMEOUT(7)` and
+`BROWSER_INACTIVE_FROM_INACTIVITY(8)` when this session goes idle, and
+`BROWSER_ACTIVE(2)` when it comes back (`connector/handlegmessages.go:298-340`).
+Each `BROWSER_ACTIVE` whose session ID differs from the last one triggers a
+resync. The cost is bandwidth and backfill churn, not the pairing.
+
+#### Unpairing and session invalidation
+
+`Unpair(ctx)` (`pair.go:159-166`) dispatches to `UnpairGaia` when cookies are
+present, else `UnpairBugle`. If the *phone* ends the pairing, the long poll
+produces `events.PingFailed` wrapping `events.ErrRequestedEntityNotFound`, or
+a `*gmproto.RevokePairData` event (`pair.go:50-51`). Agent GM treats both as
+session invalidation: mark `unpaired`, stop the poller, require a fresh pair.
 
 Agent GM never pairs implicitly. `agm pair` is always explicit, always
 interactive or `--yes`-gated, and always writes an audit record.
 
 ### 3.3 Session persistence and refresh
 
-The session is `libgm.AuthData` marshalled to JSON. It is stored **outside** the
-SQLite database, at `$AGENT_GM_DATA_DIR/session.enc`, encrypted with the data
-key (§4.5) using XChaCha20-Poly1305 with a random 24-byte nonce prefix.
+The session is `libgm.AuthData` marshalled to JSON. It is stored **outside**
+the SQLite database, at `$AGENT_GM_DATA_DIR/session.enc`, encrypted with the
+data key (§4.5) using XChaCha20-Poly1305 with a random 24-byte nonce prefix.
 
 ```
 session.enc := "AGMS1" || nonce[24] || AEAD(datakey, nonce, json(AuthData), aad="agent-gm/session/v1")
@@ -491,20 +575,22 @@ Rules:
 - Written **atomically** (`session.enc.tmp` + `fsync` + `rename`), and only by
   the store writer goroutine, so a crash mid-write cannot corrupt it.
 - Persisted on: `events.PairSuccessful`, `events.AuthTokenRefreshed`, every
-  successful `Connect`, and on graceful shutdown. Also on a 5-minute timer if
-  the in-memory `AuthData` differs from what was last written (cookies mutate
-  in place via `AuthData.UpdateCookiesFromResponse`, without an event).
-- File mode `0600`. Never logged, never included in a support bundle, never
-  returned by any API.
-- **Token refresh is the library's job.** `refreshAuthToken` runs inside
-  `Connect` and inside the long-poll loop, refreshing when
-  `time.Until(TachyonExpiry) <= libgm.RefreshTachyonBuffer` (1 hour).
-  On success it emits `events.AuthTokenRefreshed`. Agent GM must not call any
-  refresh path itself; it only persists.
+  successful `Connect`, and graceful shutdown. Also on a 5-minute timer if the
+  in-memory `AuthData` differs from what was last written — **cookies mutate
+  in place via `UpdateCookiesFromResponse` (`client.go:73-81`) with no event**,
+  so the timer is the only thing that captures a rotation.
+- File mode `0600`. Never logged, never included in a diagnostics bundle,
+  never returned by any API. On the gaia flow it contains live Google account
+  cookies (§3.2), which governs how backups of it are handled (§15.2).
+- **Token refresh is the library's job.** `refreshAuthToken` (`client.go:491`)
+  runs inside `Connect` and inside the long-poll loop, refreshing when
+  `time.Until(TachyonExpiry) <= libgm.RefreshTachyonBuffer` (1 hour,
+  `client.go:105`). On success it emits `events.AuthTokenRefreshed`. Agent GM
+  never calls a refresh path itself; it only persists.
 - A refresh error is **fatal** if it is `events.ErrInvalidCredentials`,
   `events.ErrRequestedEntityNotFound`, or an HTTP 401/403/404
-  (`client.go:isFatalRefreshError`). Fatal → session invalidated. Anything else
-  is transient and the long poll retries.
+  (`client.go:477-489`, `isFatalRefreshError`). Fatal → session invalidated.
+  Anything else is transient and the long poll retries.
 
 ### 3.4 The event stream
 
@@ -516,27 +602,46 @@ increments `unknown_events` in health.
 
 | Event | Meaning | Agent GM's reaction |
 |---|---|---|
-| `*events.ClientReady{SessionID, Conversations}` | long poll established, with the initial conversation list | mark session `connected`; upsert those conversations; kick backfill (§5.2) |
+| `*events.ClientReady{SessionID, Conversations}` | long poll established, with the initial conversation list | mark `connected`; upsert those conversations; kick backfill (§5.2) |
 | `*events.AuthTokenRefreshed{}` | tachyon token rotated | persist `AuthData` |
-| `*events.ListenTemporaryError{Error}` | poll dropped, will retry | session → `degraded`; record in health; no user-visible failure |
+| `*events.ListenTemporaryError{Error}` | poll dropped, will retry | session → `degraded`; health counter; no user-visible failure |
 | `*events.ListenRecovered{}` | poll back | session → `connected` |
-| `*events.ListenFatalError{Error}` | poll cannot continue | if `ErrInvalidCredentials` or the error string is `"http 401 while polling"` → invalidate session (`bad_credentials`); otherwise session → `error` and the supervisor retries `Reconnect` with backoff |
-| `*events.PingFailed{Error, ErrorCount}` | ditto ping failed | if `ErrRequestedEntityNotFound` → invalidate session as `unpaired`; else if `ErrorCount > 1` → session → `error` (upstream deliberately ignores the first failure) |
-| `*events.PhoneNotResponding{}` | phone unreachable | health flag `phone_responding=false`; sends still allowed but will likely fail |
+| `*events.ListenFatalError{Error}` | poll cannot continue | see the matching rule below |
+| `*events.PingFailed{Error, ErrorCount}` | ditto ping failed | `ErrRequestedEntityNotFound` → invalidate as `unpaired`; else if `ErrorCount > 1` → session `error` (upstream deliberately ignores the first failure) |
+| `*events.PhoneNotResponding{}` | see below | health flag `phone_responding=false`; sends still allowed but will likely fail |
 | `*events.PhoneRespondingAgain{}` | recovered | `phone_responding=true` |
-| `*events.NoDataReceived{}` | nothing received for `dataReceiveCheckInterval` | health counter; triggers a `ListConversations` poke |
-| `*events.HackySetActiveMayFail{}` | skip-count non-zero at connect | re-issue `SetActiveSession` after a delay |
-| `*events.BrowserActive{SessionID}` | a browser session became active | if `SessionID != CurrentSessionID()`, **another device has taken over**; log a warning and record it — this is the signal that the owner opened Google Messages Web (§3.2 slot limit) |
+| `*events.NoDataReceived{}` | nothing received for `dataReceiveCheckInterval` (default 2h55m, `client.go:115`) | health counter; triggers a reconciliation sweep (§5.4) |
+| `*events.HackySetActiveMayFail{}` | skip count non-zero at connect | re-issue `SetActiveSession` after a delay |
 
-**Pairing** (`pkg/libgm/events/qr.go`, `pair.go`)
+**Matching `ListenFatalError` correctly.** The library makes an HTTP
+**`401` or `403`** on the listen request fatal, and renders both as
+`http %d while polling` (`longpoll.go:539-547`, `events/ready.go:84-87`).
+Agent GM therefore matches with
+`errors.As(err, &events.HTTPError{})` and `Resp.StatusCode ∈ {401, 403}`, or
+`errors.Is(err, events.ErrInvalidCredentials)` — **never on the string**.
+Matching only `"http 401 while polling"` sends a 403 into the retry branch,
+where it loops forever on dead credentials. Either match → invalidate the
+session as `bad_credentials`. Anything else → session `error`, and the
+supervisor retries `Reconnect` with backoff.
+
+**`PhoneNotResponding` has two trigger paths** (`longpoll.go:72-90,134-147,196-212`):
+the **first** unanswered ping, or `alertTimeoutCount` (default **4**,
+`client.go:184`) missed pings in a row. The runbook timing in §15.4 depends on
+knowing this is not a single fixed threshold.
+
+**Pairing** (`pkg/libgm/pair.go`, `pkg/libgm/events/qr.go`)
 
 | Event | Meaning |
 |---|---|
-| `*events.QR{URL}` | a QR payload to display (emitted by the poller during QR pairing) |
 | `*events.PairSuccessful{PhoneID, QRData}` | pairing done; `QRData` is `*gmproto.PairedData` |
-| `*gmproto.RevokePairData` | the phone revoked this pairing → invalidate session |
-| `*events.GaiaLoggedOut{}` | Google cookies dead → invalidate session |
-| `*events.AccountChange{*gmproto.AccountChangeOrSomethingEvent, IsFake bool}` | the phone's active Google account changed. `IsFake=true` means it was synthesised at startup from `EncryptedData2`, not a real change. Agent GM records the account and, if it differs from the paired one, marks the session `account_changed` and blocks writes. |
+| `*gmproto.RevokePairData` | the phone revoked this pairing → invalidate |
+| `*events.GaiaLoggedOut{}` | Google cookies dead → session `logged_out`, offer a cookie refresh (§3.2) |
+| `*events.AccountChange{*gmproto.AccountChangeOrSomethingEvent, IsFake bool}` | the phone's active Google account changed. `IsFake=true` means it was synthesised at startup from `EncryptedData2` (`event_handler.go:105-118`), not a real change. A real change to a different account marks the session `account_changed` and blocks writes |
+
+`*events.QR` and `*events.BrowserActive` are **defined but never emitted** at
+this pin (`grep -rn "events.QR{"` and `NewBrowserActive` have zero callers
+outside `pkg/libgm/gmtest/main.go:131`). Agent GM must not subscribe to
+either. Browser activity arrives as a `UserAlertEvent`, below.
 
 **Data** (`pkg/libgm/event_handler.go:handleUpdatesEvent`)
 
@@ -545,48 +650,64 @@ All data events arrive as `ActionType_GET_UPDATES` and are demultiplexed by
 
 | Delivered type | Source | Agent GM's reaction |
 |---|---|---|
-| `*libgm.WrappedMessage{*gmproto.Message, IsOld bool, Data []byte}` | `UpdateEvents_MessageEvent` | the message ingest path (§5.3). `IsOld` means the event was replayed from the server's backlog after reconnect. |
-| `*gmproto.Conversation` | `UpdateEvents_ConversationEvent` | conversation upsert. **Old conversation events are skipped by the library**, so Agent GM always sees fresh ones. |
-| `*gmproto.UserAlertEvent` | `UpdateEvents_UserAlertEvent` | see the alert table below. Old alerts are dropped by the library. |
-| `*gmproto.Settings` | `UpdateEvents_SettingsEvent` | store the SIM list, RCS enablement, and whether Google Messages is the default SMS app |
+| `*libgm.WrappedMessage{*gmproto.Message, IsOld bool, Data []byte}` | `UpdateEvents_MessageEvent` | the message ingest path (§5.3). `IsOld` means replayed from the server's backlog after reconnect |
+| `*gmproto.Conversation` | `UpdateEvents_ConversationEvent` | conversation upsert. Old conversation events are dropped by the library (`event_handler.go:262-267`) |
+| `*gmproto.UserAlertEvent` | `UpdateEvents_UserAlertEvent` | the alert table below. Old alerts are dropped by the library (`event_handler.go:249-251`) |
+| `*gmproto.Settings` | `UpdateEvents_SettingsEvent` | SIM list, RCS enablement, default-SMS-app flag |
 | `*gmproto.TypingData` | `UpdateEvents_TypingEvent` | ephemeral; surfaced in `GET /v1/conversations/{id}` as `peer_typing_until`, never persisted |
 
-`UpdateEvents_BrowserPresenceCheckEvent` is handled entirely inside the library
-(it auto-acks) and never reaches Agent GM.
+`UpdateEvents_BrowserPresenceCheckEvent` is handled inside the library (it
+auto-acks) and never reaches Agent GM.
 
-`gmproto.AlertType` values Agent GM acts on: `BROWSER_INACTIVE=1`,
-`BROWSER_ACTIVE=2`, `BROWSER_INACTIVE_FROM_TIMEOUT=7`,
-`BROWSER_INACTIVE_FROM_INACTIVITY=8` (connection health);
-`MOBILE_BATTERY_LOW=5`/`MOBILE_BATTERY_RESTORED=6`,
-`MOBILE_DATA_CONNECTION=3`/`MOBILE_WIFI_CONNECTION=4` (phone health, surfaced in
-`GET /v1/health`); `RCS_CONNECTION=9`;
-`MOBILE_DATABASE_SYNC_STARTED=13`/`MOBILE_DATABASE_SYNCING=11`/`MOBILE_DATABASE_SYNC_COMPLETE=12`
-(a sync in progress means backfill results are unstable — Agent GM defers
-backfill until complete). The full enum has 27 values; the rest are recorded in
-the audit log and otherwise ignored.
+**`gmproto.AlertType` has 28 values (0–27).** The ones Agent GM acts on:
 
-**Library-level deduplication.** Before Agent GM sees anything,
-`deduplicateUpdate` drops any message or conversation update whose
-(id, SHA-256 of decrypted payload) pair matches one of the **last 8** updates
-(`client.go:recentUpdates [8]updateDedupItem`). This window is small; Agent GM
-must not rely on it and does its own dedup (§5.4).
+| Alert | Reaction |
+|---|---|
+| `BROWSER_ACTIVE(2)` | **This session became active.** Compare `Client.CurrentSessionID()` against the last one Agent GM saw; if it differs — or if the session was inactive, or no data arrived recently — **resync**: run the reconciliation sweep of §5.4 since `last_data_received`. This is the pattern at `connector/handlegmessages.go:301-327`. It means "our session changed, resync", **not** "another device took over" |
+| `BROWSER_INACTIVE(1)`, `BROWSER_INACTIVE_FROM_TIMEOUT(7)`, `BROWSER_INACTIVE_FROM_INACTIVITY(8)` | this session went idle; health flag, and expect a `BROWSER_ACTIVE` resync next |
+| `MOBILE_DATABASE_SYNC_STARTED(13)`, `MOBILE_DATABASE_SYNCING(11)` | the phone is resyncing its own database; **defer backfill**, results are unstable |
+| `MOBILE_DATABASE_SYNC_COMPLETE(12)` | resume backfill and run a minimal reconciliation sweep |
+| `MOBILE_BATTERY_LOW(5)` / `MOBILE_BATTERY_RESTORED(6)`, `MOBILE_DATA_CONNECTION(3)` / `MOBILE_WIFI_CONNECTION(4)`, `RCS_CONNECTION(9)` | phone-health fields in `GET /v1/health` |
+
+The other 19 are recorded in the audit log and otherwise ignored.
+
+**Library-level deduplication loses messages, it does not merely suppress
+duplicates.** `deduplicateUpdate` (`event_handler.go:186-200`) matches on
+(id, SHA-256 of decrypted payload) against the last **8** updates
+(`client.go:138`, `recentUpdates [8]updateDedupItem`) — and on a hit the
+handler loop **`return`s**, abandoning *every remaining part of the batch*
+(`event_handler.go:263-266` for conversations, `:272-275` for messages).
+
+> This is the single most important correctness consequence in this section.
+> The live event stream is **not** a complete record. Agent GM's own dedup
+> (§5.4) cannot recover a message it never saw, so §5.4 requires a periodic
+> reconciliation sweep, and §3.4's `BROWSER_ACTIVE`, `NoDataReceived` and
+> `MOBILE_DATABASE_SYNC_COMPLETE` rows all trigger one.
 
 ### 3.5 Error taxonomy from the library
 
 | Library error | Where | Agent GM code (§7.2) |
 |---|---|---|
-| `libgm.ErrPhoneNotResponding` | `session_handler.go`; the phone did not answer within `responseHardTimeout` = **60s**. Upstream notes *the server already accepted the request, so the phone may still process it later.* | `phone_not_responding` (HTTP 504) — and the operation stays `pending`, not `failed` (§6.4) |
-| `libgm.ErrConnectionClosed` | request in flight when `Disconnect` ran | `disconnected` (503) |
-| `events.ErrInvalidCredentials` | tachyon type 16 | `not_paired` (401 to the caller? **no** — 409, see §7.2) |
-| `events.ErrRequestedEntityNotFound` | tachyon type 5 | `not_paired` (409) |
-| `events.ErrCallerNoPermission` | tachyon type 7 | `google_permission_denied` (502) |
-| `events.RequestError{Data *gmproto.ErrorResponse, HTTP *HTTPError}` | any non-OK tachyon response | `google_error` (502), with `google.type` and `google.message` in `details` |
-| `events.HTTPError{Action, Resp, Body}` | transport-level | `google_http_error` (502), with `details.status` |
-| `pair_google.Err*` (7 values, §3.1) | pairing | `pairing_no_cookies`, `pairing_no_devices`, `pairing_wrong_emoji`, `pairing_cancelled`, `pairing_timeout`, `pairing_init_timeout`, `pairing_multiple_devices` (all 409) |
+| `libgm.ErrPhoneNotResponding` | `session_handler.go:20-32,231`; the phone did not answer within `responseHardTimeout` = **60s**. Upstream notes *the server already accepted the request, so the phone may still process it later* | `phone_not_responding` (504) — and the operation stays `pending`, not `failed` (§6.4) |
+| `libgm.ErrConnectionClosed` | `session_handler.go:25`; request in flight when `Disconnect` ran | `disconnected` (503) |
+| `events.ErrInvalidCredentials` | tachyon type 16 (`events/ready.go:47-52`) | `not_paired` (409) |
+| `events.ErrRequestedEntityNotFound` | tachyon type 5 (`events/ready.go:35-45`) | `not_paired` (409) |
+| `events.ErrCallerNoPermission` | tachyon type 7 (`events/ready.go:54-59`) | `google_permission_denied` (502) |
+| `events.RequestError{Data, HTTP}` | any non-OK tachyon response | `google_error` (502), with the numeric type and message in `details` |
+| `events.HTTPError{Action, Resp, Body}` | transport level | `google_http_error` (502) |
+| `pair_google.ErrNoCookies` | gaia without cookies | `pairing_no_cookies` (409) |
+| `pair_google.ErrNoDevicesFound` | zero primary devices | `pairing_no_devices` (409) |
+| `pair_google.ErrIncorrectEmoji` | wrong emoji tapped | `pairing_wrong_emoji` (409) |
+| `pair_google.ErrPairingCancelled` | dismissed, or "this is not me" | `pairing_cancelled` (409) |
+| `pair_google.ErrPairingTimeout` | expiry | `pairing_timeout` (409) |
+| `pair_google.ErrPairingInitTimeout` | CLIENT_INIT round trip exceeded `GaiaInitTimeout` (20s) | `pairing_init_timeout` (409, retryable). **`ErrHadMultipleDevices` is only ever wrapped inside this**, so it is reported as `details.multiple_devices: true` plus `details.device_count`, never as its own code |
+
+There is **no `pairing_multiple_devices` code.** Google never reports
+"multiple devices" as an error; the library picks one (§3.2).
 
 `events.RequestError.Is` compares `Type` and `Message` only, not the error
-class — so `errors.Is` against the three sentinel values is reliable and is
-what Agent GM uses.
+class (`events/ready.go:75-83`), so `errors.Is` against the three sentinel
+values is reliable and is what Agent GM uses.
 
 ### 3.6 The pin, and the policy for changing it
 
@@ -595,114 +716,163 @@ module:  go.mau.fi/mautrix-gmessages
 commit:  be48a58
 subject: libgm/config: bump version
 ConfigVersion (util.ConfigMessage): Year=2026 Month=9 Day=2 V1=4 V2=6
+                                    (util/config.go:7-13)
 go directive: 1.26.0 (toolchain go1.27.0)
 ```
 
-`go.mod` pins by pseudo-version resolving to `be48a58`. A vendored checkout of
-the upstream tree at that commit lives at `/home/nick/code/mautrix-gmessages`
-on the owner's machine and is **not** committed here; CI re-clones it for the
+`go.mod` pins by pseudo-version resolving to `be48a58`. A checkout of the
+upstream tree at that commit lives at `/home/nick/code/mautrix-gmessages` on
+the owner's machine and is **not** committed here; CI re-clones it for the
 fixture-validation job (§13.4).
+
+**Every claim in §3 cites `file:line` in that tree.** A claim that cannot be
+cited is not a library claim and belongs in §18.1 as a field observation.
 
 **Pin-and-bump policy.**
 
-- The pin is a **fact recorded in three places that must agree**: `go.mod`, the
-  constant `gm.PinnedUpstreamCommit` in `internal/gm/pin.go`, and this section.
-  A CI job (`pin-consistency`) fails the build if they diverge.
-- Agent GM **never** floats the dependency. `GOFLAGS=-mod=readonly` is set in
+- The pin is a **fact recorded in three places that must agree**: `go.mod`,
+  the constant `gm.PinnedUpstreamCommit` in `internal/gm/pin.go`, and this
+  section. CI job `pin-consistency` fails if they diverge.
+- Agent GM never floats the dependency. `GOFLAGS=-mod=readonly` is set in
   `devbox.json` so an accidental `go get` cannot silently move it.
-- **Bumping the pin is a deliberate slice**, never a drive-by commit. The slice
-  must: (a) update all three places; (b) diff `pkg/libgm` between old and new
-  commit and record, in `docs/upstream-pin.md`, every change to a symbol in
-  §3.1, every change to `util.ConfigMessage`, and every added/removed/renamed
-  enum value in §3.7 or §5.5; (c) re-run the fixture validation job; (d) pass a
-  **live gate** (§13.3) — pair, list, send one text to the approved number,
-  receive a reply — run by the coordinator, not by an implementer.
-- A bump that changes `util.ConfigMessage` is **expected to be urgent**: a stale
-  ConfigVersion is the known cause of the undocumented `GetOrCreateConversation`
-  status in §3.7. Agent GM surfaces the compiled-in and the live-fetched
-  versions side by side in `GET /v1/health` precisely so this is diagnosable
-  without reading logs (§3.7).
+- **Bumping is a deliberate slice**, never a drive-by commit. The slice must:
+  (a) update all three places; (b) diff `pkg/libgm` and `pkg/connector`
+  between old and new commit and record, in `docs/upstream-pin.md`, every
+  change to a symbol in §3.1, every change to `util.ConfigMessage`, and every
+  added, removed or renamed enum value in §4.4 or §3.4; (c) re-run the
+  fixture-validation job; (d) pass a **live gate** (§13.3) — pair, list, send
+  one text to the approved direct number, receive a reply — run by the
+  coordinator, not by an implementer.
+- A bump that changes `util.ConfigMessage` is expected to be **urgent**: see
+  the ConfigVersion note in §3.7 and D3.
 
-### 3.7 Undocumented statuses and other sharp edges
+### 3.7 Sharp edges
 
-**`GetOrCreateConversationResponse.Status`.** The proto at the pinned commit
-declares only:
-
-```proto
-enum Status {
-    UNKNOWN = 0;
-    SUCCESS = 1;
-    CREATE_RCS = 3;
-}
-```
-
-Observed values and what they mean:
-
-| Value | Name | Meaning | Agent GM |
-|---|---|---|---|
-| 0 | `UNKNOWN` | phone did not classify the request | `google_error`, retry once |
-| 1 | `SUCCESS` | conversation returned in `.Conversation` | proceed |
-| 2 | *(unnamed)* | not observed | `google_error`, `details.status=2` |
-| 3 | `CREATE_RCS` | the phone wants the caller to retry with `CreateRCSGroup=true` (and a non-nil `RCSGroupName`, empty string is acceptable). Upstream retries once, exactly this way. | retry once with `CreateRCSGroup=true`; a second `CREATE_RCS` is `google_error` |
-| **4** | *(unnamed — no enum entry)* | **The stale-ConfigVersion symptom.** When `util.ConfigMessage` in the compiled binary is older than what Google currently serves, `GetOrCreateConversation` returns status 4 with **no conversation body**, and every attempt to start a new chat fails while existing conversations keep working. It is not a per-request error and retrying does not help. | `config_version_stale` (HTTP 502), with a message that names the compiled and live ConfigVersions and says the fix is a library pin bump (§3.6). Agent GM must **not** report this as a generic Google error, because that has historically cost hours of misdirected debugging. |
-
-Because the proto has no name for 2 or 4, `resp.GetStatus().String()` renders
-them as the bare number; Agent GM logs the numeric value, never a name it made
-up.
-
-Detection rule for `config_version_stale`: status is 4, **or** status is not
-`SUCCESS` and `FetchConfig`'s live `ConfigVersion` differs from
-`util.ConfigMessage` in year, month or day. `GET /v1/health` always reports:
-
-```json
-"google": {
-  "config_version_compiled": "2026.9.2",
-  "config_version_live": "2026.9.2",
-  "config_version_stale": false,
-  "is_default_sms_app": true,
-  "phone_responding": true,
-  "upstream_commit": "be48a58"
-}
-```
-
-**Other sharp edges, all load-bearing:**
+Every item here is cited. Where Agent GM behaves on something that is *not*
+in the pinned tree, it says so and points at §18.1.
 
 - **`ListConversations` must be called once per process before live
-  conversation events are trustworthy.** The first call uses
-  `MessageType_BUGLE_ANNOTATION` and subsequent calls `BUGLE_MESSAGE`
-  (`methods.go`, `conversationsFetchedOnce`). Agent GM always issues one on
-  connect.
-- **`SendMessageResponse` transient statuses.** Upstream retries `FAILURE_2`
-  and `FAILURE_3` with backoff `[3s, 8s, 20s]`
-  (`connector/handlematrix.go:isTransientSendFailure`, `sendRetryBackoff`).
-  Agent GM uses the same set and the same backoff. `FAILURE_4` is **not**
-  retried and is reported as `not_default_sms_app` when `IsBugleDefault` also
-  says false.
-- **`ErrPhoneNotResponding` does not mean the send failed.** The server accepted
-  it; the phone may still deliver it when it wakes. Agent GM keeps the operation
-  `pending` (§6.4) and lets the remote echo resolve it.
-- **`SendMessageResponse.GoogleAccountSwitch`** being non-empty means the phone
-  switched Google accounts; Agent GM records it and marks the session
+  conversation events are trustworthy.** The first call sends
+  `MessageType_BUGLE_ANNOTATION` and later calls `BUGLE_MESSAGE`
+  (`methods.go:9-20`, `client.go:141` `conversationsFetchedOnce`). Agent GM
+  always issues one on connect.
+- **`SendMessageResponse.Status`** is `UNKNOWN=0, SUCCESS=1, FAILURE_2=2,
+  FAILURE_3=3, FAILURE_4=4` (`gmproto/client.pb.go`). `FAILURE_2` and
+  `FAILURE_3` are transient and retried on `[3s, 8s, 20s]`
+  (`connector/handlematrix.go:112-117`, `sendRetryBackoff`); Agent GM uses the
+  same set and the same backoff. **`FAILURE_4` is not retried**: upstream
+  renders it as the user-facing string
+  `"Google Messages is not your default SMS app"`
+  (`pkg/connector/errors.go:41-42`), and Agent GM maps it to
+  `not_default_sms_app`.
+- **`ErrPhoneNotResponding` does not mean the send failed.** The server
+  accepted it; the phone may still deliver it when it wakes
+  (`session_handler.go:20-24`). Agent GM keeps the operation `pending` (§6.4)
+  and lets the remote echo resolve it.
+- **`SendMessageResponse.GoogleAccountSwitch`** being non-empty means the
+  phone switched Google accounts; Agent GM records it and marks the session
   `account_changed`.
-- **Tombstone statuses are not messages.** `MessageStatusType` values 200–299
-  are protocol/system events. Agent GM stores them with `kind="tombstone"` and
-  excludes them from `messages.list` unless `include_tombstones=true`
-  (§7.5). The set upstream ignores outright in group chats
-  (`handlegmessages.go:shouldIgnoreStatus`) is carried over verbatim.
-- **`Conversation.LatestMessage` is large and duplicative.** Upstream clones and
-  nils it before logging. Agent GM never persists it as part of the conversation
-  row; it goes through the message ingest path or nowhere.
-- **Timestamps are microseconds.** `gmproto.Message.Timestamp` is a Unix
-  timestamp in **microseconds**, as is `Conversation.LastMessageTimestamp`.
-  `TachyonTTL` is likewise microseconds. Agent GM converts once, at the `gm`
-  boundary, into `time.Time`, and stores milliseconds (§4.3).
-- **`libgm` writes to the process's zerolog logger** and can log at trace level
-  the base64 of decrypted payloads (`logContent`). Agent GM configures the
-  library logger at `info` in production and forbids `trace` unless
-  `AGENT_GM_UNSAFE_TRACE=1` is set, which also stamps every log line with
-  `unsafe_trace=true` (§12.2).
+- **`GetOrCreateConversationResponse.Status`** declares exactly three values
+  at this pin (`gmproto/client.pb.go:181-183`):
 
----
+  ```proto
+  enum Status { UNKNOWN = 0; SUCCESS = 1; CREATE_RCS = 3; }
+  ```
+
+  `CREATE_RCS` means the phone wants the caller to retry with
+  `CreateRCSGroup=true` and a non-nil `RCSGroupName` (empty string is
+  acceptable); upstream retries exactly once, exactly that way
+  (`connector/startchat.go:214-219`). Agent GM does the same; a second
+  `CREATE_RCS` is `google_error`. Any other non-`SUCCESS` value, **including
+  values the enum has no name for**, is `google_undocumented_status` (502)
+  carrying `details.status` as the bare integer — upstream itself only says
+  `no conversation data in response (status: %s)`
+  (`connector/startchat.go:233,238`). Agent GM never invents a name for an
+  unnamed value, and never claims to know what one means. See D3 and §18.1
+  for the ConfigVersion field observation and the separate
+  `config_version_stale` diagnosis.
+- **`config_version_stale` is Agent GM's own diagnosis, not Google's answer.**
+  It is raised when a conversation-creating call returns a non-`SUCCESS`
+  status **and** the live `ConfigVersion` from `FetchConfig` differs from the
+  compiled-in `util.ConfigMessage` in year, month or day. The ConfigVersion
+  diff is the whole detection rule; no particular status code is required or
+  claimed. `GET /v1/health` always reports both versions so the diff is
+  visible without reproducing a failure:
+
+  ```json
+  "google": {
+    "config_version_compiled": "2026.9.2",
+    "config_version_live": "2026.9.2",
+    "config_version_stale": false,
+    "is_default_sms_app": true,
+    "phone_responding": true,
+    "upstream_commit": "be48a58"
+  }
+  ```
+- **Message status ranges.** `MessageStatusType` outgoing values run 1–27,
+  incoming 100–118, **tombstones 200–279**, and `MESSAGE_DELETED = 300` sits
+  outside every range (`gmproto/conversations.proto:295-427`). §4.4 maps every
+  one of them; nothing falls to `unknown` by omission.
+- **Tombstones are not messages.** Values 200–279 are in-thread system
+  events. Agent GM stores them with `kind="system"` and excludes them from
+  `messages.list` unless `include_system=true` (§7.5). The set upstream
+  ignores outright is carried over verbatim from
+  `connector/handlegmessages.go:913-940` (`shouldIgnoreStatus`).
+- **Reactions are a closed 14-value enum**, not free-form emoji
+  (`gmproto/conversations.proto:70-85`, `gmproto/emojitype.go`). Eleven have
+  fixed code points; `CUSTOM=8` carries arbitrary unicode in
+  `ReactionData.Unicode`; `EMOTIFY=13` has none.
+
+  | `EmojiType` | `Unicode()` |
+  |---|---|
+  | `LIKE(1)` | 👍 |
+  | `LOVE(2)` | 😍 |
+  | `LAUGH(3)` | 😂 |
+  | `SURPRISED(4)` | 😮 |
+  | `SAD(5)` | 😥 |
+  | `ANGRY(6)` | 😠 |
+  | `DISLIKE(7)` | 👎 |
+  | `QUESTIONING(9)` | 🤔 |
+  | `CRYING_FACE(10)` | 😢 |
+  | `POUTING_FACE(11)` | 😡 |
+  | `RED_HEART(12)` | ❤️ |
+  | `CUSTOM(8)` | `""` — the emoji is whatever the caller sent |
+  | `EMOTIFY(13)` | `""` — upstream renders it as the literal `:custom:` (`connector/handlegmessages.go:542-543`) |
+  | `REACTION_TYPE_UNSPECIFIED(0)` | `""` |
+
+  Three consequences Agent GM must handle:
+
+  1. **Normalisation is mandatory.** `UnicodeToEmojiType` accepts both `"❤"`
+     and `"❤️"` as `RED_HEART` (`emojitype.go:53-54`), but `Unicode()` always
+     renders `"❤️"` (`emojitype.go:25-26`). Agent GM canonicalises **every**
+     inbound emoji through `UnicodeToEmojiType` → `Unicode()` **before**
+     deriving a `react_` ID or matching a URL path segment. Without it, adding
+     `❤` and removing `❤️` are different reactions and the same reaction gets
+     two IDs.
+  2. **A type with no unicode still exists.** `EMOTIFY` and any unrecognised
+     type with an empty `Unicode()` are *silently skipped* upstream
+     (`handlegmessages.go:546-548`). Agent GM instead serves
+     `{"emoji": null, "type": "emotify"}` — see the reaction shape in §7.5.
+  3. **Anything outside the eleven becomes `CUSTOM`** and may not render on the
+     recipient's phone. Every surface that takes an emoji says so.
+- **`Conversation.LatestMessage` is large and duplicative.** Upstream clones
+  and nils it before logging (`connector/startchat.go:227-230`). Agent GM never
+  persists it on the conversation row; it goes through the message ingest path
+  or nowhere.
+- **Timestamps are microseconds.** `gmproto.Message.Timestamp` and
+  `Conversation.LastMessageTimestamp` are Unix microseconds
+  (`connector/backfill.go:126`, `chatsync.go:51`), as is `TachyonTTL`
+  (`client.go:440-445`). Agent GM converts once, at the `gm` boundary, and
+  stores milliseconds (§4.3).
+- **`AuthData.AuthNetwork()` returns `util.GoogleNetwork` ("GDitto") for the
+  gaia flow and the empty string otherwise** (`client.go:96-101`).
+  `util.QRNetwork` ("Bugle") appears only in the two pairing HTTP payloads
+  (`pair.go:93,115`), never as a runtime network value.
+- **`libgm` writes to the process's zerolog logger** and at trace level logs
+  the base64 of decrypted payloads (`event_handler.go:logContent`). Agent GM
+  configures the library logger at `info` in production and forbids `trace`
+  unless `AGENT_GM_UNSAFE_TRACE=1` is set, which also stamps every log line
+  with `unsafe_trace=true` (§12.2).
 
 ## 4. Data model and identifiers
 
