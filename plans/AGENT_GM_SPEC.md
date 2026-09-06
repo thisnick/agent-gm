@@ -173,7 +173,7 @@ API.
 |---|---|---|
 | `cmd/agent-gm` | flag parsing, config load, wiring, graceful shutdown | contain logic |
 | `internal/gm` | the Google Messages adapter interface, its `libgm` implementation, and the fake. **One instance per account** | know about HTTP, SQLite, MCP or scopes |
-| `internal/accounts` | the account registry and supervisor: which accounts exist, their state, one `gm.Backend` and one ingest goroutine each, start/stop on pair, logout and remove | speak JSON, or know a route from a tool |
+| `internal/accounts` | the account registry and supervisor: which accounts exist, their state, one `gm.Backend` and one ingest goroutine each, start/stop on pair, sign-out and remove | speak JSON, or know a route from a tool |
 | `internal/store` | SQLite: schema, migrations, all queries, the single writer | make network calls |
 | `internal/core` | the operations the surfaces share: send, list, backfill, ingest, idempotency, delivery-status transitions | speak JSON or MCP |
 | `internal/api` | REST handlers, DTOs, error envelope, strict parameter rejection, pagination | contain business logic |
@@ -675,8 +675,9 @@ resync. The cost is bandwidth and backfill churn, not the pairing.
 
 #### Unpairing and session invalidation
 
-`Unpair(ctx)` (`pair.go:159-166`) dispatches to `UnpairGaia` when cookies are
-present, else `UnpairBugle`. If the *phone* ends the pairing, the long poll
+Agent GM never calls `Unpair` (Section 3.1): signing out is a local act that
+shreds the session file, and Google keeps the pairing until the phone or the
+Google account removes it. If the *phone* ends the pairing, the long poll
 produces `events.PingFailed` wrapping `events.ErrRequestedEntityNotFound`, or
 a `*gmproto.RevokePairData` event (`pair.go:50-51`). Agent GM treats both as invalidation **of that account**: set its state to
 `signed_out`, stop *its* poller and ingest goroutine, and require a fresh pair
@@ -4955,7 +4956,7 @@ add missing tools to `devbox.json` rather than installing on the host.
 | **D24** | **Download tickets are stateful rows** | A five-redemption cap cannot be enforced by a signed blob. The token value is still signed and only hashed at rest |
 | **D25** | **The admin bootstrap session carries the three messaging scopes** | The owner presenting `AGENT_GM_ADMIN_SECRET` is the person the service belongs to. A credential that could administer the server but not read a message would be useless, and Slice 2 could not test itself |
 | **D26** | **The live event stream is treated as lossy; a reconciliation sweep is mandatory** | `deduplicateUpdate`'s callers `return` out of the batch loop on a hit (`event_handler.go:263-266,272-275`), abandoning every remaining part. That is message *loss*, and no local dedup recovers it |
-| **D27** | **Agent GM is multi-account.** One owner, N Google accounts, each with its own `libgm` client, session file, event stream, backfill and sweep, all concurrent. **Owner decision, 2026-09-06** | The premise that one owner means one account was never argued, only assumed — an owner with a personal and a work Google account has two phones and wants both here. Nothing in `libgm` is a singleton: a `Client` is constructed per `AuthData` (`client.go:164`), so N clients is the library's own shape rather than a workaround. The cost is a column, a selection rule (§7.3) and a supervisor (§4.7); the alternative was N servers, N tunnels, N OAuth registrations, and an agent that cannot see across them |
+| **D27** | **Agent GM is multi-account.** One owner, N Google accounts, each with its own `libgm` client, session file, event stream, backfill and sweep, all concurrent. **Owner decision, 2026-09-06** | The premise that one owner means one account was never argued, only assumed — an owner with a personal and a work Google account has two phones and wants both here. Nothing in `libgm` is a singleton: a `Client` is constructed per `AuthData` (`client.go:163`), so N clients is the library's own shape rather than a workaround. The cost is a column, a selection rule (§7.3) and a supervisor (§4.7); the alternative was N servers, N tunnels, N OAuth registrations, and an agent that cannot see across them |
 | **D28** | **The account identifier is `AuthData.Mobile.SourceID`**, lowercased — the Google account address — hashed into `acct_` (§4.1) | It is the only field at `be48a58` that identifies an *account* rather than a device or a session. Upstream compares it against `Config.GetDeviceInfo().GetEmail()` to decide whether a re-authentication is the same account (`connector/login.go:267-270`) and lowercases it at sign-in (`pair_google.go:102-105`). `DestRegID`, `SessionID`, `PairingID`, `Browser.SourceID` and `FinishGaiaPairing`'s return are all device- or session-scoped; §3.2 tabulates why each is unusable. Hashing keeps the address out of IDs and URLs |
 | **D29** | **OAuth scopes are global across accounts; per-account scoping is deferred** | A scope grammar naming accounts needs accounts to exist before a token is issued, an account picker on the authorization screen, and enrollment ceilings that can name accounts that do not exist yet. None of that is worth building before the owner has met a case for it. The honest statement is made where it matters (§9.7, and the authorization screen): a token reads and sends as **any** account. An owner needing real separation runs a second Agent GM |
 | **D30** | **Signing out keeps history; only `agm accounts remove` deletes** | Losing access to an account is common — cookies expire, a phone is replaced — and losing years of searchable history because of it would be a disaster with no upside. Splitting the two makes deletion an explicit, confirmed, audited act, and makes re-pairing free: IDs derive from the account and Google's own stable IDs, so resuming reconciles rather than duplicating (§4.7) |
