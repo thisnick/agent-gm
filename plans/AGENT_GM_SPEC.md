@@ -192,31 +192,43 @@ type Backend interface {
     Disconnect()
     IsConnected() bool
     IsLoggedIn() bool
+    SessionID() string                 // libgm CurrentSessionID; drives the resync check
+
+    // health -- everything GET /v1/health reports about Google
+    FetchConfig(ctx context.Context) (ConfigInfo, error)  // live ConfigVersion, device email
+    CompiledConfigVersion() ConfigVersion                 // util.ConfigMessage
+    IsDefaultSMSApp(ctx context.Context) (bool, error)    // IsBugleDefault
 
     // pairing
-    StartQRPairing(ctx context.Context) (qrURL string, err error)
-    RefreshQRPairing(ctx context.Context) (qrURL string, err error)
-    StartGooglePairing(ctx context.Context, emoji func(string)) error
+    StartQRPairing(ctx context.Context) (qrPayload string, err error)
+    RefreshQRPairing(ctx context.Context) (qrPayload string, err error)
+    StartGooglePairing(ctx context.Context, cookies map[string]string, deviceIndex int, emoji func(string)) (PairedDevice, error)
+    RefreshGoogleCookies(ctx context.Context, cookies map[string]string) error
     Unpair(ctx context.Context) error
 
     // reads
     ListConversations(ctx context.Context, folder Folder, count int) ([]Conversation, error)
     GetConversation(ctx context.Context, convID string) (*Conversation, error)
+    GetConversationType(ctx context.Context, convID string) (ConversationType, error)
     ListMessages(ctx context.Context, convID string, count int, cursor *Cursor) ([]Message, *Cursor, error)
     ListContacts(ctx context.Context) ([]Contact, error)
-    ResolveConversation(ctx context.Context, numbers []string, groupName string) (*Conversation, error)
+    ListTopContacts(ctx context.Context) ([]Contact, error)
 
     // writes
+    ResolveConversation(ctx context.Context, numbers []string, groupName string) (ResolveResult, error)
     SendText(ctx context.Context, req SendTextRequest) (SendResult, error)
     SendMedia(ctx context.Context, req SendMediaRequest) (SendResult, error)
     React(ctx context.Context, msgID string, emoji string, action ReactionAction) error
     DeleteMessage(ctx context.Context, msgID string) error
     MarkRead(ctx context.Context, convID, msgID string) error
+    SetTyping(ctx context.Context, convID string) error
+    UpdateConversation(ctx context.Context, convID string, ch ConversationChange) error
     DeleteConversation(ctx context.Context, convID, phone string) error
 
     // media
     Upload(ctx context.Context, data []byte, filename, mime string) (MediaRef, error)
     Download(ctx context.Context, mediaID string, key []byte) ([]byte, error)
+    RequestFullSizeImage(ctx context.Context, msgID, actionMsgID string) error
 
     // events
     Events() <-chan Event
@@ -230,6 +242,16 @@ calls it synchronously from the long-poll loop — see `client.go`
 `SetEventHandler` doc comment), the adapter does a non-blocking send onto a
 channel of capacity 1024 and increments a `dropped_events` counter on overflow,
 which is surfaced in `GET /v1/health`.
+
+`ResolveResult` carries the conversation **and** the raw
+`GetOrCreateConversationResponse` status, so `core` can distinguish `SUCCESS`,
+`CREATE_RCS` and an unnamed value (§3.7) without reaching past this interface.
+`ConversationChange` carries the optional `folder`, `pinned` and `unread`
+fields of `PATCH /v1/conversations/{id}`.
+
+**Nothing above `internal/gm` imports `libgm` or `gmproto`.** Every field the
+API promises is reachable through this interface, and the fake implements all
+of it — that is what makes §13.2 runnable with no phone and no network.
 
 The fake implementation (`internal/gm/fake`) is a deterministic in-memory
 Google Messages: it accepts sends, generates message IDs, emits the same
@@ -3213,7 +3235,22 @@ It must:
 - Run both pairing flows: hand out a QR string, refresh it, then "scan" it;
   and hand out an emoji, then accept or reject it with each
   `GaiaPairingErrorCode`.
-- Be able to drop events, so the `dropped_events` counter is tested.
+- Be able to drop events, so the `dropped_events` counter is tested, and to
+  **abandon the rest of a batch** the way the library's dedup does (§3.4), so
+  the reconciliation sweep of §5.4 is exercised against real loss.
+- Answer `FetchConfig` and `IsDefaultSMSApp` from scriptable values, including
+  a live `ConfigVersion` differing from the compiled one, so
+  `config_version_stale` is testable with no phone.
+- Return a scriptable `ResolveResult.Status`, including an integer the proto
+  has no name for, so `google_undocumented_status` is testable.
+- Run both pairing flows including `RefreshGoogleCookies`, a wrong-account
+  refresh, and several primary devices with a settable `device_index`.
+
+**The fake takes a clock.** Every timeout in this spec —
+`operations.pending_timeout` (24h), the `[3s, 8s, 20s]` send backoff,
+`responseHardTimeout`, ticket expiry, the sweep interval — is measured against
+an injected `Clock` whose test implementation advances on demand. No test
+sleeps, and no test waits out a real 24 hours.
 
 `AGENT_GM_BACKEND=fake` selects it at runtime, so the CLI, the REST suite and
 the MCP conformance run can all drive a real server with no phone.
@@ -3273,18 +3310,28 @@ only**, never by an implementer or a reviewer, from a checkout pinned to the
 reviewer-accepted commit — never from an implementer's working tree, because a
 mid-edit tree failing to build is what makes a live gate meaningless.
 
-**The approved-test-number rule.** Live sends go **only** to:
+**The approved-test-number rule.** Live sends go **only** to numbers the owner
+has approved, referred to throughout this repository by placeholder:
 
-| Purpose | Number(s) |
+| Placeholder | Purpose |
 |---|---|
-| direct conversation | `+1<APPROVED_DIRECT_NUMBER>` |
-| group conversation | `+1<APPROVED_GROUP_NUMBER_1>` and `+1<APPROVED_GROUP_NUMBER_2>` |
+| `<APPROVED_DIRECT_NUMBER>` | the direct conversation used by every live gate |
+| `<APPROVED_GROUP_NUMBER_1>`, `<APPROVED_GROUP_NUMBER_2>` | the two participants of the group live gate |
 
-No other number is ever used in a live test, in a fixture, in an example, or
-in a doc. Fictional `555` numbers (`+12025550123`) are reserved for examples
-and fixtures and must never be dialled. **Only the coordinator sends live**;
-an implementer or reviewer that believes it needs a live send reports that
+> **The real values are never written into this repository.** It is public
+> (§1.4). They live in the operator's private notes, and at run time they come
+> from `AGENT_GM_LIVE_NUMBERS` or an untracked, git-ignored
+> `testdata/live-numbers.local`, read only by the live-gated tests. No commit,
+> no fixture, no doc page, no example, no log and no commit message contains a
+> real phone number. A commit that adds one is reverted, not amended.
+
+Fictional `555` numbers (`+12025550123`) are reserved for examples and
+fixtures and must never be dialled. **Only the coordinator sends live**; an
+implementer or reviewer that believes it needs a live send reports that
 instead of performing one.
+
+A CI job, `no-real-numbers`, fails on any string in the tree that looks like a
+NANP number and is not a `555` example.
 
 Every destructive live action displays its exact effect and requires the
 owner's confirmation before it runs.
@@ -3307,12 +3354,33 @@ asserts, against that tree and not against Agent GM's own code:
 5. `SendMessageResponse.Status` still declares `0..4`.
 6. `SendReactionRequest.Action` still declares `0..3`.
 7. `ListConversationsRequest.Folder` still declares `0, 1, 2, 5`.
-8. `AlertType` still has 28 values, and the ones §3.4 acts on still carry the
-   numbers stated.
-9. `responseHardTimeout` is still 60s and `RefreshTachyonBuffer` still 1h.
+8. `AlertType` still has **28** values (0–27), and the ones §3.4 acts on still
+   carry the numbers stated.
+9. `responseHardTimeout` is still 60s, `RefreshTachyonBuffer` still 1h,
+   `alertTimeoutCount` still defaults to 4, and `GaiaInitTimeout` still 20s.
 10. `shouldIgnoreStatus`'s ignore set matches the one Agent GM carries.
 11. The `sendRetryBackoff` values are still `[3s, 8s, 20s]` and
     `isTransientSendFailure` still names only `FAILURE_2` and `FAILURE_3`.
+12. `MessageStatusType` system events still occupy **200–279** and
+    `MESSAGE_DELETED` is still **300**; §4.4 maps every value outside 200–279.
+13. `EmojiType` still declares exactly the 14 values of §3.7, `Unicode()` still
+    renders `RED_HEART` as `❤️`, and `UnicodeToEmojiType` still accepts both
+    `❤` and `❤️`.
+14. `util.GenerateTmpID` still returns a bare `uuid.NewString()`.
+15. The gaia required-cookie list is still exactly
+    `SID, HSID, OSID, SSID, APISID, SAPISID`, with `OSID` scoped to
+    `messages.google.com` and the rest to `.google.com`.
+16. `StartGaiaPairing` still selects by last-seen and
+    `GaiaHackyDeviceSwitcher` rather than erroring on several devices, and
+    `ErrHadMultipleDevices` still appears only wrapped in
+    `ErrPairingInitTimeout`.
+17. The listen loop still makes **401 and 403** fatal.
+18. `deduplicateUpdate`'s callers still `return` out of the batch loop on a
+    hit — the loss behaviour §5.4's sweep exists for.
+19. `events.QR` and `events.NewBrowserActive` still have no callers outside
+    `pkg/libgm/gmtest`, so §3.4 is right not to subscribe to them.
+20. `connector/login.go` still re-authenticates an existing pairing from fresh
+    cookies, gated on a non-nil tachyon token and a non-nil `PairingID`.
 
 A test that only asserts Agent GM's own serialisation round-trips is **not**
 compatibility evidence. If a claim in §3 cannot be checked against the pinned
@@ -3361,9 +3429,28 @@ catalogue the server actually serves — tool names, descriptions, argument
 names and descriptions, enums, the instructions block — plus every markdown
 page under `docs/` and `plans/`, and fails on a Matrix vocabulary asserted as
 a live contract: `room`, `portal`, `event_id`, `provider`, `redact`,
-`generation`, `outbox`, a `mode` argument, or a `room_` prefix. It carries its
-own meta-test proving both directions: the banned words are caught, and the
-*history* — §1.3 and §18 saying what Agent MX called things — is allowed.
+`generation`, `outbox`, **`tombstone`**, a bare `mode` argument, or a `room_`
+prefix.
+
+Three scoping rules, all load-bearing, because a lint that fails its own spec
+is a lint nobody will keep:
+
+- **The served catalogue is checked for every banned word**: tool names, tool
+  descriptions, argument names and descriptions, enum values, and the
+  instructions block — the things a cold agent reads.
+- **Markdown is checked under `docs/` only**, and only outside fenced code
+  blocks and block quotes. `plans/AGENT_GM_SPEC.md` is exempt in full: it has
+  to say what Agent MX called things (§1.3, §18.3), name upstream files such
+  as `connector/handlematrix.go`, and use English like "exit-code matrix" and
+  "log redaction".
+- **The banned `mode` is an argument name**, matched whole against a deny
+  list, never as a substring. `send_mode` never reaches a surface (§4.6), and
+  `search`'s `mode` is `words|exact`, a search vocabulary rather than a switch
+  between destructive behaviours — which is the thing Agent MX retired.
+
+Its meta-test proves both directions: the banned words are caught in a served
+description and in a `docs/` page, and the exempt cases — §18.3, a fenced
+block quoting upstream, `send_mode`, `search.mode` — are not.
 
 ### 13.6 CI
 
@@ -3376,6 +3463,7 @@ GitHub Actions, on push and pull request:
 | `fixture-validation` | §13.4, against a fresh clone of the pinned upstream tree |
 | `conformance` | `devbox run conformance` against the baseline (§8.4) |
 | `lint-names` | the name lint of §13.5 |
+| `no-real-numbers` | §13.3 — nothing in the tree looks like a real phone number |
 | `build-matrix` | `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64` binaries |
 | `image` | build the Dockerfile; on a tag, push to GHCR |
 
@@ -3657,9 +3745,9 @@ idempotency, the audit log.
    in an 80×24 terminal; the owner scans it on the phone; the process reports
    `Paired` with a phone ID and persists `session.enc` at mode `0600`.
 6. **Live gate.** `agent-gm spike list` returns the owner's real conversation
-   list, and the row for `+1<APPROVED_DIRECT_NUMBER>` is present with a `conv_` ID.
+   list, and the row for `<APPROVED_DIRECT_NUMBER>` is present with a `conv_` ID.
 7. **Live gate.** `agent-gm spike send <conv> "agent-gm slice 1 test"` to
-   **`+1<APPROVED_DIRECT_NUMBER>` and no other number** returns
+   **`<APPROVED_DIRECT_NUMBER>` and no other number** returns
    `SendMessageResponse_SUCCESS`, and `spike watch` shows the remote echo
    carrying the same `TmpID`, then at least one delivery-status update.
 8. **Live gate.** The owner replies from that phone; `spike watch` prints the
@@ -3756,7 +3844,7 @@ security model.
     keeps exactly `backup.keep` and audits each removal.
 26. **Live gate.** `agm pair --qr` from a clean data directory, then
     `agm conversations list`, then `agm messages send` one text to
-    `+1<APPROVED_DIRECT_NUMBER>` with `--wait --wait-for sent`, then `agm messages send`
+    `<APPROVED_DIRECT_NUMBER>` with `--wait --wait-for sent`, then `agm messages send`
     with `--file` of a small JPEG to the same number, then the owner replies
     and `agm messages list` shows it. Then `agm messages react` and
     `agm messages unreact`. Then `agm messages delete` on Agent GM's own test
@@ -3849,7 +3937,7 @@ lint; `docs/mcp.md`, `docs/oauth.md`.
     discovery, dynamic registration, the authorization screen with an
     enrollment code, owner approval, and the token exchange; then calls
     `list_conversations` and `get_message` against the owner's real account;
-    then `send_message` one text to `+1<APPROVED_DIRECT_NUMBER>`; then the owner revokes the
+    then `send_message` one text to `<APPROVED_DIRECT_NUMBER>`; then the owner revokes the
     authorization and the next call is `401`.
 
 ### Slice 4 — packaging
@@ -3881,7 +3969,7 @@ the GHCR push, the npm wrapper, `docs/deploy.md`, `CHANGELOG.md`.
    with the `libgm` pin.
 9. **Live gate.** The owner installs `@agent-gm/cli` on their Mac, runs
    `agm auth login` against `https://gm.agent-wx.app`, `agm conversations
-   list`, and `agm messages send` one text to `+1<APPROVED_DIRECT_NUMBER>`.
+   list`, and `agm messages send` one text to `<APPROVED_DIRECT_NUMBER>`.
 
 ---
 
@@ -3976,7 +4064,7 @@ These block or shape work and cannot be decided from the sources.
 | **OQ-7** | **Should the GHCR image be public?** AGPL §13 is satisfied by serving the source URL, not by a public image, so this is a preference. | Slice 4 | A private image means the deployment needs a pull secret |
 | **OQ-8** | **Confirm the phone's *Group messaging* setting is MMS**, not "send an SMS reply to all recipients" (§11.4). This is a phone setting Agent GM can only report on. | Slice 2 test 27 | A phone set the other way cannot create a group at all, and the failure looks like a bug in Agent GM |
 | **OQ-9** | **What should happen when the phone stays unreachable for a long time?** Currently `pending` operations become `unknown` after 24 hours and nothing notifies anyone. Does the owner want an alert path, and if so, through what? | Slice 2 | There is no notification channel in this design, deliberately |
-| **OQ-10** | **`+1<APPROVED_GROUP_NUMBER_2>` — confirm this number is still approved for group tests**, and confirm whether the group created in Slice 2 test 27 should be deleted afterwards or kept as a standing test thread. | Slice 2 live gate | The coordinator must not guess about a real person's phone |
+| **OQ-10** | **`<APPROVED_GROUP_NUMBER_2>` — confirm this number is still approved for group tests**, and confirm whether the group created in Slice 2 test 27 should be deleted afterwards or kept as a standing test thread. | Slice 2 live gate | The coordinator must not guess about a real person's phone |
 
 ### 18.3 What was dropped from Agent MX, and why
 
