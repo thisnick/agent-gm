@@ -44,9 +44,8 @@ type Account struct {
 	cancel   context.CancelFunc
 	done     chan struct{}
 	running  bool
-	sessMu   sync.Mutex
-	dmCache  map[string]bool
-	lastSess string
+	sessMu  sync.Mutex
+	dmCache map[string]bool
 }
 
 // Supervisor holds every account.
@@ -394,7 +393,6 @@ func (a *Account) Apply(ctx context.Context, ev gm.Event) {
 			}
 		}
 		a.setState(ctx, store.StateConnected, "")
-		a.lastSess = e.SessionID
 
 	case *gm.EventAuthTokenRefreshed:
 		if err := a.PersistSession(ctx); err != nil {
@@ -472,10 +470,10 @@ func (a *Account) Apply(ctx context.Context, ev gm.Event) {
 		// reconciliation sweep they feed arrive with Slice 2.
 
 	case *gm.EventUnknown:
-		a.ingest.Unknown++
+		a.ingest.CountUnknown()
 
 	default:
-		a.ingest.Unknown++
+		a.ingest.CountUnknown()
 	}
 	_ = st
 }

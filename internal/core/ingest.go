@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/thisnick/agent-gm/internal/gm"
 	"github.com/thisnick/agent-gm/internal/store"
@@ -26,13 +27,29 @@ type Ingester struct {
 	AccountID string
 	Log       Logger
 
-	// Counters surfaced in GET /v1/health.
-	Ignored  uint64
-	Unknown  uint64
-	Applied  uint64
-	Resyncs  uint64
-	OutOfOrd uint64
+	// Counters surfaced in GET /v1/health. They are atomic because a
+	// one-shot command may ingest on its own goroutine while this account's
+	// event loop is running.
+	ignored  atomic.Uint64
+	unknown  atomic.Uint64
+	applied  atomic.Uint64
+	outOfOrd atomic.Uint64
 }
+
+// Ignored counts messages dropped by shouldIgnoreStatus.
+func (in *Ingester) Ignored() uint64 { return in.ignored.Load() }
+
+// Unknown counts events the section 3.4 catalogue does not name.
+func (in *Ingester) Unknown() uint64 { return in.unknown.Load() }
+
+// CountUnknown records one unnamed event.
+func (in *Ingester) CountUnknown() { in.unknown.Add(1) }
+
+// Applied counts rows written or updated.
+func (in *Ingester) Applied() uint64 { return in.applied.Load() }
+
+// OutOfOrder counts refused backward delivery-state moves.
+func (in *Ingester) OutOfOrder() uint64 { return in.outOfOrd.Load() }
 
 // IngestConversation upserts one conversation and replaces its participants.
 func (in *Ingester) IngestConversation(ctx context.Context, c gm.Conversation) (string, error) {
@@ -40,7 +57,7 @@ func (in *Ingester) IngestConversation(ctx context.Context, c gm.Conversation) (
 	if err != nil {
 		return "", fmt.Errorf("upserting conversation: %w", err)
 	}
-	in.Applied++
+	in.applied.Add(1)
 	return id, nil
 }
 
@@ -55,7 +72,7 @@ func (in *Ingester) IngestMessage(ctx context.Context, m gm.Message, isDM, isOld
 
 	// 1. If shouldIgnoreStatus says ignore, drop it and count it.
 	if gm.ShouldIgnoreStatus(m.StatusRaw, isDM) {
-		in.Ignored++
+		in.ignored.Add(1)
 		return zero, nil
 	}
 	if m.ConversationID == "" {
@@ -70,7 +87,7 @@ func (in *Ingester) IngestMessage(ctx context.Context, m gm.Message, isDM, isOld
 		return zero, fmt.Errorf("upserting message: %w", err)
 	}
 	if res.TransitionRefused {
-		in.OutOfOrd++
+		in.outOfOrd.Add(1)
 		// The stored state is left alone, and the event is recorded rather
 		// than applied. The audit row arrives with the audit log in Slice 2.
 		in.logf("message.status_out_of_order",
@@ -78,7 +95,7 @@ func (in *Ingester) IngestMessage(ctx context.Context, m gm.Message, isDM, isOld
 			"stored_state", res.PreviousState, "reported_state", string(m.DeliveryState))
 	}
 	if res.Inserted || res.Updated {
-		in.Applied++
+		in.applied.Add(1)
 	}
 
 	// 9. Update the conversation's last_activity_ms and latest_message_id --

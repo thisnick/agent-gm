@@ -592,9 +592,8 @@ func spikeWatch(args []string) int {
 		defer stop()
 	}
 
-	// The supervisor's own goroutines apply the events to the store; this
-	// loop only prints what it sees, so watching does not compete with
-	// ingestion.
+	// One goroutine per account applies the events AND prints them, so
+	// nothing competes with the supervisor's own loop for the same channel.
 	r.sup.ManualIngest = true
 	live, err := r.resume(ctx)
 	if err != nil {
