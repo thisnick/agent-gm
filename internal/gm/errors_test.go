@@ -196,6 +196,17 @@ func TestSendFailureMapping(t *testing.T) {
 	if four.Message != "Google Messages is not your default SMS app" {
 		t.Errorf("FAILURE_4 message is %q", four.Message)
 	}
+	// The retry set itself, not only the classified error: a future retry
+	// loop consults IsTransient, and retrying FAILURE_4 would send the same
+	// SMS to a real person up to four times.
+	// Plant M18, 2026-09-06: IsTransient extended to FAILURE_4 -- this is the
+	// assertion that kills it.
+	if gm.SendStatusFailure4.IsTransient() {
+		t.Error("FAILURE_4 must not be transient: upstream never retries it")
+	}
+	if !gm.SendStatusFailure2.IsTransient() || !gm.SendStatusFailure3.IsTransient() {
+		t.Error("FAILURE_2 and FAILURE_3 are the only transient send failures")
+	}
 	for _, st := range []gm.SendStatus{gm.SendStatusFailure2, gm.SendStatusFailure3} {
 		e := gm.SendFailure(st)
 		if e.Code != gm.CodeGoogleError || !e.Retryable {
