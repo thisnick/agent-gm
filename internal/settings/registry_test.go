@@ -40,7 +40,7 @@ func specTable() []specRow {
 		{"operations.pending_timeout", Duration(24 * time.Hour), dv(1 * time.Hour), dv(7 * Day), ScopeServer, true, false},
 		{"operations.wait_timeout", Duration(60 * time.Second), dv(5 * time.Second), dv(10 * time.Minute), ScopeServer, true, false},
 		{"media.upload_max_bytes", Int64(104857600), nil, nil, ScopeServer, true, true},
-		{"media.cache_max_bytes", Int64(2147483648), nil, nil, ScopeServer, true, false},
+		{"media.cache_max_bytes", Int64(2 * 1024 * 1024 * 1024), nil, nil, ScopeServer, true, false},
 		{"media.inline_mcp_image_max_bytes", Int64(1048576), nil, nil, ScopeServer, true, false},
 		{"backup.keep", Int64(7), iv(1), iv(100), ScopeServer, true, false},
 		// section 15.1: reloadable without restart, and the only such key.
