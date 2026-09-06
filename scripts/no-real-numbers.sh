@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # no-real-numbers -- spec section 13.3.
 #
-# This repository is public. No commit, no fixture, no doc page, no example and
-# no commit message may contain a real phone number. The approved live-gate
-# numbers live in the operator's private notes and reach a live test only
-# through AGENT_GM_LIVE_NUMBERS or the untracked testdata/live-numbers.local.
+# This repository is public. No tracked file -- no fixture, no doc page, no
+# example, no test -- may contain a real phone number. (Commit messages are
+# governed by the same rule but are not scanned here: this pass is over
+# `git ls-files`.) The approved live-gate numbers live in the operator's
+# private notes and reach a live test only through AGENT_GM_LIVE_NUMBERS or
+# the untracked testdata/live-numbers.local.
 #
 # Fictional 555 numbers (+12025550123) are reserved for examples and fixtures
 # and are allowed here -- they must never be dialled.

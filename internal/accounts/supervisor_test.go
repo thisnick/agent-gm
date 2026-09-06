@@ -3,6 +3,7 @@ package accounts_test
 import (
 	"context"
 	"errors"
+	"os"
 	"runtime"
 	"strings"
 	"testing"
@@ -731,5 +732,45 @@ func TestIngestGoroutineDrainsEvents(t *testing.T) {
 			t.Fatalf("the ingest goroutine did not apply the event: %d rows", len(msgs))
 		}
 		runtime.Gosched()
+	}
+}
+
+// F-4, the supervisor half: a backend that hands back an implausible address
+// creates no account row and no session file. `acct_` is UUIDv5 of the
+// address, so a degenerate one would let two pairings adopt each other's
+// conversations and messages (spec 3.2, 4.1).
+//
+// Plant R-M9, 2026-09-06: neutering either the adapter's guard or this one
+// must be caught.
+func TestPairingWithAnImplausibleAddressCreatesNothing(t *testing.T) {
+	for _, bad := range []string{"noatsign", "@example.com", "alex@", "alex smith@example.com"} {
+		t.Run(bad, func(t *testing.T) {
+			ctx := context.Background()
+			clk := clock.NewFake()
+			h := newHarness(t, clk)
+
+			// The fake refuses only the empty address, so the supervisor's
+			// own guard is what has to refuse this one.
+			backend := fake.New(bad, fake.WithClock(clk))
+			_, err := h.sup.Pair(ctx, backend, cookies(), 0, nil)
+			var ge *gm.Error
+			if !errors.As(err, &ge) || ge.Code != gm.CodePairingNoAccount {
+				t.Fatalf("got %v, want pairing_no_account", err)
+			}
+			rows, err := h.store.Accounts(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(rows) != 0 {
+				t.Errorf("a refused pairing created %d account rows: %+v", len(rows), rows)
+			}
+			entries, err := os.ReadDir(h.sessions.Dir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 0 {
+				t.Errorf("a refused pairing wrote %d session files", len(entries))
+			}
+		})
 	}
 }

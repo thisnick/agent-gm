@@ -69,23 +69,6 @@ func TestFindChromeHonoursTheEnvironmentFirst(t *testing.T) {
 	}
 }
 
-// With Chrome hidden from PATH and from the platform's usual locations,
-// FindChrome reports ErrNoChrome rather than something else. This is the
-// unit half of Slice 1 live-gate test 8; the exit code is asserted by the
-// spike's own test.
-func TestFindChromeWithChromeHidden(t *testing.T) {
-	t.Setenv("PATH", t.TempDir())
-	_, err := cli.FindChrome("")
-	if err == nil {
-		// A platform location outside PATH really does hold a browser on this
-		// machine; the negative case cannot be forced here.
-		t.Skip("a Chrome is installed in a platform location, so it cannot be hidden by PATH alone")
-	}
-	if !errors.Is(err, cli.ErrNoChrome) {
-		t.Fatalf("got %v, want ErrNoChrome", err)
-	}
-}
-
 // The kept Chrome profile is keyed by account. A single shared profile would
 // hold whichever account signed in last (spec section 11.4).
 func TestProfileDirIsKeyedByAccount(t *testing.T) {
@@ -294,5 +277,45 @@ func TestTheSevenCookiesAndTheirDomains(t *testing.T) {
 	// Upstream's own capture URL.
 	if gm.GaiaCaptureURL != "https://accounts.google.com/AccountChooser?continue=https://messages.google.com/web/config" {
 		t.Errorf("the capture URL is %q", gm.GaiaCaptureURL)
+	}
+}
+
+// F-7: a header that is not the Cookie header is not a cookie source. Chrome
+// sends `x-client-data`, which can carry `=` and `;`, and the old parser fell
+// through and mined it.
+func TestParsePasteIgnoresNonCookieHeaders(t *testing.T) {
+	// Every required cookie arrives in a bogus header; only OSID is in the
+	// real Cookie header. Nothing but OSID may be taken.
+	var bogus []string
+	for _, n := range gm.GaiaRequiredCookies {
+		bogus = append(bogus, n+"=SMUGGLED")
+	}
+	cmd := `curl 'https://messages.google.com/web/config' \
+  -H 'x-client-data: ` + strings.Join(bogus, "; ") + `' \
+  -H 'cookie: OSID=` + fixtureValue + `'`
+
+	_, err := cli.ParsePaste(cmd)
+	var missing *cli.MissingCookiesError
+	if !errors.As(err, &missing) {
+		t.Fatalf("got %v, want the paste refused for missing cookies", err)
+	}
+	if len(missing.Missing) != len(gm.GaiaRequiredCookies)-1 {
+		t.Errorf("missing = %v; a non-cookie header contributed cookies", missing.Missing)
+	}
+	for _, n := range missing.Missing {
+		if n == "OSID" {
+			t.Error("OSID came from the real Cookie header and must be kept")
+		}
+	}
+}
+
+// -b / --cookie carries the cookie string directly, with no `cookie:` prefix.
+func TestParsePasteAcceptsTheCookieFlag(t *testing.T) {
+	got, err := cli.ParsePaste(`curl 'https://messages.google.com/' -b '` + fullCookieHeader() + `'`)
+	if err != nil {
+		t.Fatalf("ParsePaste: %v", err)
+	}
+	if len(got) != 7 {
+		t.Errorf("kept %d cookies, want 7", len(got))
 	}
 }

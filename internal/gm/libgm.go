@@ -218,12 +218,9 @@ func (b *LibGM) StartGooglePairing(ctx context.Context, cookies map[string]strin
 
 	// AuthData.Mobile.SourceID is the account identifier: the Google account
 	// address, lowercased by signInGaiaGetToken (pair_google.go:102-105).
-	address := strings.ToLower(b.auth.Mobile.GetSourceID())
-	if !plausibleAddress(address) {
-		// An empty address is refused before anything is created: acct_ is
-		// UUIDv5 of it, so one degenerate ID could be shared by two accounts
-		// (spec section 3.2).
-		return PairedDevice{}, Classify(ErrNoAccountAddress)
+	address, err := AccountAddressFromPairing(b.auth.Mobile.GetSourceID())
+	if err != nil {
+		return PairedDevice{}, err
 	}
 
 	dev := PairedDevice{
@@ -254,6 +251,27 @@ func (a *atomicString) Load() string {
 	s, _ := a.v.Load().(string)
 	return s
 }
+
+// AccountAddressFromPairing normalises and validates the address a pairing
+// produced. It is the single place the refusal lives, so a test can reach it
+// without a real libgm.Client.
+//
+// An empty or implausible address is refused BEFORE anything is created:
+// acct_ is UUIDv5(ns, "account", address), so AccountID("") is a perfectly
+// valid UUID and two different degenerate pairings would derive the same
+// acct_ ID and adopt each other's conversations and messages (spec 3.2, 4.1).
+// Agent GM never falls back to a generated ID.
+func AccountAddressFromPairing(rawSourceID string) (string, error) {
+	address := strings.ToLower(rawSourceID)
+	if !PlausibleAccountAddress(address) {
+		return "", Classify(ErrNoAccountAddress)
+	}
+	return address, nil
+}
+
+// PlausibleAccountAddress reports whether a value is a syntactically
+// plausible Google account address.
+func PlausibleAccountAddress(s string) bool { return plausibleAddress(s) }
 
 func plausibleAddress(s string) bool {
 	if s == "" {

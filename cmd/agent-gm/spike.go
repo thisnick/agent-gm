@@ -352,7 +352,11 @@ func spikePair(args []string) int {
 	fmt.Println()
 	fmt.Printf("Paired.  account: %s  (%s)  phone: %s\n", acct.ID, row.GoogleAccount, row.PhoneID)
 	if row.GaiaDestRegUUID != "" {
-		fmt.Printf("Device:  %s\n", row.GaiaDestRegUUID)
+		// The library's own identifier for the phone it chose, printed under
+		// its own name rather than dressed up as "Device": it is the value
+		// spec 3.2 says to record so "which phone did we pair?" is
+		// answerable, not something an owner recognises.
+		fmt.Printf("dest_reg_uuid: %s\n", row.GaiaDestRegUUID)
 	}
 	fmt.Println(afterPairingNotes)
 	return exitOK

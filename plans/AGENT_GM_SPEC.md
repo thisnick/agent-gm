@@ -850,7 +850,7 @@ handler loop **`return`s**, abandoning *every remaining part of the batch*
 | `pair_google.ErrIncorrectEmoji` | wrong emoji tapped | `pairing_wrong_emoji` (409) |
 | `pair_google.ErrPairingCancelled` | dismissed, or "this is not me" | `pairing_cancelled` (409) |
 | `pair_google.ErrPairingTimeout` | expiry | `pairing_timeout` (409) |
-| `pair_google.ErrPairingInitTimeout` | CLIENT_INIT round trip exceeded `GaiaInitTimeout` (20s) | `pairing_init_timeout` (409, retryable). **`ErrHadMultipleDevices` is only ever wrapped inside this**, so it is reported as `details.multiple_devices: true` plus `details.device_count`, never as its own code |
+| `pair_google.ErrPairingInitTimeout` | CLIENT_INIT round trip exceeded `GaiaInitTimeout` (20s) | `pairing_init_timeout` (409, retryable). **`ErrHadMultipleDevices` is only ever wrapped inside this**, so it is reported as `details.multiple_devices: true`, never as its own code. **There is no `details.device_count`** (D31) |
 
 There is **no `pairing_multiple_devices` code.** Google never reports
 "multiple devices" as an error; the library picks one (§3.2).
@@ -2037,7 +2037,7 @@ JSON body for it (§7.6).
 | `pairing_wrong_emoji` | 409 | no | the owner tapped the wrong emoji |
 | `pairing_cancelled` | 409 | no | dismissed, or "this is not me" |
 | `pairing_timeout` | 409 | no | no response within the window |
-| `pairing_init_timeout` | 409 | yes | `GaiaInitTimeout` (20s) elapsed. Carries `details.multiple_devices` and `details.device_count` when the account had more than one candidate (§3.5) |
+| `pairing_init_timeout` | 409 | yes | `GaiaInitTimeout` (20s) elapsed. Carries `details.multiple_devices` when the account had more than one candidate. There is no `details.device_count`: the count is not on the error (§3.5, D31) |
 | `pairing_wrong_account` | 409 | no | a cookie refresh whose Google account differs from the paired one (§3.2) |
 | `unsupported_capability` | 409 | no | the action cannot apply here; `details.reason` from §7.7 |
 | `payload_too_large` | 413 | no | body over 1 MiB, or media over `media.upload_max_bytes` |
@@ -3590,8 +3590,15 @@ pairing. A capture from a different Google account is refused with
 #### Several Android devices on one Google account
 
 The library picks the most-recently-seen (§3.2). If that is the wrong phone,
-`agm pair --device-index 1` selects the next one. `agm pair` prints
-which device it chose and when it was last seen, so the owner can tell.
+`agm pair --device-index 1` selects the next one. `agm pair` prints the
+`dest_reg_uuid` of the device it chose, so a second run can be compared
+against the first and the audit row names the same value.
+
+> **It does not print when that device was last seen, and there is no
+> device count.** Both live only inside `StartGaiaPairing`, which
+> `DoGaiaPairing` — the call §3.1 mandates — does not surface; the last-seen
+> timestamp reaches nothing but an upstream log line
+> (`pair_google.go:352-370`). D31 records the choice.
 
 #### After either flow
 
@@ -4960,6 +4967,7 @@ add missing tools to `devbox.json` rather than installing on the host.
 | **D28** | **The account identifier is `AuthData.Mobile.SourceID`**, lowercased — the Google account address — hashed into `acct_` (§4.1) | It is the only field at `be48a58` that identifies an *account* rather than a device or a session. Upstream compares it against `Config.GetDeviceInfo().GetEmail()` to decide whether a re-authentication is the same account (`connector/login.go:267-270`) and lowercases it at sign-in (`pair_google.go:102-105`). `DestRegID`, `SessionID`, `PairingID`, `Browser.SourceID` and `FinishGaiaPairing`'s return are all device- or session-scoped; §3.2 tabulates why each is unusable. Hashing keeps the address out of IDs and URLs |
 | **D29** | **OAuth scopes are global across accounts; per-account scoping is deferred** | A scope grammar naming accounts needs accounts to exist before a token is issued, an account picker on the authorization screen, and enrollment ceilings that can name accounts that do not exist yet. None of that is worth building before the owner has met a case for it. The honest statement is made where it matters (§9.7, and the authorization screen): a token reads and sends as **any** account. An owner needing real separation runs a second Agent GM |
 | **D30** | **Signing out keeps history; only `agm accounts remove` deletes** | Losing access to an account is common — cookies expire, a phone is replaced — and losing years of searchable history because of it would be a disaster with no upside. Splitting the two makes deletion an explicit, confirmed, audited act, and makes re-pairing free: IDs derive from the account and Google's own stable IDs, so resuming reconciles rather than duplicating (§4.7) |
+| **D31** | **`agm pair` prints the chosen device's `dest_reg_uuid` and nothing more: no last-seen timestamp, and no `details.device_count` on `pairing_init_timeout`.** Recorded 2026-09-06, from the Slice 1 review | §3.1 mandates `DoGaiaPairing`, which runs `StartGaiaPairing` and `FinishGaiaPairing` back to back and returns neither the `*PairingSession` nor the candidate list. The chosen device's `LastSeen` and the number of candidates reach only an upstream log line (`pair_google.go:352-370`), and `ErrHadMultipleDevices` is wrapped with `fmt.Errorf("%w (%w)", …)` carrying no count (`pair_google.go:391-397`, fixture assertion 16). `AuthData.DestRegID` *is* set before the emoji callback fires, so the UUID is available and is what §3.2 asks to be recorded. The alternative — driving `StartGaiaPairing`/`FinishGaiaPairing` directly — would forfeit the "`DoGaiaPairing` reconnects in its own goroutine" behaviour §3.1 says Agent GM depends on and must not re-implement, for two diagnostic fields |
 
 #### Field observation behind D3 — the ConfigVersion, and status 4
 

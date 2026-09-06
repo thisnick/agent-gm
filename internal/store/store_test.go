@@ -630,3 +630,105 @@ func TestSignOutStateAndSessionPresence(t *testing.T) {
 		t.Errorf("setting the state of an unknown account gave %v", err)
 	}
 }
+
+// F-3, plant R-M6: the SQL trigger is the backstop for a writer that does not
+// go through UpsertMessage -- a repair script, a later backfill, a bare
+// sqlite3 session. Every store test until now went through UpsertMessage,
+// which applies the Go rule and never lets an illegal value reach SQLite, so
+// the SQL half of "enforced by a SQL trigger as well as in Go" was dead
+// weight.
+//
+// This walks every ordered pair of delivery states with RAW SQL and fails if
+// the trigger and gm.TransitionAllowed disagree on even one, so the two
+// cannot drift apart.
+func TestTriggerAgreesWithTransitionAllowed(t *testing.T) {
+	st, _ := newStore(t)
+	ctx := context.Background()
+	acct := seedAccount(t, st, "owner@example.com")
+	convID, err := st.UpsertConversation(ctx, acct, gm.Conversation{
+		SourceID: "c1", Folder: gm.FolderInbox, LastActivity: time.Unix(1, 0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	states := []gm.DeliveryState{
+		gm.DeliveryStateSending, gm.DeliveryStateSent, gm.DeliveryStateDelivered,
+		gm.DeliveryStateRead, gm.DeliveryStateFailed, gm.DeliveryStateCanceled,
+		gm.DeliveryStateDeleted, gm.DeliveryStateReceived, gm.DeliveryStateDownloading,
+		gm.DeliveryStateDownloadFailed, gm.DeliveryStateUnknown,
+	}
+
+	// rawWrite bypasses UpsertMessage entirely: this is the writer the
+	// trigger exists for.
+	rawWrite := func(id, direction string, state gm.DeliveryState) error {
+		return st.Write(ctx, func(tx *sql.Tx) error {
+			_, err := tx.ExecContext(ctx, `
+				INSERT INTO messages (id, account_id, conversation_id, source_id, kind,
+				    direction, delivery_state, delivery_state_raw, is_deleted,
+				    sent_at_ms, ingested_at_ms, updated_at_ms, content_hash)
+				VALUES (?,?,?,?,'message',?,?,0,0,1,1,1,'hash')`,
+				id, acct, convID, id, direction, string(state))
+			return err
+		})
+	}
+	rawMove := func(id string, to gm.DeliveryState) error {
+		return st.Write(ctx, func(tx *sql.Tx) error {
+			_, err := tx.ExecContext(ctx,
+				`UPDATE messages SET delivery_state = ? WHERE id = ?`, string(to), id)
+			return err
+		})
+	}
+
+	n := 0
+	for _, from := range states {
+		for _, to := range states {
+			n++
+			id := "msg_raw-" + string(from) + "-" + string(to)
+			if err := rawWrite(id, "outgoing", from); err != nil {
+				t.Fatalf("seeding %s: %v", id, err)
+			}
+			err := rawMove(id, to)
+			refusedBySQL := err != nil
+			allowedByGo := gm.TransitionAllowed(from, to)
+			if refusedBySQL == allowedByGo {
+				t.Errorf("%s -> %s: the trigger %s but gm.TransitionAllowed says %v",
+					from, to,
+					map[bool]string{true: "REFUSED", false: "ALLOWED"}[refusedBySQL],
+					allowedByGo)
+			}
+			if refusedBySQL && !strings.Contains(err.Error(), "delivery_state may not move backwards") {
+				t.Errorf("%s -> %s refused with an unhelpful message: %v", from, to, err)
+			}
+		}
+	}
+	if n != len(states)*len(states) {
+		t.Fatalf("walked %d pairs, want %d", n, len(states)*len(states))
+	}
+
+	// The four moves the previous rank-based trigger let through, named so a
+	// regression is legible rather than buried in the walk above.
+	// Plant R-M6, 2026-09-06.
+	for _, tc := range [][2]gm.DeliveryState{
+		{gm.DeliveryStateFailed, gm.DeliveryStateSent},
+		{gm.DeliveryStateDeleted, gm.DeliveryStateSending},
+		{gm.DeliveryStateDelivered, gm.DeliveryStateCanceled},
+		{gm.DeliveryStateCanceled, gm.DeliveryStateDelivered},
+	} {
+		id := "msg_named-" + string(tc[0]) + "-" + string(tc[1])
+		if err := rawWrite(id, "outgoing", tc[0]); err != nil {
+			t.Fatal(err)
+		}
+		if err := rawMove(id, tc[1]); err == nil {
+			t.Errorf("the trigger allowed %s -> %s; a failed message must not come back as sent", tc[0], tc[1])
+		}
+	}
+
+	// The trigger is scoped to outgoing messages: an incoming one is Google's
+	// own report and is not on the ladder.
+	if err := rawWrite("msg_incoming", "incoming", gm.DeliveryStateReceived); err != nil {
+		t.Fatal(err)
+	}
+	if err := rawMove("msg_incoming", gm.DeliveryStateDownloading); err != nil {
+		t.Errorf("the trigger fired on an incoming message: %v", err)
+	}
+}

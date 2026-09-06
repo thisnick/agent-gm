@@ -135,8 +135,22 @@ var migrations = []migration{
 			`CREATE INDEX messages_acct_source    ON messages(account_id, source_id)`,
 
 			// The transition table of spec section 4.4, enforced by a SQL
-			// trigger as well as in Go. A backward move on an outgoing
-			// message is refused; a forward skip is accepted.
+			// trigger as well as in Go. This is the backstop for any writer that
+			// does not go through UpsertMessage -- a repair script, a later
+			// backfill, a bare sqlite3 session.
+			//
+			// It encodes the table as the exact set of permitted moves rather
+			// than as a rank comparison, because a rank comparison gives every
+			// terminal state the same rank and so lets a `failed` message come
+			// back as `sent`. TestTriggerAgreesWithTransitionAllowed walks all
+			// state pairs and fails if this list and gm.TransitionAllowed ever
+			// disagree.
+			//
+			//\tsending -> sent -> delivered -> read   (forward skips allowed)
+			//\tsending|sent      -> failed
+			//\tsending           -> canceled
+			//\tany               -> deleted
+			//\tunknown           -> any
 			`CREATE TRIGGER messages_no_backward_delivery
 			 BEFORE UPDATE OF delivery_state ON messages
 			 FOR EACH ROW WHEN
@@ -144,29 +158,17 @@ var migrations = []migration{
 			     AND NEW.delivery_state <> OLD.delivery_state
 			     AND NEW.delivery_state <> 'deleted'
 			     AND OLD.delivery_state <> 'unknown'
-			     AND (
-			         CASE OLD.delivery_state
-			             WHEN 'sending'   THEN 1
-			             WHEN 'sent'      THEN 2
-			             WHEN 'delivered' THEN 3
-			             WHEN 'read'      THEN 4
-			             ELSE 0 END
-			     ) >= (
-			         CASE NEW.delivery_state
-			             WHEN 'sending'   THEN 1
-			             WHEN 'sent'      THEN 2
-			             WHEN 'delivered' THEN 3
-			             WHEN 'read'      THEN 4
-			             ELSE 0 END
+			     AND (OLD.delivery_state || '>' || NEW.delivery_state) NOT IN (
+			         'sending>sent',
+			         'sending>delivered',
+			         'sending>read',
+			         'sending>failed',
+			         'sending>canceled',
+			         'sent>delivered',
+			         'sent>read',
+			         'sent>failed',
+			         'delivered>read'
 			     )
-			     AND (
-			         CASE NEW.delivery_state
-			             WHEN 'sending'   THEN 1
-			             WHEN 'sent'      THEN 2
-			             WHEN 'delivered' THEN 3
-			             WHEN 'read'      THEN 4
-			             ELSE 0 END
-			     ) > 0
 			 BEGIN
 			     SELECT RAISE(ABORT, 'delivery_state may not move backwards');
 			 END`,

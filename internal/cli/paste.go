@@ -85,25 +85,40 @@ func cookiesFromCurl(cmd string) map[string]string {
 	for i := 0; i < len(tokens); i++ {
 		t := tokens[i]
 		var value string
+		// isCookieFlag marks -b / --cookie, whose whole value IS the cookie
+		// string. A -H / --header value is only a cookie source when it
+		// carries the Cookie header; otherwise it is skipped, so
+		// `-H 'x-client-data: SID=whatever'` cannot contribute a cookie.
+		isCookieFlag := false
 		switch {
-		case t == "-H" || t == "--header" || t == "-b" || t == "--cookie":
+		case t == "-H" || t == "--header":
 			if i+1 >= len(tokens) {
 				continue
 			}
 			i++
 			value = tokens[i]
+		case t == "-b" || t == "--cookie":
+			if i+1 >= len(tokens) {
+				continue
+			}
+			i++
+			value, isCookieFlag = tokens[i], true
 		case strings.HasPrefix(t, "-H"):
 			value = strings.TrimPrefix(t, "-H")
 		case strings.HasPrefix(t, "--header="):
 			value = strings.TrimPrefix(t, "--header=")
+		case strings.HasPrefix(t, "--cookie="):
+			value, isCookieFlag = strings.TrimPrefix(t, "--cookie="), true
 		case strings.HasPrefix(t, "-b"):
-			value = strings.TrimPrefix(t, "-b")
+			value, isCookieFlag = strings.TrimPrefix(t, "-b"), true
 		default:
 			continue
 		}
-		lower := strings.ToLower(value)
+		lower := strings.ToLower(strings.TrimSpace(value))
 		if idx := strings.Index(lower, "cookie:"); idx >= 0 {
-			value = value[idx+len("cookie:"):]
+			value = strings.TrimSpace(value)[idx+len("cookie:"):]
+		} else if !isCookieFlag {
+			continue
 		}
 		for _, pair := range strings.Split(value, ";") {
 			pair = strings.TrimSpace(pair)

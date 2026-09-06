@@ -67,19 +67,27 @@ var chromeOnPath = []string{
 // FindChrome resolves the browser: AGENT_GM_CHROME, then the platform's usual
 // locations, then PATH (spec section 11.4).
 func FindChrome(env string) (string, error) {
+	return FindChromeIn(env, chromeCandidates(), exec.LookPath)
+}
+
+// FindChromeIn is FindChrome with the filesystem injected, so the
+// no-Chrome case is deterministic on a machine that has Chrome. The search
+// order is the spec's: the environment, then the platform's usual locations,
+// then PATH.
+func FindChromeIn(env string, candidates []string, lookPath func(string) (string, error)) (string, error) {
 	if env != "" {
 		if isExecutable(env) {
 			return env, nil
 		}
 		return "", fmt.Errorf("%w: AGENT_GM_CHROME=%s is not an executable", ErrNoChrome, env)
 	}
-	for _, c := range chromeCandidates() {
+	for _, c := range candidates {
 		if isExecutable(c) {
 			return c, nil
 		}
 	}
 	for _, name := range chromeOnPath {
-		if p, err := exec.LookPath(name); err == nil {
+		if p, err := lookPath(name); err == nil && p != "" {
 			return p, nil
 		}
 	}
@@ -171,6 +179,24 @@ type Capture struct {
 	Logf func(format string, args ...any)
 }
 
+// args builds Chrome's argv.
+//
+// The dedicated --user-data-dir is mandatory, not stylistic: current Chrome
+// refuses --remote-debugging-port against the default profile directory, and a
+// build that did attach would open a live CDP credential channel onto the
+// owner's own profile rather than onto the dedicated one.
+//
+// No other flag is passed -- no --enable-automation, no --headless -- so
+// navigator.webdriver is unset, there is no automation infobar, and Google's
+// sign-in sees an ordinary Chrome (spec section 11.4 step 1).
+func (c *Capture) args(port int) []string {
+	return []string{
+		"--user-data-dir=" + c.ProfileDir,
+		fmt.Sprintf("--remote-debugging-port=%d", port),
+		gm.GaiaCaptureURL,
+	}
+}
+
 func (c *Capture) logf(format string, args ...any) {
 	if c.Logf != nil {
 		c.Logf(format, args...)
@@ -202,14 +228,7 @@ func (c *Capture) Run(ctx context.Context) (map[string]string, error) {
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// No other flag is passed -- no --enable-automation, no --headless -- so
-	// navigator.webdriver is unset, there is no automation infobar, and
-	// Google's sign-in sees an ordinary Chrome.
-	cmd := exec.CommandContext(runCtx, c.Chrome,
-		"--user-data-dir="+c.ProfileDir,
-		fmt.Sprintf("--remote-debugging-port=%d", port),
-		gm.GaiaCaptureURL,
-	)
+	cmd := exec.CommandContext(runCtx, c.Chrome, c.args(port)...)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	if err := cmd.Start(); err != nil {
@@ -411,16 +430,15 @@ type cdpCookie struct {
 // this fails.
 var cookieURLs = []any{"https://messages.google.com", "https://www.google.com"}
 
-func (c *cdpConn) readCookies(ctx context.Context, sessionID string) (map[string]string, error) {
-	var out struct {
-		Cookies []cdpCookie `json:"cookies"`
-	}
-	err := c.call(ctx, sessionID, "Network.getCookies",
-		map[string]any{"urls": cookieURLs}, &out)
-	if err != nil {
-		return nil, err
-	}
-	// Exactly the seven, and nothing else.
+// getCookiesParams is the exact Network.getCookies request. It is a function
+// so a test can assert the urls array without a browser.
+func getCookiesParams() map[string]any {
+	return map[string]any{"urls": cookieURLs}
+}
+
+// selectGaiaCookies keeps exactly the seven, each only from the host it is
+// scoped to. A value on the wrong host is not the cookie we mean.
+func selectGaiaCookies(cookies []cdpCookie) map[string]string {
 	wanted := map[string]bool{}
 	for _, n := range gm.GaiaRequiredCookies {
 		wanted[n] = true
@@ -429,19 +447,27 @@ func (c *cdpConn) readCookies(ctx context.Context, sessionID string) (map[string
 		wanted[n] = true
 	}
 	got := map[string]string{}
-	for _, ck := range out.Cookies {
+	for _, ck := range cookies {
 		if !wanted[ck.Name] || ck.Value == "" {
 			continue
 		}
-		// OSID must come from messages.google.com; everything else from
-		// .google.com. A value on the wrong host is not the cookie we mean.
-		want := gm.GaiaCookieDomains[ck.Name]
-		if !domainMatches(ck.Domain, want) {
+		if !domainMatches(ck.Domain, gm.GaiaCookieDomains[ck.Name]) {
 			continue
 		}
 		got[ck.Name] = ck.Value
 	}
-	return got, nil
+	return got
+}
+
+func (c *cdpConn) readCookies(ctx context.Context, sessionID string) (map[string]string, error) {
+	var out struct {
+		Cookies []cdpCookie `json:"cookies"`
+	}
+	err := c.call(ctx, sessionID, "Network.getCookies", getCookiesParams(), &out)
+	if err != nil {
+		return nil, err
+	}
+	return selectGaiaCookies(out.Cookies), nil
 }
 
 func domainMatches(got, want string) bool {

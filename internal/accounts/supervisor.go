@@ -126,7 +126,7 @@ func (s *Supervisor) Pair(ctx context.Context, backend gm.Backend, cookies map[s
 	var pendingNew bool
 	wrapped := func(e string) {
 		address := persister.AccountAddress()
-		if address != "" {
+		if gm.PlausibleAccountAddress(address) {
 			id := store.AccountID(address)
 			if existing, err := s.store.Account(ctx, id); err != nil {
 				// A brand-new account starts life in `pairing`. Only a new
@@ -163,18 +163,22 @@ func (s *Supervisor) Pair(ctx context.Context, backend gm.Backend, cookies map[s
 		}
 		return nil, err
 	}
-	if dev.AccountAddress == "" {
+	// The address a backend hands back is validated here as well as inside
+	// the adapter: an implausible one creates no account row and no session
+	// file, because acct_ is derived from it (spec 3.2).
+	address, err := gm.AccountAddressFromPairing(dev.AccountAddress)
+	if err != nil {
 		if pendingNew && pendingID != "" {
 			_ = s.store.DeletePairingAccount(ctx, pendingID)
 		}
-		return nil, gm.Classify(gm.ErrNoAccountAddress)
+		return nil, err
 	}
 
-	id := store.AccountID(dev.AccountAddress)
+	id := store.AccountID(address)
 	now := s.clock.Now().UnixMilli()
 	acct := store.Account{
 		ID:              id,
-		GoogleAccount:   dev.AccountAddress,
+		GoogleAccount:   address,
 		State:           store.StateConnected,
 		PhoneID:         dev.PhoneID,
 		GaiaDestRegUUID: dev.DestRegUUID,
@@ -188,7 +192,7 @@ func (s *Supervisor) Pair(ctx context.Context, backend gm.Backend, cookies map[s
 		return nil, err
 	}
 
-	a := s.register(id, dev.AccountAddress, backend)
+	a := s.register(id, address, backend)
 	if err := a.PersistSession(ctx); err != nil {
 		return nil, err
 	}

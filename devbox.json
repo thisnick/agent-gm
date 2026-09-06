@@ -58,10 +58,12 @@
         "openssl rand -hex 32"
       ],
       "conformance": [
-        "./scripts/mcp-conformance.sh"
+        "echo 'the MCP conformance run of spec 8.4 arrives in Slice 3; there is no script yet' >&2",
+        "exit 2"
       ],
       "lint-names": [
-        "go test ./internal/lint/... -run 'TestNameLint' -count=1"
+        "echo 'the name lint of spec 13.5, which reads the served MCP catalogue arrives in Slice 3; there is no script yet' >&2",
+        "exit 2"
       ],
       "no-real-numbers": [
         "./scripts/no-real-numbers.sh"
@@ -73,10 +75,12 @@
         "./scripts/fixture-validation.sh"
       ],
       "build-matrix": [
-        "./scripts/build-matrix.sh"
+        "echo 'the four-platform build of spec 13.6 arrives in Slice 4; there is no script yet' >&2",
+        "exit 2"
       ],
       "image": [
-        "./scripts/build-image.sh"
+        "echo 'the Dockerfile and GHCR push of spec 14.1 arrives in Slice 4; there is no script yet' >&2",
+        "exit 2"
       ]
     }
   }
