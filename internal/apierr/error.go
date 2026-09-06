@@ -150,6 +150,21 @@ func WrongTypeForField(field, want string) *Error {
 		map[string]any{"field": field})
 }
 
+// WrongTypeForParameter is WrongTypeForField for a value that arrived as a
+// QUERY parameter.
+//
+// Section 7.1 names an unknown query parameter in `details.parameter` and an
+// unknown body field in `details.field`, and a caller branching on those two
+// keys is doing the reasonable thing. A cursor is a query parameter on every
+// route that takes one, so reporting a tampered or mismatched cursor under
+// `field` sent a client looking in the body for something that was never
+// there.
+func WrongTypeForParameter(parameter, want string) *Error {
+	return withDetails(CodeInvalidRequest,
+		fmt.Sprintf("query parameter %q must be %s", parameter, want),
+		map[string]any{"parameter": parameter})
+}
+
 // MissingParameter is a required parameter that was not supplied.
 func MissingParameter(name string) *Error {
 	return withDetails(CodeInvalidRequest,

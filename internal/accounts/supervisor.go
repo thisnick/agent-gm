@@ -798,7 +798,10 @@ func (s *Supervisor) announce(ctx context.Context, accountID string, from, to St
 		"state_reason": string(reason),
 	})
 	s.feed.publish(StateChange{
-		AccountID: accountID, From: from, To: to, Reason: reason, At: s.clock.Now(),
+		AccountID: accountID, From: from, To: to, Reason: reason,
+		// Truncated, not rounded: section 4.4 fixes millisecond precision on
+		// every JSON surface, and a stream is one.
+		At: s.clock.Now().Truncate(time.Millisecond),
 	})
 }
 

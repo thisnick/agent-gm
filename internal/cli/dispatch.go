@@ -23,6 +23,12 @@ type command struct {
 	// route is the route the generic executor drives. A command with its own
 	// run may name the route it starts with, or none.
 	route string
+	// connectsItself marks a command that resolves the server and the
+	// credential in its own body rather than having dispatch do it first.
+	// `agm pair` is the only one: it must diagnose a bad paste before it
+	// needs a server, or an owner gets "no server is configured" when what
+	// they actually got wrong was the paste (spec section 11.4).
+	connectsItself bool
 	// flags and pos are what this command accepts, over and above section
 	// 11.1's global flags.
 	flags []flagDef
@@ -118,7 +124,7 @@ func buildCommandTable() []*command {
 	cmds := []*command{
 		// --- pairing -------------------------------------------------------
 		{
-			words: []string{"pair"}, inventory: "pair", route: "pairing_start",
+			words: []string{"pair"}, inventory: "pair", route: "pairing_start", connectsItself: true,
 			summary: "add an account, or resume one; one command from start to paired",
 			flags: []flagDef{
 				{name: "--account", kind: kString, param: "account_id", where: wBody,

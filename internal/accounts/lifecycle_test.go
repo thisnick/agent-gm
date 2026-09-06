@@ -1236,8 +1236,11 @@ func TestHealthBlockIsCachedAndNullWhenNotConnected(t *testing.T) {
 	if !ha.Google.IsDefaultSMSApp {
 		t.Error("is_default_sms_app was not cached")
 	}
-	if ha.State != accounts.StateConnected || ha.StateReason != accounts.ReasonNone {
-		t.Errorf("health reports %s/%s", ha.State, ha.StateReason)
+	// state_reason is a POINTER so that "no reason" encodes as null, the way
+	// GET /v1/accounts encodes it: section 7.5 says the health block is the
+	// same per-account object, and "" is not null.
+	if ha.State != accounts.StateConnected || ha.StateReason != nil {
+		t.Errorf("health reports %s/%v", ha.State, ha.StateReason)
 	}
 	if !ha.PhoneResponding {
 		t.Error("phone_responding starts false")

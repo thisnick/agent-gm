@@ -44,6 +44,12 @@ import (
 // only be testing the other half.
 func agmRun(t *testing.T, args ...string) (stdout, stderr string, code int) {
 	t.Helper()
+	return agmRunStdin(t, "", args...)
+}
+
+// agmBinary resolves the built CLI, skipping when it is absent.
+func agmBinary(t *testing.T) string {
+	t.Helper()
 	bin := os.Getenv("AGENT_GM_CLI_BINARY")
 	if bin == "" {
 		bin = filepath.Join("..", "..", "bin", "agm")
@@ -51,7 +57,17 @@ func agmRun(t *testing.T, args ...string) (stdout, stderr string, code int) {
 	if _, err := os.Stat(bin); err != nil {
 		t.Skipf("no agm binary at %s: run `devbox run build` first", bin)
 	}
+	return bin
+}
+
+// agmRunStdin is agmRun with something on stdin, for `--paste`.
+func agmRunStdin(t *testing.T, stdin string, args ...string) (stdout, stderr string, code int) {
+	t.Helper()
+	bin := agmBinary(t)
 	cmd := exec.Command(bin, args...)
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
 	var out, errb bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errb

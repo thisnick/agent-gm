@@ -1046,6 +1046,7 @@ under `admin` on `GET /v1/admin/diagnostics`.
 | `auth_` | active authorization (grant) | UUIDv7 | |
 | `client_` | registered OAuth client | UUIDv7 | |
 | `enroll_` | enrollment code record | UUIDv7 | |
+| `pair_` | an in-flight pairing | UUIDv7 | not stored: a pairing lives in memory, so an abandoned one leaves nothing behind (§16 Slice 2 test 38) |
 | `req_` | request ID, in every envelope | UUIDv7 | not stored |
 
 Rules:
@@ -2274,7 +2275,8 @@ written. Both run against `messages_fts`; `exact` additionally filters the page
 by substring, so neither is an unindexed scan. There is no way to inject FTS5
 operator syntax, and no mode named after a SQLite extension.
 
-Search returns `results[{message, rank, snippet, conversation}]` plus:
+Search returns its rows in `data.items` like every other listing (§7.1) —
+each `{message, rank, snippet, conversation}` — plus:
 
 ```json
 "coverage": { "complete": false,
@@ -2350,7 +2352,7 @@ A reaction whose `EmojiType` has no unicode serves
 | Method | Path | Body | Answer |
 |---|---|---|---|
 | `POST` | `/v1/conversations` | `{"account_id", "recipients": ["+1…"], "name"?, "client_request_id"}`. `account_id` is required when more than one account exists (§7.3) — this is the one write whose target is a phone number rather than an ID, so nothing else can imply the account | `200` with the existing or newly created conversation plus the operation. `GetOrCreateConversation`; the `CREATE_RCS` retry of §3.7 is internal. `name` is accepted only for 2+ recipients. Zero recipients, or two that normalise to one number, is `invalid_request` **before** an operation row exists |
-| `POST` | `/v1/conversations/{id}/messages` | `{"text"?, "upload_ids"?, "reply_to_message_id"?, "force_rcs"?, "client_request_id"}` | `200` with `{operation, message_id}`. At least `text` or one upload. `upload_ids` is an array but **currently accepts exactly one element**; two is `invalid_request` naming the limit (§10.2) |
+| `POST` | `/v1/conversations/{id}/messages` | `{"text"?, "upload_ids"?, "reply_to_message_id"?, "force_rcs"?, "client_request_id"}` | `200` with `{operation, message_id}`, where `message_id` is `null` until the remote echo lands — including on a `succeeded` send (§6.5). At least `text` or one upload. `upload_ids` is an array but **currently accepts exactly one element**; two is `invalid_request` naming the limit (§10.2) |
 | `POST` | `/v1/conversations/{id}/typing` | `{}` | `204`. Fire-and-forget, no operation, no idempotency key: it has no lasting effect |
 | `POST` | `/v1/conversations/{id}/read` | `{"message_id", "client_request_id"}` | `200`. Marks the conversation read through that message |
 | `PATCH` | `/v1/conversations/{id}` | `{"folder"?, "pinned"?, "unread"?, "client_request_id"}` | `200`. Archive, unarchive, pin, unpin and mark-unread, through `UpdateConversation` (§3.1). Returns `operation: null` and `changed: false` when already in the requested state |
@@ -4741,7 +4743,10 @@ model.
     **narrowed** admin session calling a route outside its scopes.
 22. **A narrowed admin session cannot re-widen.** `POST /v1/auth/refresh` with
     `scopes` wider than the session was minted with — including the full set
-    after a narrowing — is `invalid_scope`, **does not spend** the presented
+    after a narrowing — is **`invalid_request`** naming `scopes` in
+    `details.field` (`invalid_scope` is OAuth 2.1's own error name at
+    `/oauth/*`, §9.6, and is not a §7.2 code; the `/v1` surface has one error
+    vocabulary and this is a malformed request against it), **does not spend** the presented
     refresh token, and leaves the session's scopes unchanged; the next call to
     the out-of-scope route is still exit 4. Widening requires presenting the
     admin secret again. Test 21's exit-4 case is void without this.

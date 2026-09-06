@@ -97,7 +97,7 @@ func TestCLIDocQuotesOnlyTheRealEffectSentences(t *testing.T) {
 type namedCommand struct{ name, where string }
 
 var (
-	cliHeading  = regexp.MustCompile(`(?m)^#{2,4}\s+` + "`?" + `agm ([a-z][a-z0-9 -]*?)` + "`?" + `\s*$`)
+	cliHeading = regexp.MustCompile(`(?m)^#{2,4}\s+` + "`?" + `agm ([a-z][a-z0-9 -]*?)` + "`?" + `\s*$`)
 	// Up to three segments, because section 11.3 has `admin settings set`
 	// and `admin audit list`. Matching only two reported them as commands
 	// that do not exist, which is the right failure for the wrong reason.

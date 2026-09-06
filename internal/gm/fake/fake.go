@@ -688,11 +688,29 @@ func (b *Backend) SendText(ctx context.Context, req gm.SendTextRequest) (gm.Send
 	return b.doSend("SendText", req.ConversationID, req.TmpID, req.Text)
 }
 
+// SendMedia echoes the media part back on the message, which SendText's echo
+// obviously does not carry.
+//
+// Without this the fake accepted a media send and emitted a message with no
+// attachments, so nothing above it could tell a working media path from a
+// broken one: section 16 Slice 2 test 17's "reserve, PUT, send" passed on the
+// operation alone, and the att_ row the send is FOR was never asserted. A
+// fake that quietly drops the payload makes every layer above it untestable
+// in exactly the place it matters (spec section 13.1).
 func (b *Backend) SendMedia(ctx context.Context, req gm.SendMediaRequest) (gm.SendResult, error) {
-	return b.doSend("SendMedia", req.ConversationID, req.TmpID, req.Caption)
+	att := []gm.Attachment{{
+		PartIndex:     0,
+		MediaID:       req.Media.MediaID,
+		DecryptionKey: req.Media.DecryptionKey,
+		Filename:      req.Media.Name,
+		MimeType:      req.Media.MimeType,
+		MediaFormat:   req.Media.Format,
+		SizeBytes:     req.Media.SizeBytes,
+	}}
+	return b.doSend("SendMedia", req.ConversationID, req.TmpID, req.Caption, att...)
 }
 
-func (b *Backend) doSend(method, convID, tmpID, text string) (gm.SendResult, error) {
+func (b *Backend) doSend(method, convID, tmpID, text string, attachments ...gm.Attachment) (gm.SendResult, error) {
 	b.mu.Lock()
 	if err := b.note(method); err != nil {
 		b.mu.Unlock()
@@ -722,6 +740,7 @@ func (b *Backend) doSend(method, convID, tmpID, text string) (gm.SendResult, err
 		StatusRaw:     5, // OUTGOING_SENDING
 		Kind:          gm.MessageKindMessage,
 		DeliveryState: gm.DeliveryStateSending,
+		Attachments:   attachments,
 	}
 	if conv != nil {
 		msg.ParticipantID = conv.DefaultOutgoingID

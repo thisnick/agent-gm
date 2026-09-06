@@ -158,11 +158,15 @@ const SubscriberBuffer = 64
 // GET /v1/accounts/{id}/events. It carries no message data, which is why that
 // route needs no replay ring and no cursor (spec section 7.5).
 type StateChange struct {
-	AccountID string    `json:"account_id"`
-	From      State     `json:"from"`
-	To        State     `json:"to"`
-	Reason    Reason    `json:"state_reason"`
-	At        time.Time `json:"at"`
+	AccountID string `json:"account_id"`
+	From      State  `json:"from"`
+	To        State  `json:"to"`
+	Reason    Reason `json:"state_reason"`
+	// At is truncated to milliseconds. Section 4.4 says every JSON surface
+	// renders timestamps as RFC 3339 UTC with millisecond precision, and a
+	// stream is a JSON surface: a nanosecond timestamp here made the SSE
+	// feed the one place a client saw a different shape.
+	At time.Time `json:"at"`
 }
 
 // Subscription is one reader of the feed. Close it exactly once; a closed

@@ -200,11 +200,11 @@ func (d *HandlerDeps) paging(r *Request, endpoint string) (page, *apierr.Error) 
 	c, decodeErr := store.DecodeCursor(d.DataKey, endpoint, p.fingerprint, raw)
 	switch {
 	case errors.Is(decodeErr, store.ErrCursorFilterMismatch):
-		return page{}, apierr.WrongTypeForField("cursor",
+		return page{}, apierr.WrongTypeForParameter("cursor",
 			"a cursor issued for this endpoint with these same filters; "+
 				"send the same query string on every page")
 	case decodeErr != nil:
-		return page{}, apierr.WrongTypeForField("cursor", "a cursor this server issued")
+		return page{}, apierr.WrongTypeForParameter("cursor", "a cursor this server issued")
 	}
 	p.Cursor = &c
 	return p, nil

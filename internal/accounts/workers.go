@@ -57,8 +57,6 @@ type workerState struct {
 	resume  chan struct{}
 	started bool
 	done    bool
-	total   int
-	doneN   int
 	err     error
 }
 

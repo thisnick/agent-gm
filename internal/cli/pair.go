@@ -24,8 +24,19 @@ const DefaultPairingTimeout = 5 * time.Minute
 // short-lived Chrome profile, or read from --paste / --paste-file: a secret
 // must not appear in argv (spec section 12.1).
 func (r *runner) pair(inv *invocation) error {
+	// The cookies are gathered BEFORE the server is resolved, and the
+	// ordering is the point. A paste missing OSID is a local mistake with a
+	// local diagnosis -- section 11.4 requires the CLI to name the missing
+	// cookies and the domain each comes from -- and connecting first meant an
+	// owner on a machine with no saved profile was told "no server is
+	// configured" instead. That is the worst possible answer: the paste is
+	// the thing they got wrong, and it is the thing the message did not
+	// mention.
 	cookies, err := r.pairingCookies(inv)
 	if err != nil {
+		return err
+	}
+	if err := r.connect(); err != nil {
 		return err
 	}
 
@@ -173,7 +184,11 @@ func (r *runner) pairingCookies(inv *invocation) (map[string]string, error) {
 func parsePasteOrUsage(raw string) (map[string]string, error) {
 	cookies, err := ParsePaste(raw)
 	if err != nil {
-		return nil, &UsageError{Msg: err.Error(), Err: err}
+		// The message alone, not the message wrapped around itself.
+		// UsageError renders "Msg: Err", so passing both printed the same
+		// sentence twice -- and this sentence is a diagnosis somebody is
+		// meant to act on, which is not helped by reading it again.
+		return nil, &UsageError{Msg: err.Error()}
 	}
 	return cookies, nil
 }

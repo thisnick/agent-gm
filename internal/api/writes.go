@@ -34,9 +34,14 @@ import (
 
 // mutationDTO is the answer shape every mutation shares.
 type mutationDTO struct {
-	Operation      *operationDTO    `json:"operation"`
-	Changed        bool             `json:"changed"`
-	MessageID      *string          `json:"message_id,omitempty"`
+	Operation *operationDTO `json:"operation"`
+	Changed   bool          `json:"changed"`
+	// MessageID is always PRESENT, and null until the remote echo lands --
+	// including on a succeeded send (spec sections 6.5, 7.7). It was
+	// `omitempty`, so a send whose echo had not arrived answered with no
+	// message_id key at all, and a client cannot tell "not yet" from "this
+	// route does not have one" by a key's absence.
+	MessageID      *string          `json:"message_id"`
 	ConversationID *string          `json:"conversation_id,omitempty"`
 	Conversation   *conversationDTO `json:"conversation,omitempty"`
 	// Effect is the one sentence a destructive route carries, byte for byte

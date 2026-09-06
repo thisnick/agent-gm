@@ -181,6 +181,12 @@ func dispatch(env *Env) error {
 		return cmd.run(r, inv)
 	}
 
+	// `agm pair` connects for itself, AFTER it has gathered the cookies, so
+	// that a bad paste is diagnosed as a bad paste rather than as a missing
+	// server (spec section 11.4). Every other command connects here.
+	if cmd.connectsItself {
+		return cmd.run(r, inv)
+	}
 	if err := r.connect(); err != nil {
 		return err
 	}

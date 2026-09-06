@@ -278,11 +278,16 @@ type Counters struct {
 // AccountHealth is the per-account object GET /v1/health embeds and
 // GET /v1/accounts/{id} returns (spec section 7.5).
 type AccountHealth struct {
-	AccountID       string         `json:"account_id"`
-	GoogleAccount   string         `json:"google_account"`
-	Label           string         `json:"label"`
+	AccountID     string `json:"account_id"`
+	GoogleAccount string `json:"google_account"`
+	// Label and StateReason are POINTERS so that "no label" and "no reason"
+	// encode as null, exactly as GET /v1/accounts encodes them. Section 7.5
+	// says the health block is "the same per-account object", and serving ""
+	// here against null there made the same account two shapes depending on
+	// which route a client asked.
+	Label           *string        `json:"label"`
 	State           State          `json:"state"`
-	StateReason     Reason         `json:"state_reason"`
+	StateReason     *string        `json:"state_reason"`
 	PhoneResponding bool           `json:"phone_responding"`
 	LastEventAt     *time.Time     `json:"last_event_at"`
 	Google          *GoogleHealth  `json:"google"`
@@ -322,9 +327,9 @@ func (s *Supervisor) healthFor(ctx context.Context, row store.Account) AccountHe
 	h := AccountHealth{
 		AccountID:       row.ID,
 		GoogleAccount:   row.GoogleAccount,
-		Label:           row.Label,
+		Label:           nullableString(row.Label),
 		State:           row.State,
-		StateReason:     Reason(row.StateReason),
+		StateReason:     nullableString(row.StateReason),
 		PhoneResponding: true,
 		LastEventAt:     msToTime(row.LastEventAtMS),
 	}
@@ -440,4 +445,15 @@ func (a *Account) setPhoneResponding(v bool) {
 	a.healthMu.Lock()
 	a.phoneResponding = v
 	a.healthMu.Unlock()
+}
+
+// nullableString encodes an absent value as JSON null rather than as "".
+// Section 4.7 says state_reason is "a short machine-readable string ... or
+// null", and section 7.5 says the health block is the same object
+// /v1/accounts serves -- so the two routes must agree, and "" is not null.
+func nullableString(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
