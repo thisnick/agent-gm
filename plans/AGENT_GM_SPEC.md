@@ -1525,3 +1525,692 @@ An `unsupported_capability` answer carries the object ID, the action, the
 capability's current value, and `details.reason`.
 
 ---
+
+## 8. MCP
+
+### 8.1 Transport
+
+Streamable HTTP at `https://gm.agent-wx.app/mcp`. Protocol revision
+`2026-07-28`, with `2025-11-25` accepted for compatibility. Stateless at the
+application layer: every request carries its own bearer token and its own
+protocol metadata, and durable state lives in SQLite.
+
+Checked **before the transport parses anything**:
+
+- `Origin`, when present, must equal `https://gm.agent-wx.app`; a foreign one
+  is `403`. A non-browser client sending no `Origin` is supported.
+- Body over 1 MiB → `413`.
+- `Content-Type` must be `application/json`.
+- `Accept` must admit `application/json` or `text/event-stream`.
+- Exactly one `Authorization` header is parsed, and only the `Bearer` scheme.
+  Two headers, another scheme, or a value carrying two tokens are all refused
+  rather than resolved to whichever happens to be first.
+- The token must carry **at least one** messaging scope. No token → `401` with
+  the RFC 9728 challenge. Valid token with no messaging scope → `403`
+  `insufficient_scope` with the same challenge, deliberately distinct from
+  `401`.
+- Concurrency: 8 in flight per authorization, 32 across the process; excess is
+  `429` with `Retry-After`.
+
+`serverInfo` carries `name: "agent-gm"`, the version, the built commit, and
+`source_url` (§1.4).
+
+### 8.2 Tools
+
+Eighteen tools. Each is a facade over the REST route that serves the same
+data, so the filters, the validation, the error codes and the DTOs are the
+same on both surfaces by construction rather than by discipline.
+
+**Reads — `messages:read`**
+
+| Tool | REST | Arguments |
+|---|---|---|
+| `list_conversations` | `GET /v1/conversations` | `query`, `participant`, `folder`, `type`, `unread_only`, `group_only`, `include_deleted`, `cursor`, `limit` |
+| `get_conversation` | `GET /v1/conversations/{id}` | `conversation_id` |
+| `list_messages` | `GET /v1/messages` | `conversation_id`, `cursor`, `limit`, `direction`, `sender`, `after`, `before`, `has_attachment`, `delivery_state`, `include_tombstones` |
+| `get_message` | `GET /v1/messages/{id}` | `message_id` |
+| `message_context` | `GET /v1/messages/{id}/context` | `message_id`, `before`, `after` |
+| `search_messages` | `GET /v1/search/messages` | `q` (**required**), `syntax`, `conversation_id`, `sender`, `after`, `before`, `has_attachment`, `cursor`, `limit` |
+| `get_attachment` | `GET /v1/attachments/{id}` | `attachment_id` |
+| `list_contacts` | `GET /v1/contacts` | `query`, `top`, `cursor`, `limit` |
+| `get_session` | `GET /v1/session` | — |
+
+**Writes — `messages:write`**
+
+| Tool | REST | Arguments |
+|---|---|---|
+| `send_message` | `POST /v1/conversations/{id}/messages` | `conversation_id`, `text`, `upload_ids`, `reply_to_message_id`, `force_rcs`, `client_request_id` (required) |
+| `start_conversation` | `POST /v1/conversations` | `recipients` (E.164 array), `name`, `client_request_id` |
+| `mark_read` | `POST /v1/conversations/{id}/read` | `conversation_id`, `message_id`, `client_request_id` |
+| `add_reaction` | `POST /v1/messages/{id}/reactions` | `message_id`, `emoji`, `client_request_id` |
+| `remove_reaction` | `DELETE /v1/messages/{id}/reactions/{emoji}` | `message_id`, `emoji`, `client_request_id` |
+| `create_upload` | `POST /v1/uploads` | `filename`, `mime_type`, `size_bytes` (required), `sha256`, `client_request_id` |
+| `get_operation` | `GET /v1/operations/{id}` | `operation_id` |
+
+**Deletes — `messages:delete`**
+
+| Tool | REST | Arguments |
+|---|---|---|
+| `delete_message` | `DELETE /v1/messages/{id}` | `message_id`, `client_request_id` |
+| `delete_conversation` | `DELETE /v1/conversations/{id}` | `conversation_id`, `client_request_id` |
+
+There is **no `set_typing` tool**. Typing is a human affordance with no lasting
+effect and no result an agent can act on; it stays REST-only.
+
+Schema rules:
+
+- Every input schema is **closed** (`additionalProperties: false`), enforced by
+  the Go decoder rejecting unknown fields, not only declared. A model that
+  invents an argument name is told which one, in a result it can read.
+- **Every argument carries a description** — not only the ones the MCP layer
+  declares for itself. The claim is measurable: fetch `tools/list` from a
+  running server, count the arguments, count the descriptions; they must be
+  equal, and a single stale description fails the claim (§13.5).
+- Closed vocabularies (`folder`, `type`, `direction`, `delivery_state`,
+  `syntax`) are real JSON Schema `enum`s with a per-value description, plus a
+  `oneOf` of `const`s, because that is the only place JSON Schema lets a
+  per-value description live. Optional *filters* stay nullable strings that
+  name their accepted values in the description, because an `enum` that
+  omitted `null` would make omitting the filter invalid.
+- Every tool declares an `outputSchema` describing the envelope it really
+  returns, with `data` typed by that tool's own DTO.
+- Every conversation argument is `conversation_id` and takes a `conv_` ID;
+  every message argument is `message_id` and takes a `msg_` ID. Google's own
+  IDs are not accepted in their place.
+
+Results carry `structuredContent` = `{ "data", "next_cursor", "warnings" }` —
+the REST envelope minus the request ID — plus a one-line text summary. The
+text half says what was returned and whether more exists, so a model that
+reads only the text is not misled about completeness.
+
+Annotations, accurate rather than conventional:
+
+| Tools | `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+|---|---|---|---|---|
+| all reads, `get_operation`, `get_session` | true | false | true | false |
+| `send_message`, `start_conversation`, `mark_read`, `add_reaction`, `create_upload` | false | false | true | true |
+| `remove_reaction` | false | **true** | true | true |
+| `delete_message`, `delete_conversation` | false | true | true | **false** |
+
+The two deletes are `openWorldHint: false` because Google's delete is
+delete-for-me: it changes the owner's own copy and nothing leaves the
+building. `remove_reaction` *is* open-world and destructive: it removes
+something the owner sent and the recipient sees it go.
+
+All writes are `idempotentHint: true`, and that is true **because**
+`client_request_id` is required. Every write tool's description ends with the
+same sentence: *"Repeating this call with the same client_request_id returns
+the same operation and sends nothing further. A fresh client_request_id is a
+different call, not a repeat."*
+
+**`isError` semantics.** A domain failure is a **result** with `isError: true`
+carrying the REST error envelope in `structuredContent.error`. That covers
+every code in §7.2 except the transport-level ones. Only a malformed request,
+an unknown method, an unknown tool name, or an authorization failure at the
+transport is a JSON-RPC error. The split matters: many MCP clients surface a
+JSON-RPC error as a transport failure and never hand it to the model, so a
+`not_found` reported that way is a fact the model never learns and cannot
+correct itself from.
+
+`insufficient_scope` appears on both sides deliberately, addressed to
+different readers. The transport's `401`/`403` is addressed to the client. A
+scope refusal *inside* a tool call is addressed to the model, so it is a
+result with `isError: true` naming `required_scope`, because that one the
+model can act on by choosing a different tool.
+
+**Scope gating.** `tools/list` returns only the tools the calling
+authorization may use, so a model is never invited to attempt something that
+will be refused. `tools/call` checks again: visibility is not authorization,
+and a client may call a name it learned elsewhere.
+
+**Resources.** `resources/read` serves `agm://attachments/{attachment_id}`
+under `messages:read`, with the same media limit and cache path as
+`GET /v1/attachments/{id}/content`. Text media is returned as text; everything
+else base64. `resources/list` is empty on purpose — attachments are addressed
+by template, not enumerated. `resources/templates/list` offers the attachment
+template, and only to a caller holding `messages:read`.
+
+`get_attachment` decides its content form by **size and type, not
+preference**: a supported image under `settings.media.inline_mcp_image_max_bytes`
+(default 1 MiB) comes back as image content in the result; anything larger or
+non-inlinable comes back as an `agm://attachments/{id}` resource link. The
+download ticket comes back either way. The summary text is the first content
+block, so a client that reads only the first block reads a sentence rather
+than a megabyte of base64.
+
+### 8.3 The `instructions` block
+
+Returned from `initialize`. Written for an agent that has never seen this
+server, has no memory of prior calls, and cannot ask a human. It is
+reproduced verbatim in `docs/mcp.md` so the two can be diffed by a test.
+
+> **This server is one person's Google Messages account.** It is paired
+> directly with their Android phone, the way the Google Messages web client
+> pairs. Everything you can see here, they can see in the Messages app on
+> that phone, and everything you send leaves as a real SMS, MMS or RCS
+> message to a real person. There is no sandbox and no undo.
+>
+> **The thing you address is a conversation.** A conversation is a Google
+> Messages thread: one other person, or a group. It has an ID that starts
+> `conv_`. Messages in it have IDs that start `msg_`. Every ID here is an
+> Agent GM ID with a typed prefix — `conv_` conversations, `msg_` messages,
+> `att_` attachments, `react_` reactions, `contact_` contacts, `upl_`
+> uploads, `op_` operations. Google's own IDs are not accepted in their
+> place.
+>
+> Words mean what they mean in Google Messages. A *conversation* is a thread.
+> A *contact* is somebody in the phone's contact list. *RCS* is the modern
+> protocol; *SMS/MMS* is the fallback. *Delete* means delete from this
+> account only — the other person keeps their copy, always.
+>
+> 1. **Find the conversation.** `list_conversations` with `participant` set
+>    to a phone number (`+15105550123`, or the bare digits, or a national
+>    form) returns the threads that number is in, newest activity first. With
+>    only a name, use `query`, a substring match over the thread name and
+>    every participant's name and number. `list_contacts` maps names to
+>    numbers.
+> 2. **Read it.** `list_messages` with that `conversation_id`. Newest first,
+>    so the first item is the latest message. Pass the result's `next_cursor`
+>    back as `cursor` for the next page; page size defaults to 50 and caps at
+>    100. `search_messages` needs `q` and searches the whole account.
+> 3. **Reply.** `send_message` with the `conversation_id`, `text`, and a
+>    `client_request_id` you invent. Add `reply_to_message_id` to thread a
+>    reply — **but replies are an RCS feature; on an SMS conversation that
+>    argument is refused with `unsupported_capability` and
+>    `reason: "reply_not_supported"`.** Check the conversation's `type` first.
+> 4. **Know whether it arrived.** The result carries a `message_id` and an
+>    `operation`. Then watch the message's `delivery.state`, which walks
+>    `queued → sending → sent → delivered → read`. **On SMS it usually stops
+>    at `sent`, and on group threads it usually stops at `sent`. Delivery and
+>    read receipts are an RCS feature and a carrier feature; waiting for
+>    `delivered` on an SMS thread can wait forever.** `sent` means the
+>    carrier took it, and that is as much as SMS will ever tell you.
+> 5. **Send a photo or a file.** `create_upload` with the filename, mime type
+>    and byte length; run the `curl` command it returns, with `FILE` replaced
+>    by the path; then `send_message` with `upload_ids: ["upl_…"]` and
+>    optionally `text` as a caption. You cannot attach a file through this
+>    protocol any other way, and base64 through the model is not acceptable.
+> 6. **Start a new thread.** `start_conversation` with `recipients` as E.164
+>    phone numbers. One recipient is a direct chat; two or more is a group,
+>    and `name` is only accepted for a group. **If a thread with exactly
+>    those recipients already exists you get that thread back and nothing is
+>    sent** — starting is safe, sending is not.
+> 7. **React, or take something back.** `add_reaction` with `emoji` set to a
+>    bare emoji; `remove_reaction` with the same. `delete_message` and
+>    `delete_conversation` delete from **this account only** — the recipient
+>    keeps their copy. There is no delete-for-everyone and no mode to choose.
+>
+> **Every write needs a `client_request_id` that you invent.** Repeating a
+> call with the same one returns the same operation and sends nothing
+> further. A **fresh** `client_request_id` is a different call, not a repeat
+> — reusing this to "retry" is how a person gets the same text twice. If a
+> send times out with `phone_not_responding`, the operation is `pending`, not
+> failed: the server accepted it and the phone may still send it when it
+> wakes. **Poll `get_operation`; do not resend.**
+>
+> The phone has to be awake and online for anything to happen. `get_session`
+> tells you whether it is: `state` and `phone_responding`. If `state` is not
+> `connected`, reads still work from the local index but writes will fail,
+> and only the owner can fix it.
+>
+> A call that is refused comes back as an ordinary result with
+> `isError: true` and
+> `structuredContent.error = {code, message, retryable, details}`. Read it
+> and correct the call rather than repeating it. `not_found` means no such
+> object. `invalid_request` names the parameter you got wrong in
+> `details.parameter` or `details.field` — this server refuses a misspelled
+> filter rather than silently ignoring it. `unsupported_capability` means the
+> action cannot apply here and `details.reason` says why.
+> `phone_not_responding` and `rate_limited` are retryable; almost nothing
+> else is.
+>
+> Scopes: `messages:read` gives you `list_conversations`, `get_conversation`,
+> `list_messages`, `get_message`, `message_context`, `search_messages`,
+> `get_attachment`, `list_contacts` and `get_session`. `messages:write` adds
+> `send_message`, `start_conversation`, `mark_read`, `add_reaction`,
+> `remove_reaction`, `create_upload` and `get_operation`. `messages:delete`
+> adds `delete_message` and `delete_conversation`. You only see the tools
+> your token allows.
+
+`docs/mcp.md` opens with the same text under the heading "First five
+minutes", and a test asserts the two are byte-identical apart from the
+markdown quoting, so a client that surfaces instructions to its model has
+already told it this page.
+
+### 8.4 Conformance
+
+`devbox run conformance` builds the server, starts it on a free loopback port
+with a throwaway data directory and admin secret, mints a token **through the
+whole OAuth flow** (admin bootstrap → enrollment code → DCR → authorization
+screen → admin approval → token endpoint), starts a small loopback proxy that
+adds the token, and runs the pinned `@modelcontextprotocol/conformance`
+package against the proxy. An admin bootstrap token is *not* used, because
+that would leave the client-shaped path unmeasured; a failure to complete the
+OAuth flow is announced loudly rather than silently downgraded.
+
+The suite is run at the spec revision it actually knows. **A version that runs
+zero scenarios is a failure, not a green line that tested nothing.** The
+baseline lives in `scripts/mcp-conformance-baseline.yaml` and is checked in
+both directions: a new failure fails the run, and so does a listed scenario
+that starts passing, so the file cannot rot into a list of excuses.
+
+---
+
+## 9. OAuth 2.1
+
+claude.ai and ChatGPT connectors require it. The design is carried over from
+Agent MX with the Matrix-specific parts removed and the issuer fixed.
+
+### 9.1 Public routes
+
+```text
+GET  /.well-known/oauth-protected-resource
+GET  /.well-known/oauth-protected-resource/mcp
+GET  /.well-known/oauth-authorization-server
+POST /oauth/register
+GET  /oauth/authorize
+POST /oauth/authorize
+GET  /oauth/poll.js
+GET  /oauth/requests/{authorization_request_id}
+GET  /oauth/requests/{authorization_request_id}/status
+POST /oauth/requests/{authorization_request_id}/complete
+POST /oauth/token
+POST /oauth/revoke
+```
+
+The root path is `404`. Every OAuth error body is
+`{ "error", "error_description" }` with `Cache-Control: no-store`, including
+the ones the HTTP framework would otherwise answer itself: a body over 1 MiB
+is `413` with that shape, a wrong method is `405` with that shape and an
+`Allow` header, and an unknown path under `/oauth` is the REST `not_found`
+envelope.
+
+### 9.2 Metadata
+
+`GET /.well-known/oauth-protected-resource` and its `/mcp` twin (RFC 9728):
+
+```json
+{
+  "resource": "https://gm.agent-wx.app/mcp",
+  "authorization_servers": ["https://gm.agent-wx.app"],
+  "scopes_supported": ["messages:read", "messages:write", "messages:delete"],
+  "bearer_methods_supported": ["header"],
+  "resource_documentation": "https://github.com/thisnick/agent-gm"
+}
+```
+
+`GET /.well-known/oauth-authorization-server` (RFC 8414):
+
+```json
+{
+  "issuer": "https://gm.agent-wx.app",
+  "authorization_endpoint": "https://gm.agent-wx.app/oauth/authorize",
+  "token_endpoint": "https://gm.agent-wx.app/oauth/token",
+  "registration_endpoint": "https://gm.agent-wx.app/oauth/register",
+  "revocation_endpoint": "https://gm.agent-wx.app/oauth/revoke",
+  "response_types_supported": ["code"],
+  "grant_types_supported": ["authorization_code", "refresh_token"],
+  "token_endpoint_auth_methods_supported": ["none"],
+  "code_challenge_methods_supported": ["S256"],
+  "scopes_supported": ["messages:read", "messages:write", "messages:delete"],
+  "authorization_response_iss_parameter_supported": true
+}
+```
+
+`issuer` equals `AGENT_GM_PUBLIC_URL` **byte for byte**, and `resource` is
+that plus `/mcp` with no trailing-slash drift. Both are tested as string
+equality, not as parsed-URL equivalence.
+
+The `401` challenge:
+
+```http
+WWW-Authenticate: Bearer realm="agent-gm",
+  resource_metadata="https://gm.agent-wx.app/.well-known/oauth-protected-resource/mcp",
+  scope="messages:read messages:write"
+```
+
+### 9.3 Dynamic client registration (RFC 7591)
+
+`POST /oauth/register`, JSON, answers `201` with a `client_id` and **no**
+`client_secret`. Public native clients only:
+
+- `token_endpoint_auth_method` must be `none`.
+- Grants must be a subset of `authorization_code` and `refresh_token`.
+- The only response type is `code`.
+- A client-chosen `client_id` is refused.
+
+Redirect URIs, per RFC 8252:
+
+| Accepted | Refused |
+|---|---|
+| `https://` with a fully qualified host | `http://` on any non-loopback host |
+| `http://127.0.0.1[:port]/…`, `http://[::1][:port]/…`, `http://localhost[:port]/…` | `http://localhost.evil.example/…` |
+| a private-use scheme containing a dot | `https://` with an IP literal |
+| | any URI with a fragment or embedded credentials |
+
+At most 10 redirect URIs, each at most 500 characters. Registration is limited
+to **20 per source per hour**. A registration expires **24 hours** after
+creation unless an authorization activates it; a maintenance pass removes
+expired unreferenced registrations every 60 seconds and audits each removal.
+
+A registered loopback redirect **matches any port at authorization time**
+(RFC 8252 §7.3), for `127.0.0.1`, `[::1]` and `localhost` alike. The token
+endpoint still requires `redirect_uri` to equal the one bound to the code
+exactly.
+
+> **Deliberate deviation, recorded as contract text.** `http://localhost/…`
+> is accepted, against RFC 8252 §8.3, which prefers the IP literals because
+> `localhost` resolution depends on the host's name service. That hazard
+> exists only on the client's own machine, and widely used MCP clients
+> register the name; refusing them buys little. The allowance is for the
+> literal host name and nothing else: the comparison is exact and
+> case-insensitive, so `localhost.evil.example`, `notlocalhost`, `local.host`
+> and `localhost@evil.example` are ordinary domains with no plain-http
+> exemption. A suffix or substring match here would be far worse than the
+> problem the allowance solves. `agm auth login` registers
+> `http://127.0.0.1:<port>/callback`.
+
+### 9.4 Authorization
+
+`GET /oauth/authorize` takes `response_type=code`, `client_id`,
+`redirect_uri`, `state`, `code_challenge`, `code_challenge_method=S256`,
+`resource`, and an optional `scope` (default `messages:read messages:write`).
+
+`code_challenge_method` must be present and `S256`: RFC 7636 defaults an
+omitted method to `plain`, which is not supported.
+
+An unknown client or an unregistered redirect URI answers `4xx` and **never
+redirects** (RFC 6749 §4.1.2.1). Every later failure redirects to the verified
+callback carrying `error`, `state`, and the RFC 9207 `iss`:
+
+| Condition | `error` |
+|---|---|
+| `response_type` is not `code` | `unsupported_response_type` |
+| missing `state`, missing or non-`S256` PKCE, malformed challenge | `invalid_request` |
+| `resource` is not `https://gm.agent-wx.app/mcp` | `invalid_target` |
+| unknown or empty scope, or `admin` requested | `invalid_scope` |
+
+The page sets `agm_oauth_context`, a signed cookie with `Path=/oauth`,
+`HttpOnly`, `Secure`, `SameSite=Lax`. The form carries the signed context, an
+anti-CSRF `form_token`, hidden echoes of the OAuth parameters, one `scope`
+checkbox per requested scope, and an `enrollment_code` text input.
+
+`POST /oauth/authorize` verifies, **in this order**: `Origin` when present,
+the cookie, the signed context, that the cookie's handle hashes to the
+context, the form token, every hidden echo, that the client and redirect are
+still valid, and that the selected scopes are a nonempty subset of the
+requested set. **Only then is the enrollment code examined.**
+
+- Success → `303` to `/oauth/requests/{id}`.
+- Invalid code → `200` re-rendering the form with **one generic message,
+  identical for unknown, expired, revoked and consumed codes**. No pending
+  request is created and nothing is consumed.
+- Scopes above the code's ceiling → `200` re-rendering, showing the allowed
+  access, code still redeemable.
+- Eleventh failed code attempt within 15 minutes, per signed context or per
+  source → `429` with `Retry-After`. The per-source bucket is checked before
+  the submission is examined, so loading a fresh authorization page does not
+  reset it.
+
+### 9.5 Enrollment codes and owner approval
+
+There is no self-service. A connector cannot get a token unless the owner does
+two separate things: issue a code, and approve the request.
+
+`POST /v1/admin/enrollment-codes` with `{"label", "expires_in"?, "scopes"?,
+"allow_scopes"?}` answers `200` (not `201`); `data.code` is the **only** time
+the value is returned, and only its SHA-256 is stored. `expires_in` is a
+duration string or seconds, defaulting to `settings.oauth.enrollment_default_ttl`
+(15m, bounds 1m–24h), capped at 24 hours. `scopes` replaces the default
+ceiling `messages:read messages:write`; `allow_scopes` extends it; they are
+mutually exclusive. **`admin` can never be enrolled.**
+
+`GET`/`DELETE /v1/admin/enrollment-codes[/{id}]` list, show and revoke.
+Revocation takes its reason as the query parameter `?reason=`, and repeating
+it answers `200` with `revoked: false`.
+
+The waiting page polls `GET /oauth/requests/{id}/status`, which requires the
+context cookie and answers
+`{"request_id","status","expires_in_seconds","poll_interval_seconds"}` with
+`no-store`. `poll_interval_seconds` is the server's decision; the page clamps
+it to 1–60 seconds. **Without a valid cookie every `/oauth/requests` route
+answers `404`: the request ID alone conveys no authority.** The polling script
+is served from `/oauth/poll.js` rather than inlined, so `script-src` stays
+`'self'`.
+
+The owner approves with
+`POST /v1/admin/authorization-requests/{id}/approve` (optional `scopes`, which
+may only **narrow** the browser-selected set; widening or empty is
+`invalid_request`; a no-longer-pending request is `idempotency_conflict`; an
+expired one is `invalid_request`), or denies with `.../deny` and an optional
+`reason`.
+
+`POST /oauth/requests/{id}/complete` requires the cookie, the waiting page's
+form token, and a same-origin `Origin`. An approved, unexpired request answers
+`303` to the exact registered callback with `code`, `state`, `iss` and the
+granted `scope`, and clears the cookie. A **denied** request redirects with
+`error=access_denied`, because a denial is a decision the client is entitled
+to hear. Expired, completed or still-pending answers `409`, and a completed
+request can never mint a second code.
+`GET /oauth/requests/{id}` answers `200` for every state including expiry — it
+renders a page rather than performing an operation.
+
+### 9.6 Tokens
+
+`/oauth/token` and `/oauth/revoke` are `application/x-www-form-urlencoded`
+with `Cache-Control: no-store`.
+
+`grant_type=authorization_code` takes `code`, `redirect_uri`, `client_id`,
+`code_verifier`, and an optional `resource` that must equal the canonical
+resource. `resource` is **mandatory at `/oauth/authorize` and optional here**:
+this server has exactly one audience, so an omitted value is read as the
+canonical resource and a present one must match it (RFC 8707 §2.2 permits this
+for a single-audience server, and the binding that matters was fixed at
+authorization time).
+
+- A **replayed code** is `invalid_grant` and **revokes the tokens the first
+  exchange produced**.
+- A PKCE verifier that does not hash to the bound challenge is `invalid_grant`
+  and **consumes the code**, so a verifier cannot be guessed by retrying.
+
+`grant_type=refresh_token` takes `refresh_token`, `client_id`, and an optional
+`scope` that may only narrow; widening is `invalid_scope` and **does not spend
+the presented token**. Refresh tokens rotate on every use, and reuse of a
+spent token revokes the whole family and its authorization. A rotation, its
+audit record, and the family revocation that reuse triggers all commit in one
+transaction.
+
+`POST /oauth/revoke` (RFC 7009) takes `token` and `client_id` and **always
+answers `200`**. A token belonging to another client, or to nobody, is ignored
+without confirming that it exists. Revoking any token of a grant revokes the
+whole grant.
+
+Only hashes are stored; no token value is ever written to the database, a log,
+or an audit payload.
+
+| Setting | Default | Bounds |
+|---|---|---|
+| `oauth.access_token_ttl` | 15m | 5m–1h |
+| `oauth.refresh_token_idle_ttl` | 30d | 1d–90d |
+| `oauth.refresh_token_absolute_ttl` | 90d | 7d–365d |
+| `oauth.authorization_code_ttl` | 2m | 30s–5m |
+| `oauth.authorization_request_ttl` | 15m | 1m–1h |
+| `oauth.enrollment_default_ttl` | 15m | 1m–24h |
+
+Access tokens are bound to `https://gm.agent-wx.app/mcp`. **If
+`AGENT_GM_PUBLIC_URL` ever changes, every token minted under the previous
+origin is refused with `401 invalid_token` on both `/mcp` and `/v1`, and every
+registered client is orphaned.** See §15.6.
+
+The admin bootstrap (`POST /v1/auth/admin-session`, exchanging
+`AGENT_GM_ADMIN_SECRET`) is a separate credential path and never crosses
+endpoints: an OAuth refresh token at `/v1/auth/refresh` is `invalid_token`,
+and an admin refresh token at `/oauth/token` is `invalid_grant`. Neither
+attempt revokes anything.
+
+### 9.7 Scopes
+
+| Scope | Grants |
+|---|---|
+| `messages:read` | every read route and read tool; `whoami`; `logout`; download-ticket redemption |
+| `messages:write` | send, start, mark read, reactions, uploads; `get_operation`; upload-ticket redemption |
+| `messages:delete` | `delete_message` and `delete_conversation`, and nothing else |
+| `admin` | `/v1/admin/*` and all pairing routes. Issued only by the admin bootstrap; **never enrollable**, and `invalid_scope` at `/oauth/authorize` |
+
+A `messages:write` token that lacks `messages:delete` neither sees the two
+delete tools in `tools/list` nor may call them.
+
+### 9.8 Budgets on unauthenticated endpoints
+
+`/oauth/revoke` and the `refresh_token` grant accept a bearer value from an
+unauthenticated caller. Both carry **60 requests/minute per source, burst 20**
+(in memory; a restart forgives an anonymous caller's request debt, which costs
+nothing) plus a **durable limit of 30 unknown or invalid presented tokens per
+15 minutes**, with a cooldown that doubles per further failure in the window
+and caps at 24 hours, held in `oauth_attempts` because that is the limit an
+attacker would restart-cycle to reset. Both are checked **before** the
+presented token is examined, so a `429` never distinguishes a real token from
+a guess, and it carries `Retry-After`. A successful presentation does not
+clear the failure counter.
+
+The presented token is looked up read-only **before any write transaction
+opens**, so a caller presenting a value that belongs to nobody cannot take the
+single writer's lock and queue every other writer behind itself. When the
+token does exist, the transaction re-reads the row before cascading, so
+revocation stays a single atomic decision.
+
+### 9.9 Browser security headers
+
+OAuth pages carry `Content-Security-Policy` with `default-src 'none'`,
+`frame-ancestors 'none'`, `base-uri 'none'`, `form-action 'self'`;
+`Cache-Control: no-store`; `Referrer-Policy: no-referrer`;
+`X-Content-Type-Options: nosniff`; `X-Frame-Options: DENY`.
+
+---
+
+## 10. Media
+
+An MCP client cannot attach a file, and base64 through the model is not
+acceptable. Bytes move by `curl`, with a ticket.
+
+### 10.1 Download
+
+`GET /v1/attachments/{attachment_id}` returns metadata **and a download
+ticket**:
+
+```json
+{ "attachment_id": "att_01k4...",
+  "filename": "IMG_0421.jpg", "mime_type": "image/jpeg",
+  "size": 184320, "sha256": "…", "sha256_available": true,
+  "width": 1024, "height": 768, "download_state": "available",
+  "inline": false,
+  "resource_uri": "agm://attachments/att_01k4...",
+  "download_url": "https://gm.agent-wx.app/v1/attachments/att_01k4.../content",
+  "token": "agm_dt_…", "token_audience": "download:att_01k4...",
+  "expires_at": "2026-09-06T10:11:07Z", "max_redemptions": 5,
+  "curl": "curl --fail -H 'Authorization: Bearer agm_dt_…' -o 'IMG_0421.jpg' 'https://gm.agent-wx.app/v1/attachments/att_01k4.../content'" }
+```
+
+`GET /v1/attachments/{id}/content` accepts either a `messages:read` access
+token or a download ticket. It serves the decrypted bytes with
+`Content-Disposition: attachment`, `X-Content-Type-Options: nosniff`, and a
+sandboxing CSP. **SVG, HTML and every other unrecognised type are served as
+`application/octet-stream`, never with their own type.** Bounded at 8
+concurrent downloads per authorization and 32 globally.
+
+The bytes come from the media cache if present, else from
+`libgm.DownloadMedia(mediaID, decryptionKey)`, which is then cached. An
+attachment whose `media_id` is empty but whose `thumbnail_media_id` is set
+triggers `GetFullSizeImage` first; while that is outstanding the state is
+`pending` and the route answers `unsupported_capability` with
+`reason: "media_pending"`.
+
+`sha256` is the digest of the **decrypted** bytes, computed on demand and
+cached, because Google carries a digest of the ciphertext, which is not what
+an agent comparing its downloaded copy would compute. When it cannot be
+computed, `sha256` is `null`, `sha256_available` is `false`, and
+`sha256_unavailable_reason` is one of `larger_than_cache_budget`,
+`download_budget_exhausted`, `bytes_unavailable`; the reason also appears in
+`warnings` as `sha256_unavailable:<reason>`.
+
+### 10.2 Upload — three requests
+
+1. **`POST /v1/uploads`** reserves: `filename`, `mime_type`, `size_bytes`
+   (required), optional `sha256`, `client_request_id`. Answers `201`:
+
+```json
+{ "upload_id": "upl_01k4...",
+  "upload_url": "https://gm.agent-wx.app/v1/uploads/upl_01k4.../content",
+  "method": "PUT",
+  "token": "agm_ut_…", "token_audience": "upload:upl_01k4...",
+  "expires_at": "2026-09-06T12:11:07Z",
+  "limits": { "max_bytes": 104857600, "size_bytes": 184320,
+              "mime_type": "image/jpeg", "sha256": "…",
+              "expires_in_seconds": 7200 },
+  "curl": "curl --fail -X PUT -H 'Authorization: Bearer agm_ut_…' -H 'Content-Type: image/jpeg' --data-binary @FILE 'https://gm.agent-wx.app/v1/uploads/upl_01k4.../content'" }
+```
+
+2. **`PUT {upload_url}`** with `Authorization: Bearer <token>` streams the
+   bytes. The token works **once**, for **that upload only**, and its
+   redemption re-checks the issuing authorization's `messages:write` scope and
+   revocation state — a token outlives neither. The stream is refused the
+   moment it exceeds the reserved length. Completion verifies the byte count,
+   the declared digest, and the detected content type. **A reservation that
+   fails verification is spent: reserve again rather than retry.**
+
+3. **`send_message` with `upload_ids: ["upl_…"]`.** The handler reads the
+   staged bytes, calls `libgm.UploadMedia(data, filename, mime)` (which
+   generates its own AES-GCM key and does the resumable upload to Google), and
+   puts the returned `MediaContent` into the `SendMessageRequest`. Only the
+   authorization that owns an upload may send it, and an upload can be sent
+   once. Naming an upload twice is refused; naming another authorization's is
+   `not_found`.
+
+`mime_type` is validated against `libgm.MimeToMediaType` at reservation time,
+with the same type-prefix fallback upstream uses; an unsupported type is
+`media_unsupported_type` (415) and reserves nothing. **One attachment per
+message.**
+
+### 10.3 Ticket rules
+
+Tokens are typed to one audience — `upload:<upload_id>` or
+`download:<attachment_id>` — and the audience is part of the redemption
+rather than a check after it. **A token presented at the wrong URL is refused
+and not spent**, so learning a token value does not let anyone destroy it.
+Every refusal is the same message whatever the reason, so a status code
+teaches an attacker nothing about which guesses were once valid.
+
+The token appears **in the body and never in a URL**, so it cannot be captured
+from a proxy log or a browser history, and it is accepted only in the
+`Authorization` header — there is no `?t=` form.
+
+| Thing | Value |
+|---|---|
+| upload reservation and token life | 2 hours |
+| upload token redemptions | 1 |
+| download token life | 15 minutes |
+| download token redemptions | 5 |
+| `media.upload_max_bytes` | 100 MiB (104857600), runtime-mutable downward |
+| `media.cache_max_bytes` | 2 GiB, LRU eviction among unpinned entries |
+| `media.inline_mcp_image_max_bytes` | 1 MiB |
+| sweep of expired reservations and tickets | at startup and every 5 minutes |
+| token prefixes | `agm_ut_` upload, `agm_dt_` download |
+
+`upload_url` and `download_url` are built from `AGENT_GM_PUBLIC_URL` and
+**never** from the request's `Host`, so an agent in a sandbox on another
+machine reaches the same origin the tunnel exposes.
+
+`client_request_id` makes the reservation idempotent; each attempt returns a
+fresh token, because the first token's value left the process and cannot be
+recovered, and a token minted on a repeat never outlives the reservation it
+fills — which is what `limits.expires_in_seconds` counts down to.
+
+**Erasure order.** Staged bytes and cache objects are removed by collecting
+the relative paths inside the delete transaction, committing, and only then
+unlinking. Deleting the rows without the files would be worse than either: the
+eviction sweep finds every file it deletes through those rows, so an orphaned
+file is never reclaimed and the cache budget silently stops matching the disk.
+A crash between the commit and the unlink leaves a file nothing references,
+which an operator can delete.
+
+---
