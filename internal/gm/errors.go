@@ -58,9 +58,16 @@ type Error struct {
 	// operation stays pending and must never be reported as failed (D5).
 	KeepsOperationPending bool
 	// Details carries the extra fields spec section 3.5 names, such as
-	// multiple_devices and device_count on pairing_init_timeout, or the
-	// numeric type and message on google_error.
+	// multiple_devices on pairing_init_timeout, or the numeric type and
+	// message on google_error. details.google_type and details.status are
+	// the ONLY raw Google integers permitted here: every other raw Google
+	// value is admin-only (spec sections 4.1, 7.2).
 	Details map[string]any
+	// GoogleStatusRaw is the numeric Google status behind this error, or 0.
+	// It is written to operations.google_status_raw and served only on
+	// GET /v1/admin/diagnostics -- never in a public error envelope, which
+	// is why it is a field of its own and not an entry in Details.
+	GoogleStatusRaw int32
 	// Err is the underlying library error.
 	Err error
 }
@@ -335,24 +342,55 @@ func ConfigVersionStale(compiled, live ConfigVersion, status ResolveStatus) *Err
 	return e
 }
 
+// ResolveCreateRCSTwice is a second CREATE_RCS from
+// GetOrCreateConversation. The adapter has already done the one documented
+// thing about the first (retry once with CreateRCSGroup=true, exactly as
+// upstream does), so a second is a refusal Agent GM reports rather than a
+// hint it acts on (spec section 3.7).
+func ResolveCreateRCSTwice() *Error {
+	e := newError(CodeGoogleError, http.StatusBadGateway,
+		"Google asked twice for an RCS group to be created; the retry it asks for has already been made")
+	e.Details = map[string]any{
+		"google_type":    int32(ResolveStatusCreateRCS),
+		"google_message": "CREATE_RCS",
+	}
+	return e
+}
+
 // NotDefaultSMSApp is FAILURE_4, which is not retried: upstream renders it as
 // the user-facing string "Google Messages is not your default SMS app"
 // (connector/errors.go:41-42).
+//
+// It carries no details: the raw Google status is admin-only (spec sections
+// 4.1, 6.5), and `details.google_type` and `details.status` are the only raw
+// Google integers permitted on a public surface (spec section 7.2). The value
+// is recorded on the operation row as google_status_raw and served on
+// GET /v1/admin/diagnostics, which is where a reviewer reads it.
 func NotDefaultSMSApp() *Error {
 	e := newError(CodeNotDefaultSMSApp, http.StatusBadGateway,
 		"Google Messages is not your default SMS app")
-	e.Details = map[string]any{"google_status_raw": int32(SendStatusFailure4)}
+	e.GoogleStatusRaw = int32(SendStatusFailure4)
 	return e
 }
 
 // SendFailure classifies a non-SUCCESS SendMessageResponse status.
+//
+// The raw status travels on the Error's GoogleStatusRaw field, not in
+// Details: it is written to operations.google_status_raw and served only on
+// GET /v1/admin/diagnostics. What reaches the public envelope is
+// details.google_type, which section 7.2 names as one of exactly two raw
+// Google integers a caller may see.
 func SendFailure(status SendStatus) *Error {
 	if status == SendStatusFailure4 {
 		return NotDefaultSMSApp()
 	}
 	e := newError(CodeGoogleError, http.StatusBadGateway,
 		fmt.Sprintf("Google Messages on the phone rejected the message (%s)", status))
-	e.Details = map[string]any{"google_status_raw": int32(status)}
+	e.Details = map[string]any{
+		"google_type":    int32(status),
+		"google_message": status.String(),
+	}
+	e.GoogleStatusRaw = int32(status)
 	e.Retryable = status.IsTransient()
 	return e
 }
