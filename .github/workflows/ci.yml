@@ -1,0 +1,64 @@
+# Agent GM CI -- spec section 13.6.
+#
+# Every job in this file is a `devbox run <script>`. A CI step that shells out
+# to something with no script is a step nobody can reproduce locally, and is
+# rejected in review. The live gates of spec section 13.3 are NOT here: they
+# are run by the coordinator, by hand, against a real phone.
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # devbox run check is what a reviewer runs, so it is the aggregate: build,
+  # vet, golangci-lint run, go test -race, and no-real-numbers.
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jetify-com/devbox-install-action@v0.13.0
+        with:
+          enable-cache: "true"
+      - run: devbox run check
+
+  # The pin is a fact recorded in three places that must agree.
+  pin-consistency:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jetify-com/devbox-install-action@v0.13.0
+        with:
+          enable-cache: "true"
+      - run: devbox run pin-consistency
+
+  # The twenty assertions of spec section 13.4, against a fresh clone of the
+  # pinned upstream tree -- not against Agent GM's own code.
+  fixture-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jetify-com/devbox-install-action@v0.13.0
+        with:
+          enable-cache: "true"
+      - run: devbox run fixture-validation
+
+  # Nothing in the tree looks like a real phone number. This repository is
+  # public, and a commit that trips this check is reverted, not amended.
+  no-real-numbers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jetify-com/devbox-install-action@v0.13.0
+        with:
+          enable-cache: "true"
+      - run: devbox run no-real-numbers

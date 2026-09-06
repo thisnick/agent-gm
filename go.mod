@@ -5,6 +5,7 @@ go 1.26.0
 toolchain go1.27.0
 
 require (
+	github.com/coder/websocket v1.8.15
 	github.com/google/uuid v1.6.0
 	github.com/rs/zerolog v1.35.1
 	go.mau.fi/mautrix-gmessages v0.2608.1-0.20260904125044-be48a58b7338

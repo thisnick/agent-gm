@@ -32,6 +32,7 @@ type Conversation struct {
 	LatestMessageID   string
 	LastActivityMS    int64
 	GroupAvatarURL    string
+	SIMPayload        []byte
 	DeletedAtMS       int64
 }
 
@@ -281,15 +282,15 @@ func (s *Store) BumpConversationActivity(ctx context.Context, conversationID, la
 
 const conversationColumns = `id, account_id, source_id, name, is_group, conversation_type,
 	send_mode_raw, folder, unread, pinned, read_only, force_rcs_eligible, default_outgoing_id,
-	latest_message_id, last_activity_ms, group_avatar_url, deleted_at_ms`
+	latest_message_id, last_activity_ms, group_avatar_url, sim_payload_json, deleted_at_ms`
 
 func scanConversation(sc interface{ Scan(...any) error }) (Conversation, error) {
 	var c Conversation
-	var name, outgoing, latest, avatar sql.NullString
+	var name, outgoing, latest, avatar, simJSON sql.NullString
 	var deleted sql.NullInt64
 	err := sc.Scan(&c.ID, &c.AccountID, &c.SourceID, &name, &c.IsGroup, &c.ConversationType,
 		&c.SendModeRaw, &c.Folder, &c.Unread, &c.Pinned, &c.ReadOnly, &c.ForceRCSEligible,
-		&outgoing, &latest, &c.LastActivityMS, &avatar, &deleted)
+		&outgoing, &latest, &c.LastActivityMS, &avatar, &simJSON, &deleted)
 	if err != nil {
 		return c, err
 	}
@@ -297,6 +298,10 @@ func scanConversation(sc interface{ Scan(...any) error }) (Conversation, error) 
 	c.DefaultOutgoingID = outgoing.String
 	c.LatestMessageID = latest.String
 	c.GroupAvatarURL = avatar.String
+	if simJSON.Valid && simJSON.String != "" {
+		// Opaque: stored as it arrived and re-sent verbatim.
+		_ = json.Unmarshal([]byte(simJSON.String), &c.SIMPayload)
+	}
 	c.DeletedAtMS = deleted.Int64
 	return c, nil
 }
