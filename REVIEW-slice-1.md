@@ -753,3 +753,15 @@ pinned tree · §13.6 the four CI jobs that exist · §16 Slice 1 acceptance tes
 6. **F-9** — resolve the §11.4/§3.1 contradiction in the spec.
 7. **F-6**, **F-7**, **F-8**, **F-10** — at the implementer's convenience,
    before Slice 2 closes.
+
+## Live gate (coordinator, 2026-09-06, build 6109645)
+
+Run on the build host with the owner at the desktop over remote desktop.
+
+- `spike pair`: first attempt failed with exit 7 ("chrome's debugging port never answered") because the CLI's shell had no X authority for the desktop session; Chrome died instantly and its stderr was discarded by the CLI (finding for Slice 2: surface Chrome's early exit and stderr, and print a hint when DISPLAY/XAUTHORITY are missing). Second attempt with `XAUTHORITY` set: Chrome opened, owner signed in, 6 cookies captured, emoji shown, owner tapped it, `Paired.` with the account ID and `dest_reg_uuid`; one `sessions/acct_….enc` written.
+- `spike diag`: `is_logged_in: true`, `is_default_sms_app: true`, `config_version_stale: true` (live 2026.9.3.4.6 vs compiled 2026.9.2.4.6 at the pin; everything still worked). libgm's "Skip count is non-zero in postConnect" warnings print inline with normal output (finding: route library logs to stderr / a logger, keep stdout clean).
+- `spike list`: conversations listed with type, last activity and names; the approved direct conversation found.
+- `spike send` to the approved direct conversation: `status: SUCCESS`, tmp_id correlated.
+- `spike watch`: `message outgoing sending` → `sent` with the same tmp_id within one second; the owner's reply arrived as `message incoming received "Replied"` about 80 seconds later.
+
+Tests 7, 9, 10, 11, 12, 13 of Section 16 Slice 1: passed live. Test 8 (no-Chrome) covered hermetically.
