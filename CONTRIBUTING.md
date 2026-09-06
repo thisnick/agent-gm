@@ -14,7 +14,7 @@ That means:
   supported: several Google accounts, one owner.)
 - **Bug reports are welcome** if they include the version, the failing command,
   and the redacted log line. Please never paste phone numbers, message bodies,
-  tokens or the contents of `session.enc` into an issue.
+  tokens or the contents of a session file into an issue.
 - **Pull requests** are accepted only for correctness fixes, upstream `libgm`
   pin bumps, and documentation. Open an issue first; an unsolicited PR that
   changes a public contract (a REST route, an MCP tool schema, an error code,
@@ -31,5 +31,5 @@ Security issues: do not open a public issue. Email the address on the
 owner's GitHub profile. Spec §12 is the threat model.
 
 Never put a real phone number, a message body, a token, a Google cookie or
-anything from `session.enc` in an issue, a pull request, a test fixture or a
+anything from a session file in an issue, a pull request, a test fixture or a
 commit message. CI enforces the phone-number half of that (spec §13.3).

@@ -37,7 +37,7 @@ Rules:
   private notes and reach live tests only via `AGENT_GM_LIVE_NUMBERS` or the
   untracked `testdata/live-numbers.local`. Fictional `555` numbers are for
   fixtures and examples. Never put a real message body, a token, a Google
-  cookie, or anything from `session.enc` in a fixture, a test, a commit
+  cookie, or anything from a session file in a fixture, a test, a commit
   message, or a log. `devbox run no-real-numbers` must pass.
 - Small, reviewable commits on your working branch. Do not commit secrets.
 - Never read `.env`, 1Password, or any credential store. Never touch
