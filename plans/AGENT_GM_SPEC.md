@@ -2349,6 +2349,14 @@ exactly.
 > problem the allowance solves. `agm auth login` registers
 > `http://127.0.0.1:<port>/callback`.
 
+**Client resolution is DCR-only.** Agent MX resolved a client through three
+tiers — preregistered metadata, a fetched Client ID Metadata Document, then
+DCR — with an SSRF-safe outbound fetcher behind it. Agent GM keeps only DCR
+(D20). There is no `AGENT_GM_OAUTH_CLIENTS`, no CIMD fetch, and therefore no
+outbound HTTP from the OAuth layer at all, which removes the SSRF surface
+rather than defending it. Every client this server will ever see registers
+itself.
+
 ### 9.4 Authorization
 
 `GET /oauth/authorize` takes `response_type=code`, `client_id`,
@@ -2496,6 +2504,24 @@ attempt revokes anything.
 | `messages:delete` | `delete_message` and `delete_conversation`, and nothing else |
 | `admin` | `/v1/admin/*` and all pairing routes. Issued only by the admin bootstrap; **never enrollable**, and `invalid_scope` at `/oauth/authorize` |
 
+**The admin bootstrap session carries `admin` *plus all three messaging
+scopes*.** `POST /v1/auth/admin-session` mints
+`admin messages:read messages:write messages:delete`, because the owner
+presenting `AGENT_GM_ADMIN_SECRET` is by definition the person the whole
+service belongs to, and a credential that could administer the server but not
+read a message would be useless. Two consequences:
+
+- Slice 2 is executable. Its own acceptance tests call messaging routes with
+  the only credential that slice has (§16).
+- Scope *refusal* is still testable in Slice 2: `POST /v1/auth/admin-session`
+  accepts an optional `{"scopes": [...]}` narrowing the session to a subset,
+  which is how the exit-code matrix produces exits 3 and 4 and how the
+  rate-limit test proves three scopes do not multiply the allowance. Widening
+  beyond the four is `invalid_scope`.
+
+`admin` is still never enrollable and still `invalid_scope` at
+`/oauth/authorize`: the *only* way to hold it is the admin secret.
+
 A `messages:write` token that lacks `messages:delete` neither sees the two
 delete tools in `tools/list` nor may call them.
 
@@ -2623,12 +2649,25 @@ The token appears **in the body and never in a URL**, so it cannot be captured
 from a proxy log or a browser history, and it is accepted only in the
 `Authorization` header — there is no `?t=` form.
 
+**Every redemption re-checks the issuing authorization's scope and revocation
+state** — `messages:write` for an upload, `messages:read` for a download. A
+ticket outlives neither, so revoking an authorization immediately kills every
+ticket it minted.
+
+**Download tickets are stateful.** A five-use cap cannot be enforced by a
+signed blob, so the ticket is a row in `download_tickets` (§4.2) keyed by the
+token hash, holding `redemptions`, `max_redemptions` and `expires_at_ms`; the
+counter is incremented in the same transaction that authorises the read.
+Upload tickets are rows in `uploads` for the same reason. §12.1's "signed, not
+stored" applies to the *value*: the token is signed with the ticket key and
+only its hash is stored, exactly like an OAuth token.
+
 | Thing | Value |
 |---|---|
 | upload reservation and token life | 2 hours |
 | upload token redemptions | 1 |
 | download token life | 15 minutes |
-| download token redemptions | 5 |
+| download token redemptions | 5, counted in `download_tickets.redemptions` |
 | `media.upload_max_bytes` | 100 MiB (104857600), runtime-mutable downward |
 | `media.cache_max_bytes` | 2 GiB, LRU eviction among unpinned entries |
 | `media.inline_mcp_image_max_bytes` | 1 MiB |
