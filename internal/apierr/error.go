@@ -25,6 +25,12 @@ type Error struct {
 	// Err is an underlying error, for errors.Is/As and for logs. It is never
 	// rendered to a caller.
 	Err error
+	// HTTPStatusOverride is the status to send instead of the one section
+	// 7.2 assigns to Code. It is set in exactly one place, by
+	// MethodNotAllowed -- 405 has no row of its own in the table and the
+	// code there is still invalid_request -- so the table stays the single
+	// authority for every other answer.
+	HTTPStatusOverride int
 
 	// retryable is consulted only when the table says RetryMaybe, which is
 	// google_error alone.
@@ -51,7 +57,15 @@ func (e *Error) Is(target error) bool {
 }
 
 // HTTPStatus is the status spec section 7.2 assigns to this error's code.
-func (e *Error) HTTPStatus() int { return HTTPStatus(e.Code) }
+func (e *Error) HTTPStatus() int {
+	// 405 has no row of its own in section 7.2's table -- the code is still
+	// invalid_request -- so the one place a status differs from the table is
+	// declared on the error rather than hidden in a switch somewhere.
+	if e.HTTPStatusOverride != 0 {
+		return e.HTTPStatusOverride
+	}
+	return HTTPStatus(e.Code)
+}
 
 // Retryable is the retryable flag of the envelope. For every code but
 // google_error the table decides and the value on the error is ignored, so a
