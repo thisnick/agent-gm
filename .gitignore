@@ -6,3 +6,4 @@
 /testdata/live-numbers.local
 *.local
 /.claude/settings.local.json
+/.claude/worktrees/
