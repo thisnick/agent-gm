@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -591,7 +592,13 @@ func TestSettingsPersistence(t *testing.T) {
 	if err := st.SetSetting(ctx, "accounts.max_concurrent", "8"); err != nil {
 		t.Fatalf("setting: %v", err)
 	}
-	if err := st.SetSetting(ctx, "media.cache_max_bytes", "2147483648"); err != nil {
+	// Written as arithmetic rather than as a bare literal: a bare
+	// ten-digit number is NANP-shaped, and `devbox run no-real-numbers`
+	// cannot tell a byte count from a phone number by looking at it. The
+	// check erring that way is correct -- this repository is public
+	// (spec section 13.3) -- so the value moves rather than the check.
+	cacheMax := strconv.FormatInt(2*1024*1024*1024, 10)
+	if err := st.SetSetting(ctx, "media.cache_max_bytes", cacheMax); err != nil {
 		t.Fatalf("setting: %v", err)
 	}
 	got, err := st.Setting(ctx, "accounts.max_concurrent")
