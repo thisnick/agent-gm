@@ -74,7 +74,7 @@ func (a *Account) AddReaction(ctx context.Context, in ReactionInput) (Result, er
 			return Outcome{}, err
 		}
 		return Outcome{ConversationID: conv.ID, MessageID: msg.ID},
-			a.recordReaction(ctx, msg.ID, conv.DefaultOutgoingID, emojiType, canonical)
+			a.recordReaction(ctx, conv.ID, msg.ID, conv.DefaultOutgoingID, emojiType, canonical)
 	})
 }
 
@@ -164,10 +164,14 @@ func (a *Account) myReaction(ctx context.Context, messageID string) (store.React
 // recordReaction applies the local half of an add or a switch. The reaction
 // set is a set-replace whenever Google sends one, so this only has to hold
 // the truth until the next echo does.
-func (a *Account) recordReaction(ctx context.Context, messageID, participantID string, t gm.EmojiType, canonical *string) error {
-	if participantID == "" {
+func (a *Account) recordReaction(ctx context.Context, conversationID, messageID, sourceParticipantID string, t gm.EmojiType, canonical *string) error {
+	if sourceParticipantID == "" {
 		return nil
 	}
+	// The caller passes the conversation's own DefaultOutgoingID, which is
+	// Google's participant ID. Everything stored and served is the derived
+	// part_ ID (spec section 4.1).
+	participantID := store.ParticipantID(conversationID, sourceParticipantID)
 	rs, err := a.Store.ReactionsForMessage(ctx, messageID)
 	if err != nil {
 		return err
@@ -179,7 +183,9 @@ func (a *Account) recordReaction(ctx context.Context, messageID, participantID s
 		}
 		next = append(next, toGMReaction(r))
 	}
-	return a.Store.ReplaceReactions(ctx, messageID, participantID, next)
+	// "" means "these are already derived part_ IDs": deriving twice would
+	// produce an ID for a participant that does not exist.
+	return a.Store.ReplaceReactions(ctx, "", messageID, participantID, next)
 }
 
 func (a *Account) dropReaction(ctx context.Context, messageID, participantID string) error {
@@ -194,7 +200,7 @@ func (a *Account) dropReaction(ctx context.Context, messageID, participantID str
 		}
 		next = append(next, toGMReaction(r))
 	}
-	return a.Store.ReplaceReactions(ctx, messageID, participantID, next)
+	return a.Store.ReplaceReactions(ctx, "", messageID, participantID, next)
 }
 
 func toGMReaction(r store.Reaction) gm.Reaction {

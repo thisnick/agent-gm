@@ -205,6 +205,20 @@ func (s *Store) UpsertMessage(ctx context.Context, accountID, convSourceID strin
 			`SELECT content_hash, delivery_state, delivery_state_raw, direction
 			   -- all-accounts: a msg_ ID already carries its account (section 4.1).
 			   FROM messages WHERE id = ?`, id)
+		// The SENDER is stored as a derived part_ ID, never as Google's own
+		// participant ID (spec section 4.1: "a caller never sees a raw
+		// Google ... participant ID on a public surface"). Deriving it here
+		// rather than at the DTO boundary is what makes the `sender` filter
+		// family work at all: queries.go matches sender_participant against
+		// participants.id, so a raw ID in this column made `sender=me`,
+		// `sender=<E.164>` and `sender=<part_ id>` return an EMPTY PAGE on
+		// every listing and on search -- silently, because an empty page is
+		// a valid answer.
+		sender := ""
+		if m.ParticipantID != "" {
+			sender = ParticipantID(convID, m.ParticipantID)
+		}
+
 		switch err := row.Scan(&existingHash, &existingState, &existingRaw, &existingDirection); {
 		case errors.Is(err, sql.ErrNoRows):
 			_, err := tx.ExecContext(ctx, `
@@ -214,7 +228,7 @@ func (s *Store) UpsertMessage(ctx context.Context, accountID, convSourceID strin
 				    updated_at_ms, content_hash)
 				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 				id, accountID, convID, m.SourceID, string(m.Kind), string(m.Direction()),
-				nullString(m.ParticipantID), nullString(m.Text), nullString(m.Subject),
+				nullString(sender), nullString(m.Text), nullString(m.Subject),
 				string(m.DeliveryState), m.StatusRaw, nullString(m.ReplyToMessageID),
 				nullString(m.TmpID), m.DeliveryState == gm.DeliveryStateDeleted,
 				sentAt, now, now, hash)
@@ -259,7 +273,7 @@ func (s *Store) UpsertMessage(ctx context.Context, accountID, convSourceID strin
 			    updated_at_ms       = ?,
 			    content_hash        = ?
 			WHERE id = ?`,
-			string(m.Kind), nullString(m.ParticipantID), nullString(m.Text), nullString(m.Subject),
+			string(m.Kind), nullString(sender), nullString(m.Text), nullString(m.Subject),
 			string(newState), m.StatusRaw, nullString(m.ReplyToMessageID), nullString(m.TmpID),
 			newState == gm.DeliveryStateDeleted, now, hash, id)
 		if err != nil {

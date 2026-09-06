@@ -33,7 +33,14 @@ type Reaction struct {
 // myParticipantID names this account's own participant in the thread, so
 // is_mine is decided here rather than guessed by a later reader; pass "" when
 // it is not known.
-func (s *Store) ReplaceReactions(ctx context.Context, messageID, myParticipantID string, rs []gm.Reaction) error {
+//
+// conversationID is needed because a reaction's participant is stored as a
+// derived `part_` ID, never as Google's own participant ID: section 4.1 says
+// a caller never sees a raw Google participant ID on a public surface, and
+// `reactions.participant_id` is served straight through on the message DTO.
+// In a real deployment that raw value embeds the owner's Google account
+// ADDRESS, which section 12.2 restricts to /v1/accounts and /v1/health.
+func (s *Store) ReplaceReactions(ctx context.Context, conversationID, messageID, myParticipantID string, rs []gm.Reaction) error {
 	now := s.clock.Now().UnixMilli()
 	return s.Write(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx,
@@ -47,7 +54,11 @@ func (s *Store) ReplaceReactions(ctx context.Context, messageID, myParticipantID
 				emoji = *r.Emoji
 				canonical = *r.Emoji
 			}
-			for _, pid := range r.ParticipantIDs {
+			for _, sourceID := range r.ParticipantIDs {
+				pid := sourceID
+				if conversationID != "" {
+					pid = ParticipantID(conversationID, sourceID)
+				}
 				_, err := tx.ExecContext(ctx, `
 					INSERT INTO reactions (id, message_id, participant_id, emoji, emoji_type,
 					    is_mine, updated_at_ms)
@@ -59,7 +70,7 @@ func (s *Store) ReplaceReactions(ctx context.Context, messageID, myParticipantID
 					    is_mine       = excluded.is_mine,
 					    updated_at_ms = excluded.updated_at_ms`,
 					ReactionID(messageID, pid, canonical), messageID, pid, emoji,
-					string(r.Type), myParticipantID != "" && pid == myParticipantID, now)
+					string(r.Type), myParticipantID != "" && sourceID == myParticipantID, now)
 				if err != nil {
 					return err
 				}

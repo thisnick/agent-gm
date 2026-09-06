@@ -1285,7 +1285,10 @@ CREATE TABLE operations (
     created_at_ms         INTEGER NOT NULL,
     updated_at_ms         INTEGER NOT NULL,
     -- The idempotency key is scoped to the account as well as the caller and
-    -- kind: the same key sending to two accounts is two operations.
+    -- kind. That makes two DIFFERENT callers' identical keys two operations;
+    -- it does not license one caller to reuse a key across accounts, which
+    -- 6.3 refuses as invalid_request because it would send a second real
+    -- message to a different person.
     UNIQUE (authorization_id, account_id, kind, idempotency_key)
 );
 CREATE INDEX operations_pending ON operations(status) WHERE terminal = 0;
@@ -4798,8 +4801,16 @@ model.
     With exactly one account, the same call omitting it **succeeds**. A read
     omitting it returns both accounts' rows. A `conv_` ID paired with the
     wrong `account_id` is `invalid_request` naming both, never `not_found`.
-35. **Idempotency is per account.** The same `client_request_id` sent to two
-    accounts creates two operations and calls each backend once.
+35. **Idempotency is per account, and the mirror hazard is refused.** The
+    uniqueness tuple is `(authorization, account, kind, key)`, so the same key
+    used by two *different* authorizations, or for two different kinds, is two
+    operations. But **the same authorization reusing a key against a different
+    `account_id` is `invalid_request`** naming the account it was first used
+    with (§6.3): that is not a replay, it is a second real message to a
+    different person, and it is the direction a caller "retrying" a failed
+    send by switching accounts goes. Both halves are asserted — two
+    authorizations succeed independently, one authorization crossing accounts
+    is refused and calls the backend zero times.
 36. **`agm accounts remove` is the *only* purge.** Each of signing out,
     a `RevokePairData` from the phone, cookie expiry
     (`GaiaLoggedOut`), `account_changed`, an abandoned re-pair and

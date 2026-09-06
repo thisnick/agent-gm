@@ -196,12 +196,19 @@ func CheckPermissions(dataDir string) []PermissionWarning {
 	check(filepath.Join(dataDir, BackupDirName), DirMode)
 
 	// A session file is one Google account's credential (spec section 12.1),
-	// so it is checked individually rather than only through its directory.
-	entries, err := os.ReadDir(filepath.Join(dataDir, "sessions"))
-	if err == nil {
+	// and a backup is a full copy of every message, so both are checked
+	// individually rather than only through their directory. Checking the
+	// directory alone is how a world-readable backup sat in a 0700 folder
+	// and nothing warned: the mode travels with the file when it is copied
+	// out, which is the entire point of taking a backup.
+	for _, dir := range []string{"sessions", BackupDirName} {
+		entries, err := os.ReadDir(filepath.Join(dataDir, dir))
+		if err != nil {
+			continue
+		}
 		for _, e := range entries {
 			if !e.IsDir() {
-				check(filepath.Join(dataDir, "sessions", e.Name()), FileMode)
+				check(filepath.Join(dataDir, dir, e.Name()), FileMode)
 			}
 		}
 	}

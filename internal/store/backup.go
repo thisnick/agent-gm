@@ -75,6 +75,16 @@ func (s *Store) Backup(ctx context.Context, dataDir string) (string, error) {
 		_ = os.Remove(path)
 		return "", fmt.Errorf("writing the snapshot: %w", err)
 	}
+	// A snapshot is a FULL COPY of every message the owner has ever sent or
+	// received, and message text is not encrypted at rest (spec section 4.5),
+	// so its mode is its whole at-rest protection -- exactly as for
+	// agent-gm.sqlite3 itself. SQLite creates it with the process umask,
+	// which on a normal host leaves it world-readable, and a backup copied
+	// out of its 0700 directory carries that mode with it.
+	if err := os.Chmod(path, FileMode); err != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("securing the snapshot: %w", err)
+	}
 	return path, nil
 }
 

@@ -49,6 +49,18 @@ func TestBackupOpensStandaloneAndCarriesTheRowsAtTheTimeItWasTaken(t *testing.T)
 		t.Errorf("the snapshot went to %s; the caller does not choose the path", path)
 	}
 
+	// A snapshot is a full copy of every message the owner has ever sent or
+	// received, and message text is not encrypted at rest, so its mode is
+	// its whole at-rest protection. It is also the file most likely to be
+	// copied somewhere else, carrying that mode with it.
+	//
+	// Plant: drop the Chmod after VACUUM INTO and this fails at "the
+	// snapshot is mode 0644". Planted 2026-09-07.
+	assertMode(t, path, 0o600)
+	if warnings := store.CheckPermissions(dataDir); len(warnings) != 0 {
+		t.Errorf("a freshly taken backup warned: %v", warnings)
+	}
+
 	// No -wal or -shm sidecar: the snapshot has to open on its own.
 	for _, sidecar := range []string{path + "-wal", path + "-shm"} {
 		if _, err := os.Stat(sidecar); !os.IsNotExist(err) {

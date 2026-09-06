@@ -109,8 +109,14 @@ type Deps struct {
 	// so an agent in a sandbox on another machine reaches the same origin
 	// the tunnel exposes (spec sections 10.3, 12.3).
 	PublicURL string
-	// Log receives one line per request. It never writes to stdout.
+	// Log receives one line per refused request. It never writes to stdout.
 	Log func(msg string, kv ...any)
+	// LogError receives an internal_error, at error level, ALWAYS. It is
+	// separate from Log because the two have different audiences and
+	// different levels: a refusal is ordinary traffic an operator reads when
+	// they go looking, and a 500 is a bug they must be told about without
+	// having to.
+	LogError func(msg string, kv ...any)
 }
 
 // Server routes and serves the `/v1` surface.
@@ -448,7 +454,24 @@ func (s *Server) fail(w http.ResponseWriter, requestID string, route *Route, e *
 	if s.deps.Log != nil {
 		// The code and the request ID, never the message body and never a
 		// token (spec section 12.2).
-		s.deps.Log("request refused", "request_id", requestID, "code", string(e.Code))
+		//
+		// An `internal_error` is logged through a SEPARATE hook, at error
+		// level, and always. It is the one refusal whose message tells the
+		// caller "the request ID identifies it in the logs", and for a whole
+		// slice that was a lie: the refusal hook was wired to Debug, so at
+		// the default level a 500 produced not one line while the sentence
+		// promising otherwise went out to the caller. An unattributable 500
+		// is precisely the error an operator cannot diagnose from outside,
+		// so it is the one that must never be silent.
+		if e.Code == apierr.CodeInternalError && s.deps.LogError != nil {
+			cause := ""
+			if e.Err != nil {
+				cause = e.Err.Error()
+			}
+			s.deps.LogError("internal error", "request_id", requestID, "cause", cause)
+		} else {
+			s.deps.Log("request refused", "request_id", requestID, "code", string(e.Code))
+		}
 	}
 	writeJSON(w, e.HTTPStatus(), e.Envelope(requestID))
 }

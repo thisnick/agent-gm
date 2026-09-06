@@ -34,7 +34,7 @@ func seedFullAccount(t *testing.T, st *store.Store, cacheDir, address, convSourc
 	if err != nil {
 		t.Fatalf("seeding attachment: %v", err)
 	}
-	if err := st.ReplaceReactions(ctx, f.messages[0], "", []gm.Reaction{
+	if err := st.ReplaceReactions(ctx, "", f.messages[0], "", []gm.Reaction{
 		{Type: gm.EmojiTypeLike, ParticipantIDs: []string{store.ParticipantID(f.convID, convSource+"-peer")}},
 	}); err != nil {
 		t.Fatalf("seeding reaction: %v", err)

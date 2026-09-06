@@ -115,8 +115,15 @@ func TestSlice2Test7IdempotencyIsPerKeyAndPerBody(t *testing.T) {
 }
 
 // TestSlice2Test35IdempotencyIsPerAccount is section 16 Slice 2 acceptance
-// test 35: the same client_request_id sent to two accounts creates two
-// operations and calls each backend once.
+// test 35, as amended: the uniqueness tuple is (authorization, account, kind,
+// key), so two DIFFERENT authorizations using the same key are two
+// operations -- but ONE authorization reusing a key across accounts is
+// invalid_request, because that is not a replay, it is a second real message
+// to a different person (section 6.3's mirror hazard).
+//
+// The acceptance test used to read "creates two operations and calls each
+// backend once", which contradicted the mirror hazard added to section 6.3 in
+// this slice; the spec is amended and this test asserts BOTH halves.
 //
 // TWO FAKES, because one fake is one account.
 func TestSlice2Test35IdempotencyIsPerAccount(t *testing.T) {

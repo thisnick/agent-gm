@@ -236,7 +236,12 @@ func TestSlice2ReactionsAreCanonicalisedAndSwitched(t *testing.T) {
 	if !stored[0].IsMine {
 		t.Fatal("the reaction was not recorded as this account's own")
 	}
-	wantID := store.ReactionID(res.ID, conv.DefaultOutgoingID, "❤️")
+	// The react_ ID hangs off the derived part_ ID, not off Google's own
+	// participant ID: section 4.1's table says "message ID, participant ID",
+	// and `part_` is what section 4.1 calls a participant.
+	wantID := store.ReactionID(res.ID,
+		store.ParticipantID(store.ConversationID(h.Account.ID, conv.SourceID), conv.DefaultOutgoingID),
+		"❤️")
 	if stored[0].ID != wantID {
 		t.Fatalf("react_ ID = %s, want the one derived from the canonical emoji %s",
 			stored[0].ID, wantID)
@@ -285,10 +290,12 @@ func TestSlice2ReactionsAreCanonicalisedAndSwitched(t *testing.T) {
 	// Somebody else's reaction is not_my_reaction, refused before any
 	// operation row exists -- and removal by react_ ID reaches it.
 	theirs := gm.Reaction{Emoji: strptr("\U0001F602"), Type: gm.EmojiTypeLaugh, ParticipantIDs: []string{"part-a"}}
-	if err := h.Store.ReplaceReactions(h.ctx(), res.ID, conv.DefaultOutgoingID, []gm.Reaction{theirs}); err != nil {
+	if err := h.Store.ReplaceReactions(h.ctx(), store.ConversationID(h.Account.ID, conv.SourceID), res.ID, conv.DefaultOutgoingID, []gm.Reaction{theirs}); err != nil {
 		t.Fatalf("seeding their reaction: %v", err)
 	}
-	theirID := store.ReactionID(res.ID, "part-a", "\U0001F602")
+	theirID := store.ReactionID(res.ID,
+		store.ParticipantID(store.ConversationID(h.Account.ID, conv.SourceID), "part-a"),
+		"\U0001F602")
 	before := h.operationCount()
 	_, err = h.Account.RemoveReaction(h.ctx(), core.ReactionInput{
 		Request:    core.Request{AuthorizationID: "authz-1", Key: "k5", Body: []byte(`{}`), Source: "test"},

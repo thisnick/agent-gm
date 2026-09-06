@@ -49,8 +49,13 @@ func seedThread(t *testing.T, st *store.Store, accountID, convSource, name, peer
 		t.Fatalf("seeding conversation %s: %v", convSource, err)
 	}
 	f := fixture{accountID: accountID, convID: convID}
-	me := store.ParticipantID(convID, convSource+"-me")
-	peer := store.ParticipantID(convID, convSource+"-peer")
+	// GOOGLE's participant IDs, which is what a real message carries. The
+	// store derives the part_ ID; a fixture that handed it the derived value
+	// would be pre-compensating for the bug this file exists to catch, and
+	// that is exactly what it used to do -- which is why `sender=me`
+	// returning an empty page in production passed here for a whole slice.
+	me := convSource + "-me"
+	peer := convSource + "-peer"
 	for i, text := range texts {
 		sender, raw, state, dir := peer, int32(100), gm.DeliveryStateReceived, gm.DirectionIncoming
 		if i%2 == 1 {
@@ -489,7 +494,7 @@ func TestReactionsAreASetReplaceOneRowPerParticipant(t *testing.T) {
 
 	thumb := "\U0001F44D"
 	heart := "❤️"
-	if err := st.ReplaceReactions(ctx, msg, me, []gm.Reaction{
+	if err := st.ReplaceReactions(ctx, "", msg, me, []gm.Reaction{
 		{Emoji: &thumb, Type: gm.EmojiTypeLike, ParticipantIDs: []string{me, peer}},
 	}); err != nil {
 		t.Fatalf("first reaction set: %v", err)
@@ -513,7 +518,7 @@ func TestReactionsAreASetReplaceOneRowPerParticipant(t *testing.T) {
 
 	// A second, different emoji from the same person REPLACES the first: one
 	// row, not two.
-	if err := st.ReplaceReactions(ctx, msg, me, []gm.Reaction{
+	if err := st.ReplaceReactions(ctx, "", msg, me, []gm.Reaction{
 		{Emoji: &heart, Type: gm.EmojiTypeLove, ParticipantIDs: []string{me}},
 	}); err != nil {
 		t.Fatalf("second reaction set: %v", err)
@@ -531,7 +536,7 @@ func TestReactionsAreASetReplaceOneRowPerParticipant(t *testing.T) {
 
 	// A type with no unicode of its own serves {"emoji": null, "type": ...}
 	// rather than being dropped (spec section 3.7).
-	if err := st.ReplaceReactions(ctx, msg, me, []gm.Reaction{
+	if err := st.ReplaceReactions(ctx, "", msg, me, []gm.Reaction{
 		{Emoji: nil, Type: gm.EmojiTypeEmotify, ParticipantIDs: []string{peer}},
 	}); err != nil {
 		t.Fatalf("emotify: %v", err)

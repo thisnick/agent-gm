@@ -378,7 +378,20 @@ different claim off two surfaces.
 $ agm messages delete msg_01k4z2p8vt
 This deletes this message from your Google Messages account only; the recipient keeps it
 Continue? [y/N]
+
+$ agm conversations delete conv_01k4z2p8vq
+This deletes this conversation from your Google Messages account only; the other people in it keep it
+Continue? [y/N]
+
+$ agm accounts remove acct_7f2a1c9d
+This permanently deletes Agent GM's copy of this account's conversations, messages, attachments and operations; your Google Messages account and the messages in it are untouched
+Continue? [y/N]
 ```
+
+Those are all three sentences, in full, and they are the only three. Each is
+compiled into the binary and checked against the specification's own text, so
+the page, the prompt, the route's `effect` field and the MCP tool description
+cannot drift apart.
 
 Note what those sentences do **not** say. Deleting a message does not unsend
 it. Only `agm accounts remove` deletes anything Agent GM stored, and even then

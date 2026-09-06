@@ -63,13 +63,14 @@ const (
 
 // server is a whole fake-backed Agent GM, in process, over httptest.
 type server struct {
-	t     *testing.T
-	Dir   string
-	Clock *clock.Fake
-	Store *store.Store
-	Deps  *api.HandlerDeps
-	Sup   *accounts.Supervisor
-	HTTP  *httptest.Server
+	t      *testing.T
+	Dir    string
+	Clock  *clock.Fake
+	Store  *store.Store
+	Deps   *api.HandlerDeps
+	Server *api.Server
+	Sup    *accounts.Supervisor
+	HTTP   *httptest.Server
 
 	// Token is an admin session carrying admin plus the three messaging
 	// scopes, which is what spec section 9.7 says the bootstrap mints.
@@ -159,7 +160,7 @@ func openServer(t *testing.T, dir string, clk *clock.Fake) *server {
 	t.Cleanup(httpServer.Close)
 
 	s := &server{
-		t: t, Dir: dir, Clock: clk, Store: st, Deps: deps, Sup: sup,
+		t: t, Dir: dir, Clock: clk, Store: st, Deps: deps, Sup: sup, Server: apiServer,
 		HTTP: httpServer, accounts: map[string]*fake.Backend{},
 	}
 

@@ -237,6 +237,15 @@ func runServe(args []string) int {
 	srv := api.NewServer(api.Deps{
 		Authz:     authzSvc,
 		PublicURL: cfg.PublicURL,
+		LogError: func(msg string, kv ...any) {
+			e := log.Error()
+			for i := 0; i+1 < len(kv); i += 2 {
+				if k, ok := kv[i].(string); ok {
+					e = e.Any(k, kv[i+1])
+				}
+			}
+			e.Msg(msg)
+		},
 		Log: func(msg string, kv ...any) {
 			e := log.Debug()
 			for i := 0; i+1 < len(kv); i += 2 {

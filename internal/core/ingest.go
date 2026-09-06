@@ -196,7 +196,8 @@ func (in *Ingester) applyParts(ctx context.Context, messageID string, m gm.Messa
 	if len(m.Reactions) == 0 {
 		return nil
 	}
-	if err := in.Store.ReplaceReactions(ctx, messageID, in.myParticipant(ctx, m), m.Reactions); err != nil {
+	if err := in.Store.ReplaceReactions(ctx, store.ConversationID(in.AccountID, m.ConversationID),
+		messageID, in.myParticipant(ctx, m), m.Reactions); err != nil {
 		return fmt.Errorf("replacing reactions: %w", err)
 	}
 	return nil
