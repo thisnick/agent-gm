@@ -16,11 +16,12 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/thisnick/agent-gm/internal/accounts"
-	"github.com/thisnick/agent-gm/internal/clock"
 	"github.com/thisnick/agent-gm/internal/cli"
+	"github.com/thisnick/agent-gm/internal/clock"
 	"github.com/thisnick/agent-gm/internal/config"
 	"github.com/thisnick/agent-gm/internal/gm"
 	"github.com/thisnick/agent-gm/internal/gm/fake"
+	"github.com/thisnick/agent-gm/internal/logging"
 	"github.com/thisnick/agent-gm/internal/store"
 )
 
@@ -83,6 +84,7 @@ type runtimeEnv struct {
 	sessions *store.SessionStore
 	sup      *accounts.Supervisor
 	log      zerolog.Logger
+	libLog   zerolog.Logger
 	clock    clock.Clock
 }
 
@@ -99,25 +101,19 @@ func openRuntime() (*runtimeEnv, int) {
 		return nil, exitLocalConfig
 	}
 
-	level := zerolog.InfoLevel
-	switch cfg.LogLevel {
-	case "debug":
-		level = zerolog.DebugLevel
-	case "warn":
-		level = zerolog.WarnLevel
-	case "error":
-		level = zerolog.ErrorLevel
+	// Two loggers, and the split is the point (internal/logging): Agent GM's
+	// own on stderr, and a separate one for libgm, tagged and floored at
+	// warn, so upstream's narration of the long poll never lands in the
+	// output of a command the owner is reading. Neither ever writes to
+	// stdout.
+	logOpts := logging.Options{
+		Level:       cfg.LogLevel,
+		Format:      cfg.LogFormat,
+		UnsafeTrace: cfg.UnsafeTrace,
+		Quiet:       true,
 	}
-	// libgm writes to this logger, and at trace level it base64-logs
-	// decrypted payloads, so trace is only reachable behind
-	// AGENT_GM_UNSAFE_TRACE=1 -- which also stamps every line.
-	var out io.Writer = os.Stderr
-	if cfg.LogFormat == "text" {
-		out = zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339}
-	}
-	logger := zerolog.New(out).Level(level).With().Timestamp().Logger()
+	logger := logging.New(logOpts)
 	if cfg.UnsafeTrace {
-		logger = logger.Level(zerolog.TraceLevel).With().Bool("unsafe_trace", true).Logger()
 		logger.Warn().Msg("AGENT_GM_UNSAFE_TRACE is set: libgm will log decrypted payloads")
 	}
 
@@ -133,7 +129,8 @@ func openRuntime() (*runtimeEnv, int) {
 		fmt.Fprintf(os.Stderr, "agent-gm: %v\n", err)
 		return nil, exitLocalConfig
 	}
-	r := &runtimeEnv{cfg: cfg, store: st, sessions: sessions, log: logger, clock: clk}
+	r := &runtimeEnv{cfg: cfg, store: st, sessions: sessions, log: logger,
+		libLog: logging.Library(logger, logOpts), clock: clk}
 	r.sup = accounts.New(st, sessions, clk, nil)
 	return r, exitOK
 }
@@ -145,7 +142,7 @@ func (r *runtimeEnv) newBackend() gm.Backend {
 	if r.cfg.Backend == config.BackendFake {
 		return newSeededFake()
 	}
-	return gm.New(r.log)
+	return gm.New(r.libLog)
 }
 
 // newSeededFake gives the fake backend a small fixture world, so that
@@ -266,8 +263,6 @@ func spikePair(args []string) int {
 	paste := fs.Bool("paste", false, "read the cookies from stdin instead of launching Chrome")
 	pasteFile := fs.String("paste-file", "", "read the cookies from a file")
 	refresh := fs.Bool("refresh-cookies", false, "re-authenticate an existing pairing")
-	forget := fs.Bool("forget-browser", false, "delete the saved Chrome sign-in")
-	yes := fs.Bool("yes", false, "skip the confirmation prompt")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -281,18 +276,6 @@ func spikePair(args []string) int {
 	ctx, cancel := signalContext()
 	defer cancel()
 
-	if *forget {
-		fmt.Fprintf(os.Stderr, "This %s\n", cli.ForgetBrowserEffect)
-		if !*yes && !confirm() {
-			return exitOK
-		}
-		if err := cli.ForgetBrowser(r.cfg.StateDir, *accountID); err != nil {
-			return fail(err)
-		}
-		fmt.Println("Forgotten.")
-		return exitOK
-	}
-
 	timeout := r.cfg.PairingTimeout
 	if *timeoutStr != "" {
 		d, err := config.ParseDuration(*timeoutStr)
@@ -303,7 +286,7 @@ func spikePair(args []string) int {
 		timeout = d
 	}
 
-	cookies, code := gatherCookies(ctx, r, *accountID, *paste, *pasteFile, timeout)
+	cookies, code := gatherCookies(ctx, r, *paste, *pasteFile, timeout)
 	if code != exitOK {
 		return code
 	}
@@ -375,7 +358,7 @@ causes extra resyncs, not a lost pairing.`
 
 // gatherCookies runs the capture, or reads a paste. Cookies never touch a
 // file of Agent GM's own: they go from here into the pairing call.
-func gatherCookies(ctx context.Context, r *runtimeEnv, accountID string, paste bool, pasteFile string, timeout time.Duration) (map[string]string, int) {
+func gatherCookies(ctx context.Context, r *runtimeEnv, paste bool, pasteFile string, timeout time.Duration) (map[string]string, int) {
 	if paste || pasteFile != "" {
 		var raw []byte
 		var err error
@@ -409,7 +392,6 @@ func gatherCookies(ctx context.Context, r *runtimeEnv, accountID string, paste b
 		return nil, exitLocalConfig
 	}
 
-	profile := cli.ProfileDir(r.cfg.StateDir, accountID)
 	fmt.Println("Adding a Google account to Agent GM.")
 	fmt.Println("Opening a dedicated Chrome window for Google sign-in.")
 	fmt.Println("This profile belongs to agm alone; your normal Chrome is untouched.")
@@ -423,15 +405,17 @@ func gatherCookies(ctx context.Context, r *runtimeEnv, accountID string, paste b
 	fmt.Println("  The debugging port is a live credential channel: it is bound to")
 	fmt.Println("  loopback on a random port and Chrome is killed the moment the")
 	fmt.Println("  capture completes.")
-	fmt.Printf("  The profile is kept at %s, so a later --refresh-cookies\n", profile)
-	fmt.Println("  does not require signing in again. `--forget-browser` deletes it.")
+	fmt.Println("  The profile is short-lived: it is created for this capture and")
+	fmt.Println("  deleted as soon as Chrome closes, so nothing signed in to Google")
+	fmt.Println("  is left on this machine. A later --refresh-cookies opens a fresh")
+	fmt.Println("  window and asks you to sign in again; Google may or may not ask")
+	fmt.Println("  for your password.")
 	fmt.Println()
 
 	capture := &cli.Capture{
-		Chrome:     chrome,
-		ProfileDir: profile,
-		Timeout:    timeout,
-		Logf:       func(format string, args ...any) { fmt.Printf("  "+format+"\n", args...) },
+		Chrome:  chrome,
+		Timeout: timeout,
+		Logf:    func(format string, args ...any) { fmt.Printf("  "+format+"\n", args...) },
 	}
 	cookies, err := capture.Run(ctx)
 	if err != nil {
@@ -439,13 +423,6 @@ func gatherCookies(ctx context.Context, r *runtimeEnv, accountID string, paste b
 		return nil, exitRetryable
 	}
 	return cookies, exitOK
-}
-
-func confirm() bool {
-	fmt.Fprint(os.Stderr, "Continue? [y/N] ")
-	var answer string
-	_, _ = fmt.Fscanln(os.Stdin, &answer)
-	return strings.EqualFold(strings.TrimSpace(answer), "y")
 }
 
 // --- spike list --------------------------------------------------------------
@@ -724,8 +701,19 @@ func spikeDiag(args []string) int {
 		}
 		isDefault, err := a.Backend.IsDefaultSMSApp(ctx)
 		fmt.Printf("\n%s\n", a.ID)
+		stale := !compiled.SameDate(info.Live)
 		fmt.Printf("  config_version_live:    %s\n", info.Live)
-		fmt.Printf("  config_version_stale:   %v\n", !compiled.SameDate(info.Live))
+		// Informational, not a fault (D32). Google ships a new ConfigVersion
+		// on its own schedule, so this is the normal resting state between
+		// pin bumps: it does not change the server's status and calls for no
+		// action until a conversation-creating call actually fails.
+		fmt.Printf("  config_version_stale:   %v", stale)
+		if stale {
+			fmt.Printf("   (informational: Google is ahead of the pin. Nothing to do\n" +
+				"                          unless starting a conversation fails, and then the fix\n" +
+				"                          is a pin bump -- spec 15.5)")
+		}
+		fmt.Println()
 		if err != nil {
 			fmt.Printf("  is_default_sms_app:     unknown (%v)\n", err)
 		} else {

@@ -69,57 +69,38 @@ func TestFindChromeHonoursTheEnvironmentFirst(t *testing.T) {
 	}
 }
 
-// The kept Chrome profile is keyed by account. A single shared profile would
-// hold whichever account signed in last (spec section 11.4).
-func TestProfileDirIsKeyedByAccount(t *testing.T) {
-	state := "/tmp/state"
-	a := cli.ProfileDir(state, "acct_a")
-	b := cli.ProfileDir(state, "acct_b")
+// The Chrome profile is short-lived (D33): every capture gets its own fresh
+// directory, and nothing is keyed by account, because nothing survives the
+// capture to be reused. Two captures never share one.
+func TestProfileDirIsFreshEveryTime(t *testing.T) {
+	root := t.TempDir()
+	a, err := cli.NewProfileDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := cli.NewProfileDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if a == b {
-		t.Fatal("two accounts share one Chrome profile")
+		t.Fatal("two captures share one Chrome profile")
 	}
-	if filepath.Base(a) != "acct_a" {
-		t.Errorf("the profile directory is %s, want it named for the account", a)
-	}
-	// Adding a NEW account uses a fresh directory, so it always starts signed
-	// out and the owner is never offered the wrong account by accident.
-	n1 := cli.ProfileDir(state, "")
-	n2 := cli.ProfileDir(state, "")
-	if n1 == n2 {
-		t.Error("two new-account pairings share a profile directory")
-	}
-	if !strings.HasPrefix(filepath.Base(n1), "new-") {
-		t.Errorf("a new-account profile is %s", n1)
-	}
-}
-
-func TestForgetBrowser(t *testing.T) {
-	state := t.TempDir()
-	for _, id := range []string{"acct_a", "acct_b"} {
-		if err := os.MkdirAll(cli.ProfileDir(state, id), 0o700); err != nil {
+	for _, dir := range []string{a, b} {
+		if filepath.Dir(dir) != root {
+			t.Errorf("the profile %s is not under the root it was given", dir)
+		}
+		fi, err := os.Stat(dir)
+		if err != nil {
 			t.Fatal(err)
 		}
+		if fi.Mode().Perm() != 0o700 {
+			t.Errorf("the profile %s is mode %o, want 700", dir, fi.Mode().Perm())
+		}
 	}
-	// With an account it removes one.
-	if err := cli.ForgetBrowser(state, "acct_a"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(cli.ProfileDir(state, "acct_a")); !os.IsNotExist(err) {
-		t.Error("acct_a's profile survived")
-	}
-	if _, err := os.Stat(cli.ProfileDir(state, "acct_b")); err != nil {
-		t.Error("acct_b's profile was removed too")
-	}
-	// Without one it removes them all.
-	if err := cli.ForgetBrowser(state, ""); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(state, "chrome-profile")); !os.IsNotExist(err) {
-		t.Error("the profile root survived")
-	}
-	// The effect sentence is the one the prompt and the route both use.
-	if !strings.Contains(cli.ForgetBrowserEffect, "sign in to Google again") {
-		t.Errorf("the effect sentence is %q", cli.ForgetBrowserEffect)
+	// Nothing about it is derived from the state directory: a short-lived
+	// profile has no reason to live where kept state lives.
+	if strings.Contains(a, "chrome-profile/acct_") {
+		t.Errorf("the profile %s is still keyed by account", a)
 	}
 }
 

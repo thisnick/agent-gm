@@ -1562,7 +1562,7 @@ only then unlinks the files (§10.3's erasure order). Audit rows are **not**
 deleted — they record what happened when it happened (§4.3) — and they keep
 their `account_id`, so the trail of a removed account survives it.
 
-**Nothing else deletes anything.** Signing out, `--forget-browser`, a
+**Nothing else deletes anything.** Signing out, a
 `RevokePairData` from the phone, cookie expiry, `account_changed`, a failed or
 abandoned re-pair, and `accounts.max_concurrent` parking each delete **zero**
 rows. That negative is half the meaning of "only", so §16 Slice 2 tests it
@@ -3305,7 +3305,6 @@ agm pair [--account <acct-id>] [--device-index N] [--timeout 5m]
                                                # adds an account, or resumes one
 agm pair --refresh-cookies --account <acct-id> # re-auth without re-pairing
 agm pair --paste [--paste-file <path>]         # fallback: curl / JSON paste
-agm pair --forget-browser [--account <acct-id>]
 
 agm accounts list [--all]
 agm accounts show <acct-id>
@@ -3404,7 +3403,7 @@ used on an `sms_mms` conversation**, for the reason in §5.5.
 
 Destructive commands — `accounts remove` (the only one that deletes an
 account's history), `accounts sign-out`, `conversations delete`,
-`messages delete`, `auth logout`, `admin ... revoke`, `pair --forget-browser`,
+`messages delete`, `auth logout`, `admin ... revoke`,
 and `admin backfill` with neither `--account` nor `--conversation` — print the
 **exact
 `effect` sentence returned by the route** (§7.6) and require an interactive
@@ -3456,8 +3455,8 @@ This profile belongs to agm alone; your normal Chrome is untouched.
 
 What the CLI does, precisely:
 
-1. Launches the **system Chrome** with
-   `--user-data-dir=<state>/chrome-profile` and
+1. Launches the **system Chrome** with a **freshly created, short-lived**
+   `--user-data-dir` under the platform's temporary directory and
    `--remote-debugging-port=<random>` bound to `127.0.0.1`.
    **The dedicated `--user-data-dir` is mandatory, not stylistic**: current
    Chrome refuses `--remote-debugging-port` against the default profile
@@ -3478,8 +3477,11 @@ What the CLI does, precisely:
    `https://www.google.com`**, because `OSID` is host-scoped to the former;
    a read of `.google.com` alone is the most common way this fails.
    `__Secure-1PSIDTS` is read last, because it rotates.
-5. **Terminates Chrome immediately**, then starts `DoGaiaPairing` and prints
-   the emoji.
+5. **Terminates Chrome immediately and deletes the profile directory**, then
+   starts `DoGaiaPairing` and prints the emoji. The deletion happens on every
+   path out of the capture — success, a Chrome that died on launch, the
+   timeout, and Ctrl-C — so a directory holding a logged-in Google session
+   never outlives the command that made it (D33).
 6. Never writes the cookies to a file of its own. They go from CDP into the
    request body and nowhere else.
 
@@ -3491,23 +3493,22 @@ Three things the owner is told, once, at this point:
 - **The debugging port is a live credential channel.** Anything that can
   connect to it reads every cookie in that profile. It is bound to loopback on
   a random port and Chrome is killed the moment the capture completes.
-- **The kept profile.** `<state>/chrome-profile` persists at mode `0700` under
-  `$XDG_STATE_HOME/agent-gm/`, so a later `--refresh-cookies` does not require
-  signing in again. It contains a logged-in Google session. `agm pair
-  --forget-browser` deletes it, and its `effect` sentence says so.
-- **The profile is keyed by account: `<state>/chrome-profile/<acct_id>`.** A
-  single shared profile would hold whichever account signed in last, so
-  `agm pair --refresh-cookies --account A` run after adding account B would
-  launch Chrome, capture **B's** cookies, and only then fail on
-  `pairing_wrong_account` — a full sign-in and capture wasted on a knowable
-  mistake. With a per-account directory, a refresh reuses that account's own
-  session and usually needs no interaction at all. Adding a *new* account uses
-  a fresh directory, so it always starts signed out and the owner is never
-  offered the wrong account by accident. `--forget-browser` without
-  `--account` removes them all, and with it removes one. Its effect sentence is
-  *"deletes the saved Chrome sign-in for this account; the next pair or cookie
-  refresh will ask you to sign in to Google again"* — the same words in the
-  prompt and in the route's `effect` field, per the rule above.
+- **The profile is short-lived.** It is created fresh for this capture under
+  the platform's temporary directory at mode `0700`, and deleted the moment
+  Chrome closes — including on failure, on timeout and on Ctrl-C. Nothing is
+  written under `$XDG_STATE_HOME/agent-gm/`, and a directory holding a
+  logged-in Google session is never left on the machine. There is therefore
+  no `--forget-browser`: there is nothing kept to forget. The cost is that
+  every capture is a new device to Google and every `--refresh-cookies` asks
+  for a sign-in again — Google may or may not also ask for the password —
+  which the owner is told in the message the command prints (D33).
+- **Chrome's own failure is surfaced, not swallowed.** Chrome's stderr is
+  kept and, if the browser exits before the debugging port answers, it is the
+  error the CLI prints, naming the exit. When `DISPLAY` and `WAYLAND_DISPLAY`
+  are both unset, or `DISPLAY` is set with no `XAUTHORITY` and no
+  `~/.Xauthority`, the CLI adds the desktop-session hint: this is the common
+  Linux case, where a terminal that is not part of the graphical session
+  cannot open a window and Chrome says only "cannot open display".
 
 **Reading the user's existing Chrome profile is explicitly not done.** On Linux
 the cookie DB key lives in the login keyring, on Windows Chrome has used
@@ -3582,9 +3583,11 @@ decision being made:
 #### `agm pair --refresh-cookies --account <acct-id>`
 
 When cookies expire the session goes `signed_out` and writes fail, but **the
-pairing survives** (§3.2). This re-runs the capture in the kept Chrome profile
-— usually with no sign-in prompt at all — and re-authenticates the existing
-pairing. A capture from a different Google account is refused with
+pairing survives** (§3.2). This re-runs the capture in a **fresh, short-lived**
+Chrome profile and re-authenticates the existing pairing. Because nothing is
+kept between captures (D33), it asks for a Google sign-in again; Google may or
+may not also ask for the password, and the command says so before it opens the
+window. A capture from a different Google account is refused with
 `pairing_wrong_account` and changes nothing.
 
 #### Several Android devices on one Google account
@@ -3670,7 +3673,7 @@ profile's token to a new origin.
 | `AGENT_GM_DATA_KEY` | environment only. 256 bits as 64 hex or base64 | **no.** §4.5 |
 | Google session (`AuthData`), one per account | `sessions/<acct>.enc`, sealed with the single data key, mode `0600` in a `0700` directory. The account ID is AEAD associated data, so files cannot be swapped between accounts | by re-pairing, per account |
 | **Google account cookies**, one set per account | inside `AuthData`, therefore inside `sessions/<acct>.enc`, **for the whole life of that pairing** (§3.2). Never on disk unencrypted, never logged | by `agm pair --refresh-cookies` |
-| Kept Chrome profile (the default flow) | `$XDG_STATE_HOME/agent-gm/chrome-profile`, mode `0700`, on the **client** machine. Contains a logged-in Google session | `agm pair --forget-browser` |
+| Short-lived Chrome profile (the default flow) | a fresh temporary directory on the **client** machine, mode `0700`, for the length of one capture only. It contains a logged-in Google session while Chrome is open and is deleted when Chrome closes, on every path (D33) | n/a — it does not outlive the command |
 | OAuth tokens | SQLite, **hashes only** | rotate on use |
 | Enrollment codes | SQLite, **SHA-256 only**; the value is returned once, at creation | revoke and reissue |
 | Media tickets | signed, not stored as values | expire |
@@ -3727,9 +3730,21 @@ error codes and state transitions. Mandatory redaction covers:
   tell their accounts apart, and nowhere else.
 - OAuth form bodies.
 
-`libgm` is given a logger at `info`. At `trace` it base64-logs decrypted
-payloads (`event_handler.go:logContent`), so `trace` is refused unless
-`AGENT_GM_UNSAFE_TRACE=1` is set, which also stamps every line with
+**Two loggers, and neither ever writes to stdout.** Agent GM's own logger and
+the one handed to `libgm` are separate (`internal/logging`). Stdout carries a
+command's result — a table, or the one JSON value `--json` promises (§11.3) —
+so a log line in it is a parse error for anything downstream; both loggers
+write to stderr, always.
+
+`libgm`'s logger is tagged `component=libgm` and **floored at `warn`**, and a
+one-shot CLI command silences it altogether. Upstream's narration of the long
+poll ("Skip count is non-zero in postConnect, waiting longer") is a
+commentary on a protocol Agent GM does not control, is not a diagnosis an
+owner can act on, and printed inline with a command's output at the Slice 1
+live gate. `AGENT_GM_LOG_LEVEL=debug` does not lower the floor. At `trace`
+`libgm` base64-logs decrypted payloads (`event_handler.go:logContent`), so
+`trace` is refused unless `AGENT_GM_UNSAFE_TRACE=1` is set — the one thing
+that does go past the floor — which also stamps every line with
 `unsafe_trace=true` and writes one `security.unsafe_trace_enabled` audit row
 at startup.
 
@@ -4410,6 +4425,20 @@ after startup (§4.3) rather than shipping a hand-written data migration.
 Upgrading the `libgm` pin is a **deliberate slice**, never part of a routine
 upgrade — see §3.6 for the required steps and the live gate.
 
+**What to do about `config_version_stale: true`.** It is informational (D32).
+Google ships a new `ConfigVersion` on its own schedule, so an account will
+report `config_version_stale: true` whenever Google is ahead of the pin, and
+that is the normal resting state between pin bumps. It does not change
+`GET /v1/health`'s `status`, it is not an error, and it does **not** on its
+own call for any action:
+
+- **Everything works** → do nothing. Note it and carry on.
+- **Starting a conversation fails** *and* the versions differ → this is the
+  `config_version_stale` **error code** (§7.2), and the fix is a pin bump as
+  its own slice with its own live gate (§3.6). Retrying does not help.
+- **Starting a conversation fails and the versions match** → it is not this;
+  see `google_undocumented_status` in §15.4.
+
 ### 15.6 If the public URL ever has to change
 
 This is a migration, not a config edit. Changing `AGENT_GM_PUBLIC_URL`:
@@ -4676,7 +4705,7 @@ model.
 35. **Idempotency is per account.** The same `client_request_id` sent to two
     accounts creates two operations and calls each backend once.
 36. **`agm accounts remove` is the *only* purge.** Each of signing out,
-    `pair --forget-browser`, a `RevokePairData` from the phone, cookie expiry
+    a `RevokePairData` from the phone, cookie expiry
     (`GaiaLoggedOut`), `account_changed`, an abandoned re-pair and
     `accounts.max_concurrent` parking deletes **zero** conversation, message,
     attachment, reaction, contact and operation rows — asserted by row counts
@@ -4724,8 +4753,8 @@ model.
 47. **Live gate.** `agm pair --refresh-cookies` re-authenticates the existing
     pairing **without** a re-pair and without a new emoji; a capture from a
     different Google account is `pairing_wrong_account` and changes nothing.
-    Then `agm pair --forget-browser` removes the profile directory, after
-    printing its effect sentence.
+    In both cases the short-lived Chrome profile directory is gone after the
+    command returns (D33), asserted on the filesystem.
 48. **Live gate.** `agm conversations start <APPROVED_GROUP_NUMBER_1>
     <APPROVED_GROUP_NUMBER_2> --name "agent-gm test"` creates a group. If it
     fails, the failure is diagnosed against the §15.4 runbook rows
@@ -4968,6 +4997,8 @@ add missing tools to `devbox.json` rather than installing on the host.
 | **D29** | **OAuth scopes are global across accounts; per-account scoping is deferred** | A scope grammar naming accounts needs accounts to exist before a token is issued, an account picker on the authorization screen, and enrollment ceilings that can name accounts that do not exist yet. None of that is worth building before the owner has met a case for it. The honest statement is made where it matters (§9.7, and the authorization screen): a token reads and sends as **any** account. An owner needing real separation runs a second Agent GM |
 | **D30** | **Signing out keeps history; only `agm accounts remove` deletes** | Losing access to an account is common — cookies expire, a phone is replaced — and losing years of searchable history because of it would be a disaster with no upside. Splitting the two makes deletion an explicit, confirmed, audited act, and makes re-pairing free: IDs derive from the account and Google's own stable IDs, so resuming reconciles rather than duplicating (§4.7) |
 | **D31** | **`agm pair` prints the chosen device's `dest_reg_uuid` and nothing more: no last-seen timestamp, and no `details.device_count` on `pairing_init_timeout`.** Recorded 2026-09-06, from the Slice 1 review | §3.1 mandates `DoGaiaPairing`, which runs `StartGaiaPairing` and `FinishGaiaPairing` back to back and returns neither the `*PairingSession` nor the candidate list. The chosen device's `LastSeen` and the number of candidates reach only an upstream log line (`pair_google.go:352-370`), and `ErrHadMultipleDevices` is wrapped with `fmt.Errorf("%w (%w)", …)` carrying no count (`pair_google.go:391-397`, fixture assertion 16). `AuthData.DestRegID` *is* set before the emoji callback fires, so the UUID is available and is what §3.2 asks to be recorded. The alternative — driving `StartGaiaPairing`/`FinishGaiaPairing` directly — would forfeit the "`DoGaiaPairing` reconnects in its own goroutine" behaviour §3.1 says Agent GM depends on and must not re-implement, for two diagnostic fields |
+| **D32** | **`config_version_stale` is a diagnosis, not a fault.** `GET /v1/health` and `agm health` report it as a boolean fact about the account; it is an *error code* only when a conversation-creating call has actually failed (§3.7, §7.2). A stale version with everything working is reported and nothing more. Recorded 2026-09-06, from the Slice 1 live gate | The live gate saw `config_version_stale: true` (live `2026.9.3.4.6` against the pin's `2026.9.2.4.6`) while pairing, listing, sending and the echo all worked. Treating the version difference as an error would have failed a healthy deployment; treating it as invisible would have hidden the one diagnosis §15.4 gives for a conversation-creating failure. So it is surfaced, it does not change `status`, and §15.5 says what an operator does about it: nothing, until a create fails, and then a pin bump (§3.6) |
+| **D33** | **The pairing Chrome profile is short-lived.** It is created fresh under the platform's temporary directory for one capture and deleted the moment Chrome closes — on success, on failure, on timeout and on Ctrl-C. There is no kept profile, nothing under `$XDG_STATE_HOME/agent-gm/`, and no `--forget-browser`. **Owner decision, 2026-09-06** | A kept profile is a directory holding a live, logged-in Google session sitting on the client machine indefinitely, protected by nothing but its mode — the same blast radius as `sessions/*.enc` but with no data key in front of it, and easy to forget about. The benefit it bought was a `--refresh-cookies` that usually needed no sign-in; the owner judged a sign-in prompt per refresh to be cheap next to a permanent credential on disk. Keying it by account, and the `--forget-browser` command that existed to clean it up, both go with it |
 
 #### Field observation behind D3 — the ConfigVersion, and status 4
 

@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/google/uuid"
 
 	"github.com/thisnick/agent-gm/internal/gm"
 )
@@ -132,51 +131,59 @@ Set AGENT_GM_CHROME to a binary path if Chrome is somewhere unusual.
 `
 }
 
-// ProfileDir is the kept Chrome profile for one account. It is keyed by
-// account: a single shared profile would hold whichever account signed in
-// last, so a refresh for account A run after adding account B would capture
-// B's cookies and only then fail on pairing_wrong_account -- a full sign-in
-// wasted on a knowable mistake (spec section 11.4).
+// NewProfileDir creates the short-lived Chrome profile for one capture.
 //
-// accountID may be empty when adding a NEW account, which gets a fresh
-// directory so it always starts signed out and the owner is never offered the
-// wrong account by accident.
-func ProfileDir(stateDir, accountID string) string {
-	base := filepath.Join(stateDir, "chrome-profile")
-	if accountID == "" {
-		return filepath.Join(base, "new-"+uuid.NewString())
+// The profile is deliberately temporary (D33): it holds a logged-in Google
+// session, so it is created fresh under root for the capture and deleted the
+// moment Chrome is closed -- on success, on failure, on timeout and on
+// Ctrl-C -- leaving nothing under the state directory. root may be empty for
+// the platform's temporary directory.
+func NewProfileDir(root string) (string, error) {
+	if root != "" {
+		if err := os.MkdirAll(root, 0o700); err != nil {
+			return "", fmt.Errorf("creating %s: %w", root, err)
+		}
 	}
-	return filepath.Join(base, accountID)
+	dir, err := os.MkdirTemp(root, "agm-chrome-profile-")
+	if err != nil {
+		return "", fmt.Errorf("creating the Chrome profile directory: %w", err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		_ = os.RemoveAll(dir)
+		return "", fmt.Errorf("securing the Chrome profile directory: %w", err)
+	}
+	return dir, nil
 }
 
-// ForgetBrowser deletes the saved Chrome sign-in. With an account ID it
-// removes one; without, it removes them all.
-func ForgetBrowser(stateDir, accountID string) error {
-	base := filepath.Join(stateDir, "chrome-profile")
-	if accountID == "" {
-		return os.RemoveAll(base)
-	}
-	return os.RemoveAll(filepath.Join(base, accountID))
-}
-
-// ForgetBrowserEffect is the exact sentence the prompt, the route's `effect`
-// field and the tool description all use -- the same words everywhere.
-const ForgetBrowserEffect = "deletes the saved Chrome sign-in for this account; " +
-	"the next pair or cookie refresh will ask you to sign in to Google again"
-
-// Capture drives the dedicated Chrome profile over CDP.
+// Capture drives the short-lived Chrome profile over CDP.
 type Capture struct {
 	// Chrome is the browser binary.
 	Chrome string
-	// ProfileDir is the dedicated --user-data-dir. It is mandatory, not
-	// stylistic: current Chrome refuses --remote-debugging-port against the
-	// default profile directory.
-	ProfileDir string
+	// ProfileRoot is the directory the short-lived --user-data-dir is made
+	// under. Empty means the platform's temporary directory. The profile
+	// itself is created by Run and removed by Run, always.
+	ProfileRoot string
 	// Timeout bounds how long the owner has to finish signing in.
 	Timeout time.Duration
 	// Logf receives progress lines for the owner. Cookie values never reach
 	// it.
 	Logf func(format string, args ...any)
+	// Environ is the environment Chrome's display hint is read from. Empty
+	// means the process environment. It exists so the hint is testable.
+	Environ func(string) string
+
+	// profileDir is the directory this capture used, kept so a test can
+	// assert it is gone afterwards.
+	mu         sync.Mutex
+	profileDir string
+}
+
+// ProfileDir reports the short-lived profile directory the last Run used. It
+// must not exist after Run returns.
+func (c *Capture) ProfileDir() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.profileDir
 }
 
 // args builds Chrome's argv.
@@ -189,9 +196,9 @@ type Capture struct {
 // No other flag is passed -- no --enable-automation, no --headless -- so
 // navigator.webdriver is unset, there is no automation infobar, and Google's
 // sign-in sees an ordinary Chrome (spec section 11.4 step 1).
-func (c *Capture) args(port int) []string {
+func (c *Capture) args(profileDir string, port int) []string {
 	return []string{
-		"--user-data-dir=" + c.ProfileDir,
+		"--user-data-dir=" + profileDir,
 		fmt.Sprintf("--remote-debugging-port=%d", port),
 		gm.GaiaCaptureURL,
 	}
@@ -209,13 +216,28 @@ func (c *Capture) logf(format string, args ...any) {
 // The cookies are never written to a file of Agent GM's own: they go from CDP
 // into the caller and nowhere else.
 func (c *Capture) Run(ctx context.Context) (map[string]string, error) {
-	if err := os.MkdirAll(c.ProfileDir, 0o700); err != nil {
-		return nil, fmt.Errorf("creating the Chrome profile directory: %w", err)
-	}
-	if err := os.Chmod(c.ProfileDir, 0o700); err != nil {
-		return nil, fmt.Errorf("securing the Chrome profile directory: %w", err)
-	}
+	return c.runWith(ctx, c.capture)
+}
 
+// runWith owns the short-lived profile's whole life (D33): it is created
+// here, handed to the capture, and removed on every path out -- success, a
+// Chrome that died on launch, a timeout, and a Ctrl-C, which cancels ctx and
+// unwinds through here. Nothing signed in to Google is left on the machine
+// and nothing is written under the state directory.
+func (c *Capture) runWith(ctx context.Context, capture func(context.Context, string) (map[string]string, error)) (map[string]string, error) {
+	profileDir, err := NewProfileDir(c.ProfileRoot)
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	c.profileDir = profileDir
+	c.mu.Unlock()
+	defer func() { _ = os.RemoveAll(profileDir) }()
+
+	return capture(ctx, profileDir)
+}
+
+func (c *Capture) capture(ctx context.Context, profileDir string) (map[string]string, error) {
 	port, err := freeLoopbackPort()
 	if err != nil {
 		return nil, err
@@ -228,12 +250,29 @@ func (c *Capture) Run(ctx context.Context) (map[string]string, error) {
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(runCtx, c.Chrome, c.args(port)...)
+	cmd := exec.CommandContext(runCtx, c.Chrome, c.args(profileDir, port)...)
+	// Chrome's own stderr is kept, bounded, rather than discarded: when
+	// Chrome exits immediately -- no display, no X authority, a broken
+	// profile -- its stderr is the only thing that says why, and reporting
+	// "the debugging port never answered" instead is what cost the Slice 1
+	// live gate an hour.
+	stderr := &tailBuffer{limit: 8 << 10}
 	cmd.Stdout = io.Discard
-	cmd.Stderr = io.Discard
+	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("launching Chrome: %w", err)
+		return nil, fmt.Errorf("launching Chrome (%s): %w%s", c.Chrome, err, c.displayHint())
 	}
+
+	// Wait for the process in the background so an early exit is a fact this
+	// function can select on rather than a timeout it has to infer.
+	// Closed rather than written, so both the poll below and kill() can
+	// observe the exit without racing each other for one value.
+	waited := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(waited)
+	}()
+
 	// Chrome is killed the moment the capture completes. The process is
 	// always the one we started -- never a name pattern.
 	var once sync.Once
@@ -242,12 +281,14 @@ func (c *Capture) Run(ctx context.Context) (map[string]string, error) {
 			if cmd.Process != nil {
 				_ = cmd.Process.Kill()
 			}
-			_ = cmd.Wait()
+			<-waited
 		})
 	}
 	defer kill()
 
-	wsURL, err := waitForDevTools(runCtx, port)
+	wsURL, err := waitForDevTools(runCtx, port, waited, func() error {
+		return c.exitError(stderr)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -268,6 +309,114 @@ func (c *Capture) Run(ctx context.Context) (map[string]string, error) {
 	return cookies, nil
 }
 
+// ErrChromeExited means Chrome stopped before the capture could start. Its
+// own stderr is carried in the message, because that is where the reason is.
+var ErrChromeExited = errors.New("chrome exited before the capture could start")
+
+// exitError builds the message for a Chrome that died on launch.
+func (c *Capture) exitError(stderr *tailBuffer) error {
+	said := strings.TrimSpace(stderr.String())
+	if said == "" {
+		said = "(chrome printed nothing to stderr)"
+	}
+	return fmt.Errorf("%w; chrome said:\n%s%s", ErrChromeExited, indent(said, "    "), c.displayHint())
+}
+
+func (c *Capture) getenv(key string) string {
+	if c.Environ != nil {
+		return c.Environ(key)
+	}
+	return os.Getenv(key)
+}
+
+// displayHint returns the desktop-session hint, or "" when the environment
+// looks fine. It is appended to a launch failure rather than printed always,
+// because it is only ever an explanation of one.
+func (c *Capture) displayHint() string {
+	h := DisplayHint(c.getenv)
+	if h == "" {
+		return ""
+	}
+	return "\n\n" + h
+}
+
+// DisplayHint diagnoses the common Linux-desktop case: a CLI run from a
+// terminal that has no access to the owner's graphical session. Chrome cannot
+// open a window there and exits at once, and the message it prints
+// ("cannot open display") is not one an owner reads as "set XAUTHORITY".
+//
+// It returns "" on macOS and Windows, which have no such variables, and ""
+// when the environment already names a display and an authority.
+func DisplayHint(getenv func(string) string) string {
+	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+		return ""
+	}
+	display := getenv("DISPLAY")
+	wayland := getenv("WAYLAND_DISPLAY")
+	if display == "" && wayland == "" {
+		return `Agent GM found no graphical session: neither DISPLAY nor WAYLAND_DISPLAY
+is set, so Chrome has no window to open. Run this command from a terminal
+inside the desktop session, or pair from a machine that has one:
+
+    agm pair --server <this server's URL>
+
+On a headless host use the paste fallback instead: agm pair --paste`
+	}
+	if wayland != "" {
+		return ""
+	}
+	if getenv("XAUTHORITY") != "" {
+		return ""
+	}
+	if home := getenv("HOME"); home != "" {
+		if _, err := os.Stat(filepath.Join(home, ".Xauthority")); err == nil {
+			return ""
+		}
+	}
+	return `DISPLAY is set to ` + display + ` but XAUTHORITY is not, and there is no
+~/.Xauthority, so Chrome may be refused by the X server it is pointed at.
+If this shell is not the one that started the desktop session -- an ssh or a
+remote-desktop shell often is not -- take the authority file from the running
+session, for example:
+
+    export XAUTHORITY=$(tr '\0' '\n' < /proc/$(pgrep -x gnome-shell | head -1)/environ \
+        | sed -n 's/^XAUTHORITY=//p')
+
+then run agm pair again.`
+}
+
+func indent(s, with string) string {
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		lines[i] = with + l
+	}
+	return strings.Join(lines, "\n")
+}
+
+// tailBuffer keeps the last limit bytes written to it. Chrome can be chatty,
+// and only the end of what it said is useful.
+type tailBuffer struct {
+	mu    sync.Mutex
+	buf   []byte
+	limit int
+}
+
+func (b *tailBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.buf = append(b.buf, p...)
+	if len(b.buf) > b.limit {
+		b.buf = b.buf[len(b.buf)-b.limit:]
+	}
+	return len(p), nil
+}
+
+func (b *tailBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.buf)
+}
+
 func freeLoopbackPort() (int, error) {
 	// Bound to loopback on a random port. The debugging port is a live
 	// credential channel: anything that can connect to it reads every cookie
@@ -283,10 +432,19 @@ func freeLoopbackPort() (int, error) {
 	return port, nil
 }
 
-func waitForDevTools(ctx context.Context, port int) (string, error) {
+// waitForDevTools polls Chrome's debugging port until it answers. exited is
+// closed-or-written when the browser process ends; onExit builds the error
+// for that case, so a Chrome that died on launch is reported as what it was
+// rather than as a port that never answered.
+func waitForDevTools(ctx context.Context, port int, exited <-chan struct{}, onExit func() error) (string, error) {
 	url := fmt.Sprintf("http://127.0.0.1:%d/json/version", port)
 	client := &http.Client{Timeout: 2 * time.Second}
 	for {
+		select {
+		case <-exited:
+			return "", onExit()
+		default:
+		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
 			return "", err
@@ -304,6 +462,8 @@ func waitForDevTools(ctx context.Context, port int) (string, error) {
 			}
 		}
 		select {
+		case <-exited:
+			return "", onExit()
 		case <-ctx.Done():
 			return "", fmt.Errorf("chrome's debugging port never answered: %w", ctx.Err())
 		case <-time.After(200 * time.Millisecond):

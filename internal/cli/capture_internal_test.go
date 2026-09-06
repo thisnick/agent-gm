@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -28,10 +29,10 @@ import (
 // This test also pins "no other flag is passed": exactly three arguments, in
 // this order, and nothing resembling --headless or --enable-automation.
 func TestChromeArgvIsExactlyTheThreeArguments(t *testing.T) {
-	c := &Capture{Chrome: "/usr/bin/google-chrome", ProfileDir: "/state/chrome-profile/acct_x"}
-	got := c.args(9222)
+	c := &Capture{Chrome: "/usr/bin/google-chrome"}
+	got := c.args("/tmp/agm-chrome-profile-1", 9222)
 	want := []string{
-		"--user-data-dir=/state/chrome-profile/acct_x",
+		"--user-data-dir=/tmp/agm-chrome-profile-1",
 		"--remote-debugging-port=9222",
 		gm.GaiaCaptureURL,
 	}
@@ -64,36 +65,188 @@ func TestChromeArgvIsExactlyTheThreeArguments(t *testing.T) {
 	}
 }
 
-// The profile Capture.Run creates lives under the state directory at mode
-// 0700, and Run refuses to reuse a looser one.
-func TestCaptureCreatesTheProfileDirAt0700(t *testing.T) {
-	state := t.TempDir()
-	profile := ProfileDir(state, "acct_x")
-	if !strings.HasPrefix(profile, filepath.Join(state, "chrome-profile")) {
-		t.Fatalf("the profile %s is not under the state directory %s", profile, state)
+// The short-lived profile is created at mode 0700 and is gone the moment the
+// capture ends, whatever ended it (D33). A logged-in Google session is not
+// left on the machine, and nothing is written under the state directory.
+//
+// Plant: delete the `defer os.RemoveAll(profileDir)` in Capture.Run and this
+// test fails at "the profile ... still exists". Planted 2026-09-06.
+func TestShortLivedProfileIsRemovedAfterAFailedCapture(t *testing.T) {
+	root := t.TempDir()
+	c := &Capture{
+		Chrome:      filepath.Join(t.TempDir(), "no-such-chrome"),
+		ProfileRoot: root,
+		Timeout:     time.Second,
 	}
+	if _, err := c.Run(context.Background()); err == nil {
+		t.Fatal("Run with no Chrome binary should fail")
+	}
+	assertProfileGone(t, c, root)
+}
 
-	// A profile left world-readable by an older build or a restore is
-	// tightened, not accepted.
-	if err := os.MkdirAll(profile, 0o777); err != nil {
+// A capture the owner cancels -- Ctrl-C, which cancels the context -- also
+// leaves nothing behind.
+func TestShortLivedProfileIsRemovedAfterACancelledCapture(t *testing.T) {
+	root := t.TempDir()
+	chrome := stubChrome(t, "exec sleep 300")
+	ctx, cancel := context.WithCancel(context.Background())
+	c := &Capture{Chrome: chrome, ProfileRoot: root, Timeout: time.Minute}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = c.Run(ctx)
+	}()
+	// Give Run long enough to have made the directory, then cancel -- which
+	// is what Ctrl-C does.
+	waitFor(t, func() bool {
+		entries, err := os.ReadDir(root)
+		return err == nil && len(entries) == 1
+	})
+	cancel()
+	<-done
+	assertProfileGone(t, c, root)
+}
+
+// stubChrome writes an executable shell script standing in for the browser.
+// It is never a real Chrome, and it is always the process this test started.
+func stubChrome(t *testing.T, body string) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the stub browser is a shell script")
+	}
+	path := filepath.Join(t.TempDir(), "stub-chrome")
+	script := "#!/bin/sh\n" + body + "\n"
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	c := &Capture{
-		Chrome:     filepath.Join(t.TempDir(), "no-such-chrome"),
-		ProfileDir: profile,
-		Timeout:    time.Second,
-	}
-	// Run fails at the launch, which is fine: the directory work happens
-	// first and is what this test is about.
-	_, _ = c.Run(context.Background())
+	return path
+}
 
-	fi, err := os.Stat(profile)
+// The successful path leaves nothing behind either. The capture itself is
+// stubbed -- the CDP conversation has its own tests below -- so what is
+// asserted here is exactly the profile's life.
+func TestShortLivedProfileIsRemovedAfterASuccessfulCapture(t *testing.T) {
+	root := t.TempDir()
+	c := &Capture{ProfileRoot: root}
+	var sawDir string
+	got, err := c.runWith(context.Background(), func(_ context.Context, dir string) (map[string]string, error) {
+		sawDir = dir
+		fi, statErr := os.Stat(dir)
+		if statErr != nil {
+			t.Errorf("the profile does not exist during the capture: %v", statErr)
+		} else if fi.Mode().Perm() != 0o700 {
+			t.Errorf("the Chrome profile is mode %o, want 700", fi.Mode().Perm())
+		}
+		return map[string]string{"SID": "FIXTURE-SID"}, nil
+	})
+	if err != nil {
+		t.Fatalf("runWith: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("the capture returned %d cookies", len(got))
+	}
+	if sawDir != c.ProfileDir() {
+		t.Errorf("ProfileDir() = %q, capture saw %q", c.ProfileDir(), sawDir)
+	}
+	assertProfileGone(t, c, root)
+}
+
+func assertProfileGone(t *testing.T, c *Capture, root string) {
+	t.Helper()
+	if c.ProfileDir() == "" {
+		t.Fatal("Capture.Run never recorded a profile directory")
+	}
+	if _, err := os.Stat(c.ProfileDir()); !os.IsNotExist(err) {
+		t.Errorf("the profile %s still exists after the capture (stat err = %v)", c.ProfileDir(), err)
+	}
+	entries, err := os.ReadDir(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o700 {
-		t.Errorf("the Chrome profile is mode %o, want 700", fi.Mode().Perm())
+	if len(entries) != 0 {
+		t.Errorf("the profile root still holds %d entries; the profile is short-lived", len(entries))
 	}
+}
+
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for the condition")
+}
+
+// A Chrome that dies at once is reported as what it was, with its own stderr,
+// rather than as "the debugging port never answered" -- the Slice 1 live-gate
+// finding. Planted 2026-09-06: discard cmd.Stderr and this test fails at
+// "does not carry chrome's stderr".
+func TestChromeEarlyExitIsReportedWithItsStderr(t *testing.T) {
+	root := t.TempDir()
+	chrome := stubChrome(t, "echo 'Xlib: cannot open display :0' >&2\nexit 1")
+	c := &Capture{
+		Chrome:      chrome,
+		ProfileRoot: root,
+		Timeout:     30 * time.Second,
+		Environ:     func(string) string { return "" },
+	}
+	start := time.Now()
+	_, err := c.Run(context.Background())
+	if err == nil {
+		t.Fatal("a Chrome that exits at once must be an error")
+	}
+	if !errors.Is(err, ErrChromeExited) {
+		t.Fatalf("error = %v, want one wrapping ErrChromeExited", err)
+	}
+	if !strings.Contains(err.Error(), "cannot open display") {
+		t.Errorf("the error does not carry chrome's stderr: %v", err)
+	}
+	if strings.Contains(err.Error(), "never answered") {
+		t.Errorf("the error still blames the debugging port: %v", err)
+	}
+	// It must not have waited out the timeout to notice.
+	if time.Since(start) > 20*time.Second {
+		t.Errorf("noticing the exit took %v; it should be immediate", time.Since(start))
+	}
+	assertProfileGone(t, c, root)
+}
+
+// The hint for the common Linux-desktop case: a terminal with no access to
+// the owner's graphical session. Chrome exits at once there and says
+// something an owner does not read as "set XAUTHORITY".
+func TestDisplayHint(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the display hint is a Linux-desktop diagnosis")
+	}
+	env := func(m map[string]string) func(string) string {
+		return func(k string) string { return m[k] }
+	}
+	t.Run("no display at all names both variables and the two ways out", func(t *testing.T) {
+		h := DisplayHint(env(map[string]string{"HOME": "/nonexistent-home"}))
+		for _, want := range []string{"DISPLAY", "WAYLAND_DISPLAY", "--server", "--paste"} {
+			if !strings.Contains(h, want) {
+				t.Errorf("the hint does not mention %q: %s", want, h)
+			}
+		}
+	})
+	t.Run("a display with no authority names XAUTHORITY", func(t *testing.T) {
+		h := DisplayHint(env(map[string]string{"DISPLAY": ":0", "HOME": "/nonexistent-home"}))
+		if !strings.Contains(h, "XAUTHORITY") {
+			t.Errorf("the hint does not mention XAUTHORITY: %s", h)
+		}
+	})
+	t.Run("a complete environment gets no hint", func(t *testing.T) {
+		if h := DisplayHint(env(map[string]string{"DISPLAY": ":0", "XAUTHORITY": "/run/x"})); h != "" {
+			t.Errorf("hint = %q, want none", h)
+		}
+		if h := DisplayHint(env(map[string]string{"WAYLAND_DISPLAY": "wayland-0"})); h != "" {
+			t.Errorf("hint = %q, want none for a Wayland session", h)
+		}
+	})
 }
 
 // F-2, plant R-M4: the read must cover https://messages.google.com as well as
