@@ -27,8 +27,9 @@ Rules:
   unverified for a slice. Live tests are `-tags live` plus `AGENT_GM_LIVE=1`.
 - **You never send a message to a real phone number, for any reason.** Live
   sends belong to the coordinator alone (§13.3, §17). If you believe you need
-  one, report that and stop. Use `internal/gm/fake` and
-  `AGENT_GM_BACKEND=fake`.
+  one, report that and stop. Use `internal/gm/fake` with
+  **both** `AGENT_GM_BACKEND=fake` and `AGENT_GM_ALLOW_FAKE=1` — the server
+  refuses to start with only the first (spec §13.1, §15.1).
 - **Never write a real phone number into this repository** — not in a test,
   a fixture, a doc, a comment or a commit message. This repo is public. Use
   the placeholders `<APPROVED_DIRECT_NUMBER>`, `<APPROVED_GROUP_NUMBER_1>`

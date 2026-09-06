@@ -215,6 +215,8 @@ type Backend interface {
     ListMessages(ctx context.Context, convID string, count int, cursor *Cursor) ([]Message, *Cursor, error)
     ListContacts(ctx context.Context) ([]Contact, error)
     ListTopContacts(ctx context.Context) ([]Contact, error)
+    ContactAvatars(ctx context.Context, ids []string) (map[string][]byte, error)
+    DownloadAvatar(ctx context.Context, url string) ([]byte, error)
 
     // writes
     ResolveConversation(ctx context.Context, numbers []string, groupName string) (ResolveResult, error)
@@ -352,7 +354,8 @@ Google-account pairing errors, all from `pair_google.go`, all mapped in §3.5:
 | `(*Client).ListContacts` | `(ctx) (*gmproto.ListContactsResponse, error)` | the phone's contact list. Request constants are fixed upstream (`i1=1, i2=350, i3=50`). |
 | `(*Client).ListTopContacts` | `(ctx) (*gmproto.ListTopContactsResponse, error)` | 8 most-contacted. Agent GM uses it for `contacts.list?top=true`. |
 | `(*Client).IsBugleDefault` | `(ctx) (*gmproto.IsBugleDefaultResponse, error)` | `.Success` — whether Google Messages is the phone's default SMS app. Surfaced in `GET /v1/health`; a `false` here explains most send failures. |
-| `(*Client).GetParticipantThumbnail` | `(ctx, participantIDs ...string) (*gmproto.GetThumbnailResponse, error)` | avatars for participants. Used only to populate `contacts.avatar_hash`. |
+| `(*Client).GetParticipantThumbnail` / `(*Client).GetContactThumbnail` | `(ctx, ids ...string) (*gmproto.GetThumbnailResponse, error)` | avatars. Behind `Backend.ContactAvatars`; populates `contacts.avatar_hash`. |
+| `(*Client).DownloadAvatar` | `(ctx, url string) ([]byte, error)` | fetches `Conversation.GroupAvatarURL` (`media.go:308-325`). Behind `Backend.DownloadAvatar`. |
 
 `gmproto.ListConversationsRequest_Folder`: `UNKNOWN=0`, `INBOX=1`,
 `ARCHIVE=2`, `SPAM_BLOCKED=5`. `gmproto.Cursor` is
@@ -1823,7 +1826,7 @@ The cursor encodes `(sent_at_ms, id)` so it is stable across equal timestamps.
 | `GET` | `/v1/messages/{message_id}/context` | `before` (default 5, max 100), `after` |
 | `GET` | `/v1/messages/{message_id}/attachments` | metadata only. Folded into `get_message` on MCP (§8.2) |
 | `GET` | `/v1/search/messages` | `q` (required), `mode` (`words` default, `exact`), `conversation_id`, `sender`, `after`, `before`, `has_attachment`, `cursor`, `limit` |
-| `GET` | `/v1/contacts` | `query`, `top`, `cursor`, `limit` |
+| `GET` | `/v1/contacts` | `query`, `top`, `cursor`, `limit`. Returns `{id, display_name, phone, is_top, avatar_hash, updated_at}`. `avatar_hash` is a SHA-256 of the avatar bytes or `null`; there is no avatar *content* route, because Agent GM stores the hash so a caller can detect a change, not the picture |
 | `GET` | `/v1/attachments/{attachment_id}` | metadata + a download ticket (§10) |
 | `GET` | `/v1/attachments/{attachment_id}/content` | bytes. Access token **or** download ticket |
 | `GET` | `/v1/operations/{operation_id}` | `messages:write`. The §6.5 object |
@@ -2884,7 +2887,11 @@ agm completion bash|zsh|fish
 agm version
 ```
 
-**Every `/v1` route parameter has a flag.** `agm messages list` with no
+**Every `/v1` route parameter has a flag**, with one stated exception:
+`GET`/`DELETE /v1/uploads/{id}` have no command, for the same reason they have
+no MCP tool (§8.2) — `agm messages send --file` performs the whole reserve /
+`PUT` / send sequence in one process and never surfaces an `upl_` ID for a
+human to inspect or cancel. `agm messages list` with no
 conversation ID is the account-wide `GET /v1/messages`. `agm pair` covers
 `POST`/`GET`/`DELETE /v1/pairing/*` — abandoning is Ctrl-C, which issues the
 `DELETE`. `agm reconnect` is `POST /v1/session/reconnect`. `agm session
@@ -3420,8 +3427,10 @@ asserts, against that tree and not against Agent GM's own code:
 
 1. Every symbol named in §3.1 exists with the signature stated.
 2. `util.ConfigMessage` equals `2026.9.2` with `V1=4, V2=6`.
-3. The `MessageStatusType` enum in §4.4 covers every value in
-   `conversations.proto` exactly once, with no value unmapped.
+3. §4.4 covers every `MessageStatusType` value in `conversations.proto`
+   **outside 200–279** exactly once, with no value unmapped; every value
+   **inside** 200–279 classifies as `kind='system'` (assertion 12). A value in
+   neither set fails.
 4. `GetOrCreateConversationResponse.Status` still declares only `0, 1, 3`,
    so §3.7's claim that 2 and 4 are unnamed is still true.
 5. `SendMessageResponse.Status` still declares `0..4`.
@@ -3500,7 +3509,7 @@ The reviewer's default assumption is that nothing works.
 **A name lint** (`internal/lint`, run under `devbox run test`) reads the
 catalogue the server actually serves — tool names, descriptions, argument
 names and descriptions, enums, the instructions block — plus every markdown
-page under `docs/` and `plans/`, and fails on a Matrix vocabulary asserted as
+page under `docs/`, and fails on a Matrix vocabulary asserted as
 a live contract: `room`, `portal`, `event_id`, `provider`, `redact`,
 `generation`, `outbox`, **`tombstone`**, a bare `mode` argument, or a `room_`
 prefix.
@@ -3541,8 +3550,16 @@ GitHub Actions, on push and pull request:
 | `image` | build the Dockerfile; on a tag, push to GHCR |
 
 CI installs Devbox and runs the same scripts, so the local and CI environments
-are identical. There is no command in this repository that is not a
-`devbox run <script>`.
+are identical. **Every job in that table is a `devbox run <script>`** —
+including `pin-consistency`, `fixture-validation`, `build-matrix` and `image`,
+which are `devbox.json` scripts calling `scripts/*.sh` exactly as
+`conformance` does. A CI step that shells out to something with no script is a
+step nobody can reproduce locally, and is rejected in review.
+
+`devbox run check` is what a reviewer runs, so it is the aggregate: build,
+vet, `golangci-lint run`, `go test -race`, **`lint-names`** and
+**`no-real-numbers`**. Those two lints are cheap and they guard contracts a
+test suite cannot see.
 
 ---
 
