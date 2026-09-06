@@ -3257,9 +3257,10 @@ the GHCR push, the npm wrapper, `docs/deploy.md`, `CHANGELOG.md`.
 | 3 OAuth and MCP | Opus | **Fable** | Security invariants that fail silently. The reviewer must be able to reason about the replay, rotation and audience rules |
 | 4 packaging | Opus | Opus | Mechanical, but the live gate is real |
 
-Roles are `.claude/agents/implementer.md` and `.claude/agents/reviewer.md`,
-both of which must be updated in Slice 1 to name `plans/AGENT_GM_SPEC.md`
-rather than the bootstrap's `plans/AGENT_MX_PLAN.md`.
+Roles are `.claude/agents/implementer.md` and `.claude/agents/reviewer.md`.
+Both were rewritten for Agent GM alongside this spec: they name this file as
+the contract, carry the pin rule, the never-send-live rule, the plant
+discipline, and the standing prohibitions below.
 
 **Protocol.** The implementer commits small reviewable slices on a working
 branch and sends the reviewer a message with the commit SHA, what it covers,
