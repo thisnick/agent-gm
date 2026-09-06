@@ -708,3 +708,191 @@ old user alerts dropped by the library, old messages delivered with
 (`pair.go:50-51`) · `ClientReady`, `PingFailed{Error,ErrorCount}`,
 `AccountChange{…,IsFake}` shapes (`events/ready.go:11-14,107-110`,
 `events/ready.go:22-25`) · every `MessageStatusType` number cited in §4.4.
+
+---
+
+# Re-review — spec at `b485ce4` (4243 lines, 11 commits)
+
+Method: rebased onto the rewritten `origin/main`, re-read §§2-3, 8-13, 15-18,
+and re-verified **every** new `path:line` citation in §3 against
+`/home/nick/code/mautrix-gmessages` at `be48a58`.
+
+## Verdict
+
+**Accept with required changes.** All 33 findings were engaged; 28 are fully
+closed, 4 partially, 1 has a residual. The §3 rewrite is the strongest part of
+the change: I checked roughly forty new citations and all but two land exactly
+on the symbol claimed, and several fixes are better than what I asked for —
+`config_version_stale` is now correctly framed as Agent GM's own diagnosis with
+the ConfigVersion diff as the whole detection rule, and unnamed
+`GetOrCreateConversation` statuses became `google_undocumented_status` carrying
+the bare integer rather than a name the spec made up.
+
+The required changes are the ones the **new** D25 privilege concentration
+demands (R-1 below), plus one false universal claim that a named Slice 3 test
+asserts (R-2). Neither blocks Slice 1.
+
+## Section 3 — re-verified against `be48a58`
+
+| Finding | Verdict | Spec line | Library check |
+|---|---|---|---|
+| F-1 status 4 | **closed** | :817-834 | claim withdrawn; `gmproto/client.pb.go:181-183` enum ✓, `startchat.go:233,238` ✓ |
+| F-2 `BrowserActive` | **closed** | :665-668, :685 | named as never-emitted; `BROWSER_ACTIVE(2)` row matches `handlegmessages.go:301-327` ✓ |
+| F-3 `events.QR` | **closed** | :467-470 | zero emitters ✓ |
+| F-4 gaia device pick | **closed** | :322, :505-518 | `client.go:143` = `GaiaHackyDeviceSwitcher int` ✓; `pair_google.go:364` = `primaryDevices[…%len]` ✓; `:385-397` wrap ✓; `--device-index` added |
+| F-5 cookie refresh | **closed** | :553-566 | `login.go:246-289`, `:249`, `:268`, `:289` all ✓; `--refresh-cookies` + `pairing_wrong_account` |
+| F-6 cookie set | **closed** | :476-497 | all seven + domains match `login.go:200-210` ✓; OSID host-scoping called out |
+| F-7 cookies retained | **closed** | :540-551 | five call sites ✓; blast radius stated in §3.2, §3.3, §11.4, §12.1 |
+| F-8 401/403 | **closed** | :641-651 | `longpoll.go:539-547` ✓; `errors.As`, "never on the string" |
+| F-9 dedup loses batches | **closed** | :698-710, D26 :4138, §5.4 sweep | `event_handler.go:263-266,272-275` ✓; `core.reconcile(since)`, 15 m interval, three triggers, health fields |
+| F-10 status ranges | **closed** | :836-846 | 1-27 / 100-118 / 200-279 / 300 ✓ (`OUTGOING_FAILED_TO_ENCRYPT=27` is the max) |
+| F-11 device slot | **closed** | :568-579 | eviction claim deleted |
+| F-12 phone numbers | **closed** | :3315-3326, :3597 | scrubbed from the tree **and from history** (`git log --all -S` finds nothing); `.gitignore` + `no-real-numbers` CI job |
+| F-13 `TmpID` | **closed** | :400-410 | `util/func.go:9-12` ✓; four echo cites ✓; `operations.tmp_id` |
+| F-14 reaction enum | **closed** | :855-897 | `conversations.proto:70-85` ✓; `emojitype.go:25-26,53-54` ✓; `{"emoji": null, "type": "emotify"}` |
+| F-15 devbox | **closed** | `devbox.json` | `AGENT_GM_DATA_DIR`; `-tags live`; `conformance`, `gen-secret`, `lint-names`, `no-real-numbers`; `openssl` |
+| F-16 `PhoneNotResponding` | **closed** | :653-656 | `longpoll.go:72-78` is exactly `!firstPingDone \|\| timeouts >= alertTimeoutCount` ✓ |
+| F-17 `FAILURE_4` | **closed** | :373 | `connector/errors.go:41-42` ✓ |
+
+Two citation drifts, both harmless to the meaning but wrong as addresses:
+`event_handler.go:186-200` is cited for `deduplicateUpdate`, which lives at
+`:168-181` (`:186-200` is `HandleRPCMsg`); `events/ready.go:75-83` is cited for
+`RequestError.Is`, which lives at `:69-77`. §3 declares its citations to be the
+contract, so fix the addresses.
+
+## The rest
+
+F-18, F-19, F-20, F-21, F-22, F-24, F-25, F-26, F-29, F-30, F-31, F-32:
+**closed**, each with a located line. Highlights: D25 gives the admin session
+messaging scopes so Slice 2 can test itself; §2.3 gained `SessionID`,
+`FetchConfig`, `IsDefaultSMSApp`, `GetConversationType`, `ListTopContacts`,
+`SetTyping`, `UpdateConversation` and a `ResolveResult` carrying the raw
+status; `PATCH /v1/conversations/{id}` makes folder/pin/unread writable;
+`download_tickets` became a table with `redemptions`/`max_redemptions` (D24)
+because a signed blob cannot count; reaction uniqueness is now
+`(message_id, participant_id)` (D23) and `react_` is addressable; the lint
+exempts `plans/` in full so it no longer fails its own spec.
+
+**F-23 — partial.** Eight of nine closed. Still open: the conversation DTO
+(:1852-1865) has no deleted flag, though `include_deleted` is a filter on both
+`GET /v1/conversations` (:1814) and `list_conversations` (:2017). `messages`
+got `is_deleted` (:1893); conversations did not.
+
+**F-27 — partial, and this is R-2.** :2005-2011 names three deliberately
+excluded routes and then asserts "**Every other `/v1` route has a tool**". That
+is false for `/v1/auth/whoami` and `/v1/auth/logout` (:1767-1768, both
+`messages:read`, so no admin argument excuses them), `/v1/auth/admin-session`,
+`/v1/auth/refresh`, `/v1/session/events`, `/v1/session/reconnect`,
+`/v1/session/unpair`, all four `/v1/pairing/*`, and every `/v1/admin/*` route.
+Slice 3 test 16 (:3991) is a two-way table test over exactly these two
+inventories, so it fails as written. Also **:2001 says "Nineteen tools" and the
+three tables list 20** (10 + 8 + 2), which is what Slice 3 test 14 (:3982)
+asserts.
+
+**F-28 — 18 of 21 rows closed.** Not closed: the millisecond-precision rule was
+*strengthened* to name `expires_at` explicitly (:1225-1226) while the two
+examples still read `"2026-09-06T10:11:07Z"` and `"…T12:11:07Z"` (:2599,
+:2635) — the contradiction is now sharper than before. And `att_` is still a
+UUIDv5 in §4.1 (:913) but rendered `att_01k4…` five times in §10.1, the ULID
+shape of `upl_`. Partial: `AGENT_GM_ALLOW_FAKE` reached the config table
+(:3596) but §13.1 (:3257) and `.claude/agents/implementer.md:30-31` still say
+`AGENT_GM_BACKEND=fake` alone — an implementer following either will find the
+server refuses to start.
+
+**F-33 — closed** (:2838-2845, "every `/v1` route parameter has a flag"), with
+one unstated exception: `GET`/`DELETE /v1/uploads/{id}` are excluded from MCP
+explicitly but not from the CLI.
+
+## D25 — does the admin session reopen a hole? (R-1, required)
+
+D25's reasoning is sound and its blast radius is stated honestly. What it
+changes is that `POST /v1/auth/admin-session` is now the single most valuable
+endpoint in the system: one successful secret guess yields `admin` **plus** all
+three messaging scopes, and via `/v1/admin/diagnostics` the raw Google view.
+
+Already adequate: ≥43-character secret enforced by the server (:3085);
+environment-only, excluded from process arguments, logs and audit payloads
+(:3098); a failure budget of 5 / 15 min per source and 20 / 15 min globally
+with exponential cooldown (§12.3); rotating the secret revokes every prior
+admin authorization on next start (:3085); the two credential paths never cross
+and neither crossing attempt revokes anything (:2516-2520); `admin` still never
+enrollable; token hashes only, never values (:2500). `session.enc` remains
+unreachable from any API (:3.3), so an admin session cannot exfiltrate the
+Google cookies of F-7.
+
+Five gaps the new concentration requires closing before Slice 2:
+
+1. **No constant-time comparison is specified anywhere.** `grep -in
+   "constant.time\|subtle"` over the spec returns nothing. This is now the
+   highest-value check in the system. §12.1 should require
+   `subtle.ConstantTimeCompare`, with a test.
+2. **No TTL for admin-session tokens.** §9.6's table is entirely `oauth.*`
+   settings, and §9.6 itself says the admin bootstrap "is a separate credential
+   path". So the strongest credential has no stated access-token TTL and no
+   refresh idle/absolute TTL. Add `admin.access_token_ttl` and
+   `admin.refresh_token_{idle,absolute}_ttl` to §15.1 with the OAuth defaults.
+3. **`/v1/auth/refresh` sits outside §9.8.** §9.8 budgets unauthenticated
+   endpoints and names only `/oauth/revoke` and the `refresh_token` grant,
+   including a durable 30-invalid-tokens / 15-min limit. `/v1/auth/refresh`
+   (:1766) accepts a bearer value from an unauthenticated caller in exactly the
+   same shape and gets only the generic per-source limit. Extend §9.8 to it by
+   name.
+4. **Admin-session mint and failure are not audited.** §12.4 (:3190-3196) audits
+   enrollment, authorization requests, revocations and refresh-token reuse — but
+   not the mint of the credential that outranks all of them. Add
+   `auth.admin_session_minted` and `auth.admin_secret_failed` (source, outcome
+   and granted scopes; never the secret).
+5. **Narrowing may be undone by a refresh.** §9.6 says an OAuth refresh's
+   `scope` "may only narrow"; §7.4's `/v1/auth/refresh` row (:1766) says only
+   "rotates it". State that an admin refresh may not widen beyond the scopes the
+   session was minted with — otherwise the narrowing that Slice 2's exit-3 and
+   exit-4 tests depend on is one refresh away from undone.
+
+## Rubric — re-score
+
+**2 / 2.** Every name I named is fixed, and fixed at the root rather than
+renamed: `send_mode_raw` is internal and never served, derived into
+`capabilities` (:968, :1304); `tombstone` → `kind="system"` / `include_system`
+and added to the lint's ban list (:3434); `fts5` is gone and search `mode` is
+`words|exact`; `delivery_state_raw` is admin-only, surfaced solely by
+`/v1/admin/diagnostics` (:1031, :1942); `queued` collapsed into `sending`
+because Google's UI says *Sending…* (:1235) and there is no queue (:1569);
+`inbox` → `active`; `type` → `sms_mms|rcs`, so MMS is nameable; `unreact` gone,
+`mark-read`/`add-reaction`/`remove-reaction` identical across CLI, MCP and REST
+(:2852-2854); `participants` and `recipients` explicitly disambiguated
+(:1873-1876); `part_` added to the instructions block's ID list (:2153).
+
+## Smaller residuals
+
+- §13.6 (:3473) still claims "there is no command in this repository that is not
+  a `devbox run <script>`", but `pin-consistency`, `fixture-validation`,
+  `build-matrix` and `image` have no script — the same defect that was fixed for
+  `conformance` and `gen-secret`.
+- §13.5 says the lint reads markdown "under `docs/` **and `plans/`**" (:3432)
+  and then that markdown is checked "under `docs/` **only**" (:3444).
+- §13.4 assertion 3 (:3353) still reads absolutely ("no value unmapped"); the
+  200-279 carve-out appears only in assertion 12 and §4.4.
+- `devbox run check` — the command `.claude/agents/reviewer.md` tells a reviewer
+  to run — does not include `no-real-numbers`. `lint-names` is covered
+  incidentally because `go test ./...` runs `TestNameLint`.
+- §3.2 (:493) and §11.4 say all seven cookies are `httpOnly`. `APISID` and
+  `SAPISID` are not — they are readable by JavaScript, which is how Google's own
+  web apps compute the `SAPISIDHASH`. The operative conclusion is unchanged
+  (five of the seven are `httpOnly`, so CDP is still required), but the sentence
+  will mislead anyone reasoning about the capture.
+- `GetParticipantThumbnail` and `DownloadAvatar` are named in §3.1 as the source
+  of `contacts.avatar_hash` and `conversations.group_avatar_url`, but neither has
+  a `gm.Backend` method, which D10 says means those fields cannot be served. The
+  contacts DTO is not defined anywhere, so this is latent rather than live.
+
+## Pairing UX
+
+§11.4 adopts the assessment in full and correctly: the dedicated
+`--user-data-dir` is called mandatory rather than stylistic, the capture waits
+for `OSID` to exist before reading, it reads over
+`Storage.getCookies`/`Network.getCookies` from **both** `messages.google.com`
+and `www.google.com`, `__Secure-1PSIDTS` is read last because it rotates, the
+debugging port is loopback-bound on a random port and Chrome is killed on
+completion, and the new-profile 2FA challenge is named as a one-time cost rather
+than a failure. QR is primary (D19). Nothing further required beyond the
+`httpOnly` correction above.
