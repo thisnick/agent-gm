@@ -71,6 +71,7 @@ var exitCodes = map[Code]int{
 	CodePairingCancelled:         ExitServerFailure,
 	CodePairingTimeout:           ExitServerFailure,
 	CodePairingWrongAccount:      ExitServerFailure,
+	CodePairingNoAccount:         ExitServerFailure,
 	CodeNotDefaultSMSApp:         ExitServerFailure,
 	CodeConfigVersionStale:       ExitServerFailure,
 	CodeGoogleError:              ExitServerFailure,

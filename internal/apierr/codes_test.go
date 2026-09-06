@@ -31,6 +31,7 @@ var specTable = []specRow{
 	{"pairing_timeout", 409, RetryNo},
 	{"pairing_init_timeout", 409, RetryYes},
 	{"pairing_wrong_account", 409, RetryNo},
+	{"pairing_no_account", 409, RetryNo},
 	{"unsupported_capability", 409, RetryNo},
 	{"payload_too_large", 413, RetryNo},
 	{"media_unsupported_type", 415, RetryNo},

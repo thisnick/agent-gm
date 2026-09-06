@@ -2013,7 +2013,10 @@ recognise, because those are the surfaces third-party MCP clients drive.
 **Text normalisation is never silent.** A `reason` or a `filename` carrying
 control characters or exceeding its length bound is accepted, cleaned, and
 reported in `warnings` as `reason_normalized`, `reason_truncated`,
-`filename_normalized` or `filename_truncated`.
+`filename_normalized` or `filename_truncated`. The bounds are **500 runes for
+a `reason` and 255 for a `filename`** — 255 because that is the longest name
+every filesystem Agent GM writes a cached file on will take, and a value that
+cannot be written is not one worth keeping whole.
 
 **The idempotency key has exactly two transports** (§6.3): the
 `Idempotency-Key` header, or the `client_request_id` body field. **There is no
@@ -2039,6 +2042,7 @@ JSON body for it (§7.6).
 | `pairing_timeout` | 409 | no | no response within the window |
 | `pairing_init_timeout` | 409 | yes | `GaiaInitTimeout` (20s) elapsed. Carries `details.multiple_devices` when the account had more than one candidate. There is no `details.device_count`: the count is not on the error (§3.5, D31) |
 | `pairing_wrong_account` | 409 | no | a cookie refresh whose Google account differs from the paired one (§3.2) |
+| `pairing_no_account` | 409 | no | the pairing completed but `AuthData.Mobile.SourceID` was empty, so there is no account address to derive an `acct_` ID from (§3.2, §4.1). Nothing is created — §16 Slice 2 test 38 asserts it |
 | `unsupported_capability` | 409 | no | the action cannot apply here; `details.reason` from §7.7 |
 | `payload_too_large` | 413 | no | body over 1 MiB, or media over `media.upload_max_bytes` |
 | `media_unsupported_type` | 415 | no | mime not in `libgm.MimeToMediaType` |

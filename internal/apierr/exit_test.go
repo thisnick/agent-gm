@@ -33,6 +33,7 @@ var specExit = map[string]int{
 	"pairing_cancelled":          10,
 	"pairing_timeout":            10,
 	"pairing_wrong_account":      10,
+	"pairing_no_account":         10,
 	"not_default_sms_app":        10,
 	"config_version_stale":       10,
 	"google_error":               10,

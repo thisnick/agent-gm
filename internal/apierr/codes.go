@@ -37,6 +37,7 @@ const (
 	CodePairingTimeout           Code = "pairing_timeout"
 	CodePairingInitTimeout       Code = "pairing_init_timeout"
 	CodePairingWrongAccount      Code = "pairing_wrong_account"
+	CodePairingNoAccount         Code = "pairing_no_account"
 	CodeUnsupportedCapability    Code = "unsupported_capability"
 	CodePayloadTooLarge          Code = "payload_too_large"
 	CodeMediaUnsupportedType     Code = "media_unsupported_type"
@@ -91,6 +92,7 @@ var table = map[Code]spec{
 	CodePairingTimeout:           {http.StatusConflict, RetryNo},
 	CodePairingInitTimeout:       {http.StatusConflict, RetryYes},
 	CodePairingWrongAccount:      {http.StatusConflict, RetryNo},
+	CodePairingNoAccount:         {http.StatusConflict, RetryNo},
 	CodeUnsupportedCapability:    {http.StatusConflict, RetryNo},
 	CodePayloadTooLarge:          {http.StatusRequestEntityTooLarge, RetryNo},
 	CodeMediaUnsupportedType:     {http.StatusUnsupportedMediaType, RetryNo},

@@ -30,15 +30,15 @@ func TestDecodeQueryRejectsEverythingItDoesNotDefine(t *testing.T) {
 	})
 
 	refused := []string{
-		"_",                  // the cache buster the spec names explicitly
-		"directon",           // the misspelling the rule exists for
-		"client_request_id",  // has two transports, neither of them a query
-		"Direction",          // parameters are case sensitive
-		"limit ",             // trailing space is a different name
-		"account_id[]",       // array syntax is not a parameter this API has
-		"Idempotency-Key",    // a header is not a query parameter
-		"__proto__",          //
-		"format",             //
+		"_",                 // the cache buster the spec names explicitly
+		"directon",          // the misspelling the rule exists for
+		"client_request_id", // has two transports, neither of them a query
+		"Direction",         // parameters are case sensitive
+		"limit ",            // trailing space is a different name
+		"account_id[]",      // array syntax is not a parameter this API has
+		"Idempotency-Key",   // a header is not a query parameter
+		"__proto__",         //
+		"format",            //
 	}
 	for _, name := range refused {
 		t.Run("refuses "+name, func(t *testing.T) {
