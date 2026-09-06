@@ -875,55 +875,51 @@ in the pinned tree, it says so and points at §18.1.
   with `unsafe_trace=true` (§12.2).
 
 ## 4. Data model and identifiers
-
 ### 4.1 Identifier scheme
 
 Public IDs are opaque, URL-safe, stable strings with a typed prefix. A caller
 never sees a raw Google conversation ID, message ID or participant ID on a
-public surface; those live in internal `source_*` columns and in
-`admin`-gated diagnostics.
+public surface; those live in internal `source_*` columns and are exposed only
+under `admin` on `GET /v1/admin/diagnostics`.
 
-| Prefix | Object | Derivation |
-|---|---|---|
-| `conv_` | conversation | UUIDv5(ns, `account_key` ‖ `"conversation"` ‖ Google conversation ID) |
-| `msg_` | message | UUIDv5(ns, `account_key` ‖ `"message"` ‖ Google conversation ID ‖ Google message ID) |
-| `att_` | attachment (one media part of a message) | UUIDv5(ns, message ID ‖ part index ‖ Google media ID) |
-| `react_` | reaction | UUIDv5(ns, message ID ‖ participant ID ‖ fully-qualified emoji) |
-| `contact_` | contact | UUIDv5(ns, `account_key` ‖ `"contact"` ‖ Google participant ID) |
-| `part_` | participant of a conversation | UUIDv5(ns, conversation ID ‖ Google participant ID) |
-| `op_` | operation | UUIDv7 (locally created) |
-| `upl_` | upload reservation | UUIDv7 |
-| `authreq_` | pending OAuth authorization request | UUIDv7 |
-| `auth_` | active authorization (grant) | UUIDv7 |
-| `client_` | registered OAuth client | UUIDv7 |
-| `enroll_` | enrollment code record | UUIDv7 |
-| `req_` | request ID, in every response envelope | UUIDv7, not stored |
+| Prefix | Object | Shape | Derivation |
+|---|---|---|---|
+| `conv_` | conversation | UUIDv5 | ns, `account_key`, `"conversation"`, Google conversation ID |
+| `msg_` | message | UUIDv5 | ns, `account_key`, `"message"`, Google conversation ID, Google message ID |
+| `att_` | attachment (one media part) | UUIDv5 | message ID, part index, Google media ID |
+| `react_` | reaction | UUIDv5 | message ID, participant ID, **canonical `EmojiType.Unicode()`** (§3.7); for `CUSTOM` the caller's unicode after NFC normalisation; for a type with no unicode, the `EmojiType` name |
+| `contact_` | contact | UUIDv5 | ns, `account_key`, `"contact"`, Google participant ID |
+| `part_` | participant of a conversation | UUIDv5 | conversation ID, Google participant ID |
+| `op_` | operation | UUIDv7 | locally created |
+| `upl_` | upload reservation | UUIDv7 | |
+| `authreq_` | pending OAuth authorization request | UUIDv7 | |
+| `auth_` | active authorization (grant) | UUIDv7 | |
+| `client_` | registered OAuth client | UUIDv7 | |
+| `enroll_` | enrollment code record | UUIDv7 | |
+| `req_` | request ID, in every envelope | UUIDv7 | not stored |
 
 Rules:
 
 - **One frozen namespace UUID**, declared once in `internal/store/ids.go` as
-  `IDNamespace`, never changed. Changing it renames every object in the world.
-- **`account_key` is in every derivation**, even though there is exactly one
-  account. It is `SHA-256(AuthData.Mobile.SourceID)` truncated to 16 bytes,
-  captured at pair time and stored in `server_meta`. This is carried over from
-  Agent MX deliberately: it means a database rebuilt from Google reproduces the
-  same IDs, and it means a *different* phone can never produce a colliding ID.
-  **Re-pairing the same phone reuses the same `account_key`, so conversations
-  and messages keep their IDs across a re-pair.** Pairing a different phone
-  produces a completely different ID space, which is the correct outcome.
-- Deterministic (UUIDv5) IDs are used for everything derived from Google, so a
-  wiped database that is re-backfilled hands agents the same IDs they had
-  before. UUIDv7 is used for everything Agent GM itself creates.
+  `IDNamespace`, never changed.
+- **`account_key` is in every root derivation** — `conv_`, `msg_` and
+  `contact_`. `att_`, `react_` and `part_` inherit it transitively through
+  their parent. It is `SHA-256(AuthData.Mobile.SourceID)` truncated to 16
+  bytes, captured at pair time and stored in `server_meta`. **Re-pairing the
+  same phone reuses the same `account_key`, so every ID survives a re-pair**;
+  a different phone produces a disjoint ID space, which is correct.
+- UUIDv5 for everything derived from Google, so a wiped and re-backfilled
+  database hands agents the same IDs. UUIDv7 for everything Agent GM creates.
 - An ID with the wrong prefix for the parameter is `invalid_request` naming the
-  parameter and the expected prefix — **never `not_found`**, which would read
-  as "that thing is gone".
-- A raw Google ID presented where an Agent GM ID is expected is
-  `invalid_request` with the same message. There are no aliases and no
-  fallbacks.
+  parameter and the expected prefix — **never `not_found`**. A raw Google ID is
+  the same.
+- **`react_` IDs are addressable.** `DELETE /v1/reactions/{reaction_id}` and
+  the `reaction_id` argument of `remove_reaction` accept them, so a caller that
+  read a reaction can remove it without re-deriving the emoji (§7.6).
 
 ### 4.2 SQLite schema
 
-One database file, `$AGENT_GM_DATA_DIR/agent-gm.sqlite3`. Opened with
+One database file, `$AGENT_GM_DATA_DIR/agent-gm.sqlite3`, opened with
 `journal_mode=WAL`, `foreign_keys=ON`, `busy_timeout=5000`,
 `synchronous=NORMAL`. One writer goroutine; a read-only pool for queries.
 
@@ -933,33 +929,37 @@ CREATE TABLE server_meta (
     key            TEXT PRIMARY KEY,
     value          TEXT NOT NULL
 );
--- keys: account_key, phone_id, schema_version_note, pending_reprocess,
---       upstream_commit, config_version_compiled, session_state,
---       backfill_complete_at
+-- keys: account_key, phone_id, gaia_dest_reg_uuid, gaia_device_last_seen_ms,
+--       pending_reprocess, upstream_commit, config_version_compiled,
+--       session_state, paired_at_ms, last_event_at_ms, last_sweep_at_ms,
+--       backfill_complete_at_ms, mcp_session_id
 
 -- conversations --------------------------------------------------------------
 CREATE TABLE conversations (
     id                     TEXT PRIMARY KEY,          -- conv_...
     source_id              TEXT NOT NULL UNIQUE,      -- Google conversationID
-    name                   TEXT,                      -- may be empty for DMs
+    name                   TEXT,
     is_group               INTEGER NOT NULL DEFAULT 0,
-    conversation_type      TEXT NOT NULL,             -- unknown|sms|rcs
-    send_mode              TEXT NOT NULL,             -- auto|xms|xms_latch
-    folder                 TEXT NOT NULL DEFAULT 'inbox', -- inbox|archive|spam_blocked
+    conversation_type      TEXT NOT NULL,             -- unknown|sms_mms|rcs
+    send_mode_raw          TEXT NOT NULL,             -- internal; never served
+    folder                 TEXT NOT NULL DEFAULT 'active', -- active|archived|spam_blocked
     unread                 INTEGER NOT NULL DEFAULT 0,
     pinned                 INTEGER NOT NULL DEFAULT 0,
     read_only              INTEGER NOT NULL DEFAULT 0,
-    default_outgoing_id    TEXT,                      -- participantID to send as
-    latest_message_id      TEXT,                      -- msg_... , nullable
-    last_activity_ms       INTEGER NOT NULL,          -- ms since epoch
+    force_rcs_eligible     INTEGER NOT NULL DEFAULT 0, -- derived, see 4.6
+    default_outgoing_id    TEXT,
+    latest_message_id      TEXT,
+    last_activity_ms       INTEGER NOT NULL,
     group_avatar_url       TEXT,
     sim_payload_json       TEXT,                      -- opaque, re-sent verbatim
-    deleted_at_ms          INTEGER,                   -- set by delete-for-me
+    deleted_at_ms          INTEGER,
     created_at_ms          INTEGER NOT NULL,
     updated_at_ms          INTEGER NOT NULL
 );
-CREATE INDEX conversations_activity ON conversations(last_activity_ms DESC, id);
-CREATE INDEX conversations_folder   ON conversations(folder, last_activity_ms DESC);
+CREATE INDEX conversations_activity ON conversations(last_activity_ms DESC, id DESC);
+CREATE INDEX conversations_folder   ON conversations(folder, last_activity_ms DESC, id DESC);
+CREATE INDEX conversations_name     ON conversations(name COLLATE NOCASE);
+CREATE INDEX conversations_filters  ON conversations(conversation_type, is_group, unread, deleted_at_ms);
 
 -- participants ---------------------------------------------------------------
 CREATE TABLE participants (
@@ -971,12 +971,14 @@ CREATE TABLE participants (
     first_name        TEXT,
     phone_e164        TEXT,
     formatted_number  TEXT,
-    identifier_type   TEXT,                           -- phone|email|unknown|...
+    identifier_type   TEXT,
     is_me             INTEGER NOT NULL DEFAULT 0,
     is_visible        INTEGER NOT NULL DEFAULT 1,
     UNIQUE (conversation_id, source_id)
 );
 CREATE INDEX participants_phone ON participants(phone_e164);
+CREATE INDEX participants_name  ON participants(display_name COLLATE NOCASE);
+CREATE INDEX participants_conv  ON participants(conversation_id);
 
 CREATE TABLE contacts (
     id            TEXT PRIMARY KEY,                   -- contact_...
@@ -988,78 +990,90 @@ CREATE TABLE contacts (
     updated_at_ms INTEGER NOT NULL
 );
 CREATE INDEX contacts_phone ON contacts(phone_e164);
+CREATE INDEX contacts_name  ON contacts(display_name COLLATE NOCASE);
+CREATE INDEX contacts_top   ON contacts(is_top) WHERE is_top = 1;
 
 -- messages -------------------------------------------------------------------
 CREATE TABLE messages (
     id                  TEXT PRIMARY KEY,             -- msg_...
     conversation_id     TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
     source_id           TEXT NOT NULL,                -- Google messageID
-    kind                TEXT NOT NULL,                -- message|tombstone
+    kind                TEXT NOT NULL,                -- message|system
     direction           TEXT NOT NULL,                -- incoming|outgoing
-    sender_participant  TEXT,                         -- part_... , null for system
-    text                TEXT,                         -- concatenated text parts
+    sender_participant  TEXT,
+    text                TEXT,
     subject             TEXT,
     delivery_state      TEXT NOT NULL,                -- see 4.4
-    delivery_state_raw  INTEGER NOT NULL,             -- the numeric MessageStatusType
-    delivery_error      TEXT,                         -- Message.MessageStatus.errMsg
-    reply_to_message_id TEXT,                         -- msg_... , nullable
-    operation_id        TEXT,                         -- op_... , outgoing only
-    tmp_id              TEXT,                         -- the TmpID we sent, for echo match
+    delivery_state_raw  INTEGER NOT NULL,             -- numeric MessageStatusType; admin-only
+    delivery_error      TEXT,
+    reply_to_message_id TEXT,
+    operation_id        TEXT,
+    tmp_id              TEXT,                         -- the bare UUID we sent (3.1)
     is_deleted          INTEGER NOT NULL DEFAULT 0,
-    sent_at_ms          INTEGER NOT NULL,             -- Google timestamp, us -> ms
+    sent_at_ms          INTEGER NOT NULL,
     ingested_at_ms      INTEGER NOT NULL,
-    content_hash        TEXT NOT NULL,                -- sha256 of canonical content
+    updated_at_ms       INTEGER NOT NULL,             -- serves delivery.updated_at
+    content_hash        TEXT NOT NULL,
     UNIQUE (conversation_id, source_id)
 );
-CREATE INDEX messages_conv_time ON messages(conversation_id, sent_at_ms DESC, id DESC);
-CREATE INDEX messages_time      ON messages(sent_at_ms DESC, id DESC);
-CREATE INDEX messages_tmp_id    ON messages(tmp_id) WHERE tmp_id IS NOT NULL;
+CREATE INDEX messages_conv_time   ON messages(conversation_id, sent_at_ms DESC, id DESC);
+CREATE INDEX messages_time        ON messages(sent_at_ms DESC, id DESC);
+CREATE INDEX messages_kind_state  ON messages(kind, delivery_state, sent_at_ms DESC, id DESC);
+CREATE INDEX messages_sender      ON messages(sender_participant, sent_at_ms DESC, id DESC);
+CREATE INDEX messages_tmp_id      ON messages(tmp_id) WHERE tmp_id IS NOT NULL;
 
 CREATE VIRTUAL TABLE messages_fts USING fts5(
     text, subject, content='messages', content_rowid='rowid', tokenize='unicode61'
 );
+-- Both search modes use this index. `words` tokenises the query and ANDs the
+-- terms; `exact` runs the same query and then filters the page in SQL by
+-- substring, so neither mode is an unindexed table scan (7.5).
 
 -- attachments ----------------------------------------------------------------
 CREATE TABLE attachments (
     id                 TEXT PRIMARY KEY,              -- att_...
     message_id         TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
     part_index         INTEGER NOT NULL,
-    media_id           TEXT,                          -- Google mediaID, may be empty
+    media_id           TEXT,
     thumbnail_media_id TEXT,
-    decryption_key     BLOB,                          -- encrypted at rest, see 4.5
+    decryption_key     BLOB,                          -- encrypted at rest, 4.5
     filename           TEXT,
     mime_type          TEXT,
-    media_format       TEXT,                          -- gmproto MediaFormats name
+    media_format       TEXT,
     size_bytes         INTEGER,
     width              INTEGER,
     height             INTEGER,
     download_state     TEXT NOT NULL,                 -- available|pending|failed|unavailable
-    cache_path         TEXT,                          -- relative to media-cache/objects
-    sha256             TEXT,                          -- of decrypted bytes, nullable
+    sha256             TEXT,
     UNIQUE (message_id, part_index)
 );
+CREATE INDEX attachments_message ON attachments(message_id);
 
 -- reactions ------------------------------------------------------------------
 CREATE TABLE reactions (
     id              TEXT PRIMARY KEY,                 -- react_...
     message_id      TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
-    participant_id  TEXT NOT NULL,                    -- part_...
-    emoji           TEXT NOT NULL,                    -- fully-qualified unicode
-    emoji_type      TEXT NOT NULL,                    -- LIKE|LOVE|...|CUSTOM
+    participant_id  TEXT NOT NULL,
+    emoji           TEXT,                             -- canonical Unicode(), NULL when the type has none
+    emoji_type      TEXT NOT NULL,                    -- like|love|...|custom|emotify
     is_mine         INTEGER NOT NULL DEFAULT 0,
     updated_at_ms   INTEGER NOT NULL,
-    UNIQUE (message_id, participant_id, emoji)
+    -- One reaction per person per message: Google's picker is single-select
+    -- and an add over an existing one is SWITCH, not a second entry (7.6).
+    UNIQUE (message_id, participant_id)
 );
+CREATE INDEX reactions_message ON reactions(message_id);
 
 -- operations (idempotency + status, NOT an outbox) ---------------------------
 CREATE TABLE operations (
     id                    TEXT PRIMARY KEY,           -- op_...
-    kind                  TEXT NOT NULL,              -- send_text|send_media|react|...
+    kind                  TEXT NOT NULL,
     authorization_id      TEXT NOT NULL,
     idempotency_key       TEXT NOT NULL,
-    request_fingerprint   TEXT NOT NULL,              -- sha256 of canonical body
+    request_fingerprint   TEXT NOT NULL,
     conversation_id       TEXT,
-    message_id            TEXT,                       -- filled by the echo
+    message_id            TEXT,
+    tmp_id                TEXT,                       -- bare UUID sent as TmpID
     status                TEXT NOT NULL,              -- see 6.4
     terminal              INTEGER NOT NULL DEFAULT 0,
     terminal_at_ms        INTEGER,
@@ -1067,13 +1081,26 @@ CREATE TABLE operations (
     error_code            TEXT,
     error_message         TEXT,
     error_retryable       INTEGER,
-    google_status_raw     INTEGER,                    -- SendMessageResponse.Status
+    google_status_raw     INTEGER,                    -- admin-only
     request_payload_json  TEXT NOT NULL,              -- redacted: no bodies
     created_at_ms         INTEGER NOT NULL,
     updated_at_ms         INTEGER NOT NULL,
     UNIQUE (authorization_id, kind, idempotency_key)
 );
 CREATE INDEX operations_pending ON operations(status) WHERE terminal = 0;
+CREATE INDEX operations_caller  ON operations(authorization_id, created_at_ms DESC);
+CREATE INDEX operations_tmp_id  ON operations(tmp_id) WHERE tmp_id IS NOT NULL;
+
+-- backfill progress ----------------------------------------------------------
+CREATE TABLE backfill_state (
+    conversation_id  TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+    cursor_item_id   TEXT,                            -- gmproto.Cursor.lastItemID
+    cursor_ts_us     INTEGER,                         -- gmproto.Cursor.lastItemTimestamp
+    oldest_seen_ms   INTEGER,
+    messages_done    INTEGER NOT NULL DEFAULT 0,
+    complete         INTEGER NOT NULL DEFAULT 0,
+    updated_at_ms    INTEGER NOT NULL
+);
 
 -- uploads --------------------------------------------------------------------
 CREATE TABLE uploads (
@@ -1086,18 +1113,32 @@ CREATE TABLE uploads (
     sha256_declared     TEXT,
     state               TEXT NOT NULL,                -- reserved|complete|consumed|expired
     token_hash          TEXT NOT NULL,
+    redemptions         INTEGER NOT NULL DEFAULT 0,
     staged_path         TEXT,
     expires_at_ms       INTEGER NOT NULL,
     created_at_ms       INTEGER NOT NULL
 );
 
--- media cache ----------------------------------------------------------------
+-- download tickets: stateful, because the 5-redemption cap needs a counter ----
+CREATE TABLE download_tickets (
+    token_hash        TEXT PRIMARY KEY,
+    attachment_id     TEXT NOT NULL REFERENCES attachments(id) ON DELETE CASCADE,
+    authorization_id  TEXT NOT NULL,
+    redemptions       INTEGER NOT NULL DEFAULT 0,
+    max_redemptions   INTEGER NOT NULL DEFAULT 5,
+    expires_at_ms     INTEGER NOT NULL,
+    created_at_ms     INTEGER NOT NULL
+);
+
+-- media cache: the single authority for cached bytes on disk ------------------
 CREATE TABLE media_cache_entries (
     attachment_id   TEXT PRIMARY KEY REFERENCES attachments(id) ON DELETE CASCADE,
     relative_path   TEXT NOT NULL,
     size_bytes      INTEGER NOT NULL,
+    pinned          INTEGER NOT NULL DEFAULT 0,
     last_used_ms    INTEGER NOT NULL
 );
+CREATE INDEX media_cache_lru ON media_cache_entries(last_used_ms) WHERE pinned = 0;
 
 -- auth -----------------------------------------------------------------------
 CREATE TABLE oauth_clients (...);            -- client_...
@@ -1109,8 +1150,8 @@ CREATE TABLE oauth_attempts (...);           -- durable failure limiter
 
 -- settings and audit ---------------------------------------------------------
 CREATE TABLE settings (
-    key         TEXT PRIMARY KEY,
-    value_json  TEXT NOT NULL,
+    key           TEXT PRIMARY KEY,
+    value_json    TEXT NOT NULL,
     updated_at_ms INTEGER NOT NULL
 );
 
@@ -1121,81 +1162,94 @@ CREATE TABLE audit_events (
     target_type       TEXT,
     target_id         TEXT,
     result            TEXT NOT NULL,                  -- ok|refused|failed
-    source            TEXT,                           -- resolved client source
-    payload_json      TEXT NOT NULL,                  -- redacted, see 12.4
+    source            TEXT,
+    payload_json      TEXT NOT NULL,                  -- redacted, 12.4
     created_at_ms     INTEGER NOT NULL
 );
 CREATE INDEX audit_kind_time ON audit_events(kind, created_at_ms DESC);
 CREATE INDEX audit_time      ON audit_events(created_at_ms DESC);
+CREATE INDEX audit_auth      ON audit_events(authorization_id, created_at_ms DESC);
 ```
+
+**`media_cache_entries` is the single authority for cached bytes.**
+`attachments` carries no `cache_path` and no cached size: the eviction sweep,
+the LRU order, the byte budget and the purge path all read `media_cache_entries`
+and nothing else, so there is exactly one row per cached file and "no orphan
+row" in §16 is a well-defined assertion. `pinned` exists so an in-flight
+download or an open ticket is not evicted underneath itself.
 
 ### 4.3 Migrations
 
-- **Forward-only, numbered, never edited after they ship.** `0001_init.sql`,
-  `0002_...`. `PRAGMA user_version` is the version. A database at a *higher*
-  version than the binary knows refuses to open, with an error naming both
-  numbers. There is no down-migration.
-- Migrations run **inside one transaction each**, on the writer goroutine,
-  before any HTTP listener binds.
-- A migration that needs data recomputed sets
+- **Forward-only, numbered, never edited after they ship.** `PRAGMA
+  user_version` is the version. A database at a *higher* version than the
+  binary knows refuses to open, naming both numbers. There is no
+  down-migration.
+- Each runs **inside one transaction**, on the writer goroutine, before any
+  listener binds.
+- A migration needing derived data recomputed sets
   `server_meta.pending_reprocess = <task name>`; the process runs that task
-  once after startup and clears the key. This is how a schema change that
-  affects derived data (e.g. a delivery-state remap) is applied without a
-  hand-written data migration.
-- `PRAGMA foreign_key_check` runs after every migration in tests, and its
-  output must be empty (§13.2).
+  once after startup and clears the key.
+- `PRAGMA foreign_key_check` runs after every migration in tests and must be
+  empty (§13.2).
 - **Audit rows are never rewritten by a migration.** An audit row records what
-  happened when it happened; rewriting it would make the trail claim a value
-  that did not exist then.
+  happened when it happened.
 
 ### 4.4 Timestamps and the delivery-state vocabulary
 
 Google timestamps are **microseconds**; Agent GM converts at the `gm` boundary
-and stores **milliseconds since the Unix epoch** in every `*_ms` column. Every
-JSON surface renders them as RFC 3339 UTC with millisecond precision.
+and stores **milliseconds** in every `*_ms` column. Every JSON surface renders
+them as RFC 3339 UTC with millisecond precision — including
+`expires_at` on media tickets.
 
-`messages.delivery_state` is Agent GM's own closed vocabulary, mapped from
-`gmproto.MessageStatusType` (the numeric value is kept in
-`delivery_state_raw` so nothing is lost):
+`messages.delivery_state` is Agent GM's own closed vocabulary. The mapping
+covers **every** value declared in `MessageStatusType` at the pin; a value the
+mapping does not name fails the table test in §13.2 rather than falling
+silently to `unknown`.
 
 | `delivery_state` | Meaning | `MessageStatusType` sources |
 |---|---|---|
-| `queued` | accepted locally, not yet at the carrier | `OUTGOING_YET_TO_SEND(4)`, `OUTGOING_SEND_AFTER_PROCESSING(10)`, `OUTGOING_SCHEDULED(16)`, `OUTGOING_DRAFT(3)` |
-| `sending` | in flight | `OUTGOING_SENDING(5)`, `OUTGOING_RESENDING(6)`, `OUTGOING_AWAITING_RETRY(7)`, `OUTGOING_VALIDATING(20)` |
+| `sending` | accepted locally or in flight; Google's UI says *Sending…* | `OUTGOING_DRAFT(3)`, `OUTGOING_YET_TO_SEND(4)`, `OUTGOING_SENDING(5)`, `OUTGOING_RESENDING(6)`, `OUTGOING_AWAITING_RETRY(7)`, `OUTGOING_SEND_AFTER_PROCESSING(10)`, `OUTGOING_SCHEDULED(16)`, `OUTGOING_VALIDATING(20)` |
 | `sent` | the carrier took it | `OUTGOING_COMPLETE(1)`, `OUTGOING_NOT_DELIVERED_YET(14)` |
 | `delivered` | the recipient's device has it | `OUTGOING_DELIVERED(2)` |
 | `read` | the recipient opened it | `OUTGOING_DISPLAYED(11)` |
-| `failed` | terminal failure | every `OUTGOING_FAILED_*` (8, 9, 13, 17, 18, 19, 21, 22, 24, 25, 27), `OUTGOING_RESTRICTED(26)` |
-| `canceled` | withdrawn | `OUTGOING_CANCELED(12)`, `OUTGOING_REVOCATION_PENDING(15)` |
-| `deleted` | removed | `OUTGOING_DELETED(23)`, `INCOMING_DELETED(117)` |
-| `received` | an incoming message that is complete | `INCOMING_COMPLETE(100)`, `INCOMING_DELIVERED(108)`, `INCOMING_DISPLAYED(109)` |
-| `downloading` | incoming media not yet fetched | `INCOMING_*_DOWNLOADING`, `INCOMING_*_DOWNLOAD`, `INCOMING_AWAITING_AUTO_DOWNLOAD(115)` |
-| `download_failed` | incoming media unavailable | `INCOMING_DOWNLOAD_FAILED*`, `INCOMING_EXPIRED_OR_NOT_AVAILABLE(107)`, `INCOMING_FAILED_TO_DECRYPT(113)`, `INCOMING_DECRYPTION_ABORTED(114)`, `INCOMING_DOWNLOAD_RESTRICTED(118)` |
-| `unknown` | anything else, including a value the pinned proto has no name for | `STATUS_UNKNOWN(0)` and unmapped values |
+| `failed` | terminal failure | `OUTGOING_FAILED_GENERIC(8)`, `OUTGOING_FAILED_EMERGENCY_NUMBER(9)`, `OUTGOING_FAILED_TOO_LARGE(13)`, `OUTGOING_FAILED_RECIPIENT_LOST_RCS(17)`, `OUTGOING_FAILED_NO_RETRY_NO_FALLBACK(18)`, `OUTGOING_FAILED_RECIPIENT_DID_NOT_DECRYPT(19)`, `OUTGOING_FAILED_RECIPIENT_LOST_ENCRYPTION(21)`, `OUTGOING_FAILED_RECIPIENT_DID_NOT_DECRYPT_NO_MORE_RETRY(22)`, `OUTGOING_FAILED_RECIPIENT_NEGATIVE_DELIVERY(24)`, `MESSAGE_STATUS_OUTGOING_FAILED_EMERGENCY_PROTOCOL_DETERMINATION_MESSAGE(25)`, `OUTGOING_RESTRICTED(26)`, `OUTGOING_FAILED_TO_ENCRYPT(27)` |
+| `canceled` | withdrawn before sending | `OUTGOING_CANCELED(12)`, `OUTGOING_REVOCATION_PENDING(15)` |
+| `deleted` | removed | `OUTGOING_DELETED(23)`, `INCOMING_DELETED(117)`, **`MESSAGE_DELETED(300)`** |
+| `received` | an incoming message that is complete, or whose content Agent GM will never get | `INCOMING_COMPLETE(100)`, `INCOMING_DELIVERED(108)`, `INCOMING_DISPLAYED(109)`, **`INCOMING_UNKNOWN_CONTENT_TYPE(116)`** |
+| `downloading` | incoming media not yet fetched | `INCOMING_YET_TO_MANUAL_DOWNLOAD(101)`, `INCOMING_RETRYING_MANUAL_DOWNLOAD(102)`, `INCOMING_MANUAL_DOWNLOADING(103)`, `INCOMING_RETRYING_AUTO_DOWNLOAD(104)`, `INCOMING_AUTO_DOWNLOADING(105)`, `INCOMING_AWAITING_AUTO_DOWNLOAD(115)` |
+| `download_failed` | incoming media unavailable | `INCOMING_DOWNLOAD_FAILED(106)`, `INCOMING_EXPIRED_OR_NOT_AVAILABLE(107)`, **`INCOMING_DOWNLOAD_CANCELED(110)`**, `INCOMING_DOWNLOAD_FAILED_TOO_LARGE(111)`, `INCOMING_DOWNLOAD_FAILED_SIM_HAS_NO_DATA(112)`, `INCOMING_FAILED_TO_DECRYPT(113)`, `INCOMING_DECRYPTION_ABORTED(114)`, `INCOMING_DOWNLOAD_RESTRICTED(118)` |
+| `unknown` | `STATUS_UNKNOWN(0)` **only**, or a value added upstream after this pin | `STATUS_UNKNOWN(0)` |
 
-Permitted transitions for an **outgoing** message, enforced in SQL by a
-trigger, not only in Go:
+**System events (200–279) do not get a `delivery_state`.** They are stored with
+`kind='system'`, carry `delivery_state='received'` for schema uniformity, and
+are excluded from `messages.list` unless `include_system=true`. §13.4's
+"every value mapped exactly once" assertion covers 0–27, 100–118 and 300; the
+200–279 band is asserted separately as "classified `system`".
+
+Permitted transitions for an **outgoing** message, enforced by a SQL trigger
+as well as in Go:
 
 ```text
-queued -> sending -> sent -> delivered -> read
-queued|sending|sent      -> failed
-queued|sending           -> canceled
-any                      -> deleted
-unknown                  -> any (a late authoritative status corrects it)
+sending -> sent -> delivered -> read
+sending|sent      -> failed
+sending           -> canceled
+any               -> deleted
+unknown           -> any            (a late authoritative status corrects it)
 ```
 
-A transition that skips forward (`queued -> delivered`) is **accepted** — the
-phone genuinely reports coarse jumps — but a *backward* move (`read -> sent`)
-is refused, logged, and audited as `message.status_out_of_order`, and the
-stored state is left alone. `delivery_state_raw` is always overwritten with
-whatever Google last said, so a reviewer can always see the raw truth.
+A forward skip (`sending → delivered`) is **accepted** — the phone genuinely
+reports coarse jumps. A *backward* move (`read → sent`) is refused, logged, and
+audited as `message.status_out_of_order`, and the stored state is left alone.
+`delivery_state_raw` is always overwritten with whatever Google last said, so a
+reviewer can see the raw truth; it is served only on
+`GET /v1/admin/diagnostics`, never on a public message DTO (§4.1).
 
 `read` is a state on the *message*, not on the operation (§6.4).
 
 ### 4.5 The data key
 
 `AGENT_GM_DATA_KEY` is a 256-bit key supplied as 64 hex characters or standard
-base64. It is used to derive, by HKDF-SHA256 with distinct `info` strings:
+base64. It derives, by HKDF-SHA256 with distinct `info` strings:
 
 | Purpose | `info` |
 |---|---|
@@ -1204,18 +1258,29 @@ base64. It is used to derive, by HKDF-SHA256 with distinct `info` strings:
 | upload and download ticket signing (§10.3) | `agent-gm/ticket/v1` |
 | pagination cursor signing (§7.3) | `agent-gm/cursor/v1` |
 
-**The data key is not rotatable in place.** A database restored without the
-key that sealed it cannot decrypt the session file or any attachment key. The
-key and the data directory move together, always. If the key is lost the
-recovery path is: delete `session.enc`, re-pair (§11.4), and re-backfill;
-message text survives because it is not encrypted at rest, but cached media
-and the session do not.
+**The data key is not rotatable in place.** A database restored without the key
+that sealed it cannot decrypt the session file or any attachment key. The key
+and the data directory move together, always. If the key is lost: delete
+`session.enc`, re-pair (§11.4), re-backfill. Message text survives because it
+is not encrypted at rest; cached media and the session do not.
 
 Refusing to start with `session envelope cannot be decrypted` means the key
 differs from the one that sealed the session. Restore the original key; there
 is no in-place rotation.
 
----
+### 4.6 Derived conversation fields
+
+Two public fields are computed rather than stored raw, because the raw values
+are `gmproto` internals that mean nothing to a caller (§18.1 rubric):
+
+- **`conversation_type`** is `sms_mms` for `ConversationType_SMS(1)`, `rcs` for
+  `RCS(2)`, `unknown` for `0`. Google's own SMS conversation carries MMS too,
+  which is why the public value names both.
+- **`capabilities.force_rcs`** is true exactly when
+  `conversation_type == rcs` **and** `send_mode_raw == SEND_MODE_AUTO`. The
+  raw `ConversationSendMode` (`SEND_MODE_AUTO`, `SEND_MODE_XMS`,
+  `SEND_MODE_XMS_LATCH`) is **never served**; a caller that wants to know
+  whether `force_rcs` will be accepted reads the capability, not the mode.
 
 ## 5. Ingestion
 
