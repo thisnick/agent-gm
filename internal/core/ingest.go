@@ -188,8 +188,11 @@ func (in *Ingester) applyParts(ctx context.Context, messageID string, m gm.Messa
 				return fmt.Errorf("sealing attachment key: %w", err)
 			}
 		}
+		// The state is derived from the attachment, not asserted: see
+		// store.DownloadStateFor. Writing `pending` here unconditionally is
+		// what made every download unreachable.
 		if _, err := in.Store.UpsertAttachment(ctx, in.AccountID, messageID, att,
-			sealed, store.DownloadStatePending); err != nil {
+			sealed, store.DownloadStateFor(att.MediaID, att.ThumbnailMediaID)); err != nil {
 			return fmt.Errorf("upserting attachment: %w", err)
 		}
 	}

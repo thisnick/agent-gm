@@ -205,3 +205,39 @@ func nullBlob(b []byte) any {
 	}
 	return b
 }
+
+// DownloadStateFor decides an attachment's download_state from the
+// attachment's own facts, rather than from a constant a writer chose.
+//
+// It is a FACT ABOUT REACHABILITY, not about the cache: `available` means
+// Agent GM can produce the bytes on demand -- from `media_cache_entries` if
+// they are there and from `libgm.DownloadMedia` otherwise -- and the cache is
+// its own table for exactly that reason (spec section 4.2).
+//
+// Writing `pending` unconditionally at ingest, as this used to, made
+// `GET /v1/attachments/{id}/content` unreachable for EVERY real attachment:
+// the route answers `unsupported_capability` / `media_pending` for anything
+// not `available`, `sha256` was therefore always null, and every download
+// ticket minted could never be redeemed. Nothing in production could move an
+// attachment out of `pending`, so the bytes a caller had just uploaded came
+// back as not-yet-downloaded.
+//
+// The three cases are section 10.1's:
+//
+//   - a media ID → `available`. Google holds the bytes and the decryption key
+//     is on the row.
+//   - no media ID but a thumbnail → `pending`: `GetFullSizeImage` has to run
+//     first, and while that is outstanding the route says `media_pending`,
+//     which is what section 10.1 asks for.
+//   - neither → `unavailable`. There is nothing to fetch and never will be;
+//     saying `pending` would promise bytes that are not coming.
+func DownloadStateFor(mediaID, thumbnailMediaID string) string {
+	switch {
+	case mediaID != "":
+		return DownloadStateAvailable
+	case thumbnailMediaID != "":
+		return DownloadStatePending
+	default:
+		return DownloadStateUnavailable
+	}
+}

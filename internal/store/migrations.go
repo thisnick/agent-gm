@@ -26,6 +26,7 @@ var migrations = []migration{
 	migration0001,
 	migration0002,
 	migration0003,
+	migration0004,
 }
 
 var migration0001 = migration{
@@ -507,6 +508,85 @@ var migration0003 = migration{
 		    PRIMARY KEY (kind, source)
 		)`,
 		`CREATE INDEX oauth_attempts_cooldown ON oauth_attempts(cooldown_until_ms)`,
+	},
+}
+
+// Migration 0004 rewrites the two columns that held Google's own participant
+// IDs into the derived `part_` IDs section 4.1 requires.
+//
+// A database written before this migration keeps the raw values in
+// `messages.sender_participant` and `reactions.participant_id`. Two things
+// break there and neither announces itself:
+//
+//   - `sender=me`, `sender=<E.164>` and `sender=<part_ id>` return an EMPTY
+//     PAGE on every listing and on search, because the query matches those
+//     columns against `participants.id`. An empty page is a valid answer, so
+//     nothing looks wrong;
+//   - a stored `react_` ID disagrees with the one re-derived from the same
+//     reaction, so removal by ID misses.
+//
+// The rewrite is a join rather than a recomputation in Go, because the
+// derivation is UUIDv5 over (conversation ID, source ID) and SQLite cannot
+// compute that -- but `participants` already holds exactly that mapping, one
+// row per (conversation_id, source_id), so the answer is already in the
+// database.
+//
+// **What this migration cannot fix, and says so.** A participant Agent GM
+// never ingested has no row to join against, so a message whose sender is one
+// of those keeps its raw value. That is why `server_meta.pending_reprocess`
+// is set: sections 4.2 and 4.3 define it for exactly this case -- "a
+// migration needing derived data recomputed sets pending_reprocess = <task
+// name>; the process runs that task once after startup and clears the key" --
+// and the reconciliation sweep re-ingests those messages through the current
+// path, which derives correctly.
+var migration0004 = migration{
+	version: 4,
+	name:    "derive part_ IDs for message senders and reaction participants",
+	stmts: []string{
+		// messages.sender_participant: join through the message's own
+		// conversation, so a source ID that appears in two conversations
+		// resolves to the right participant in each.
+		`-- all-accounts: a schema migration rewrites every row, for every account
+		 UPDATE messages
+		    SET sender_participant = (
+		        SELECT p.id FROM participants p
+		         WHERE p.conversation_id = messages.conversation_id
+		           AND p.source_id       = messages.sender_participant
+		    )
+		  WHERE sender_participant IS NOT NULL
+		    AND sender_participant NOT LIKE 'part\_%' ESCAPE '\'
+		    AND EXISTS (
+		        SELECT 1 FROM participants p
+		         WHERE p.conversation_id = messages.conversation_id
+		           AND p.source_id       = messages.sender_participant
+		    )`,
+
+		// reactions.participant_id: the same join, reached through the
+		// reaction's message.
+		`-- all-accounts: a schema migration rewrites every row, for every account
+		 UPDATE reactions
+		    SET participant_id = (
+		        SELECT p.id FROM participants p
+		          JOIN messages m ON m.conversation_id = p.conversation_id
+		         WHERE m.id = reactions.message_id
+		           AND p.source_id = reactions.participant_id
+		    )
+		  WHERE participant_id NOT LIKE 'part\_%' ESCAPE '\'
+		    AND EXISTS (
+		        SELECT 1 FROM participants p
+		          JOIN messages m ON m.conversation_id = p.conversation_id
+		         WHERE m.id = reactions.message_id
+		           AND p.source_id = reactions.participant_id
+		    )`,
+
+		// Anything the join could not resolve is left alone and handed to
+		// the sweep, which re-ingests through the current path. Setting the
+		// key unconditionally is deliberate: a migration that inspected the
+		// rows first would have to be right about the inspection too, and
+		// re-sweeping an already-correct account costs bandwidth and nothing
+		// else -- the sweep is idempotent by construction (section 5.4).
+		`INSERT INTO server_meta(key, value) VALUES('pending_reprocess', 'reconcile_participants')
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
 	},
 }
 

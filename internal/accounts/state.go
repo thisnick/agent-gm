@@ -250,3 +250,20 @@ func (f *feed) publish(ev StateChange) {
 func (s *Supervisor) Subscribe(accountID string) *Subscription {
 	return s.feed.subscribe(accountID)
 }
+
+// Schedulable reports whether the supervisor will give this account a
+// backfill worker and a sweep timer.
+//
+// `pairing` is included because a pairing in flight is about to become
+// `connected`, and reporting `not_started` for it would be true for a second
+// and misleading thereafter. Everything that reads but does not write --
+// parked, signed out, error, account_changed -- is not schedulable: it holds
+// no client, so there is nothing for a worker to walk (spec section 4.7).
+func Schedulable(s State) bool {
+	switch s {
+	case StateConnected, StateDegraded, StatePairing:
+		return true
+	default:
+		return false
+	}
+}

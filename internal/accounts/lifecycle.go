@@ -248,6 +248,44 @@ type GoogleHealth struct {
 	IsDefaultSMSApp    bool `json:"is_default_sms_app"`
 }
 
+// The closed `backfill.state` vocabulary of spec section 7.5.
+const (
+	// BackfillComplete: accounts.backfill_complete_at_ms is set, so an empty
+	// result means there is nothing rather than not yet.
+	BackfillComplete = "complete"
+	// BackfillRunning: a worker is walking this account now.
+	BackfillRunning = "running"
+	// BackfillPaused: THIS account's phone reported a database sync, so its
+	// walk is waiting (section 5.2). Another account's phone does not cause
+	// it.
+	BackfillPaused = "paused"
+	// BackfillPending: scheduled, not started yet.
+	BackfillPending = "pending"
+	// BackfillNotStarted: this account will NOT be scheduled -- parked,
+	// signed out, error or account_changed -- so no worker exists for it.
+	BackfillNotStarted = "not_started"
+)
+
+// BackfillStates is the closed vocabulary, for the test that keeps it closed.
+func BackfillStates() []string {
+	return []string{
+		BackfillComplete, BackfillRunning, BackfillPaused,
+		BackfillPending, BackfillNotStarted,
+	}
+}
+
+// progressFor asks the worker for this account's progress, telling it the
+// account's state so it can distinguish `pending` (scheduled, not started)
+// from `not_started` (will not be scheduled at all).
+func (s *Supervisor) progressFor(row store.Account) BackfillHealth {
+	if w, ok := s.Backfill.(interface {
+		ProgressFor(string, State) BackfillHealth
+	}); ok {
+		return w.ProgressFor(row.ID, State(row.State))
+	}
+	return s.Backfill.Progress(row.ID)
+}
+
 // BackfillHealth is the per-account `backfill` block.
 type BackfillHealth struct {
 	State              string     `json:"state"`
@@ -344,8 +382,22 @@ func (s *Supervisor) healthFor(ctx context.Context, row store.Account) AccountHe
 		// A worker knows the conversation counts and whether it is running;
 		// the completion instant is still the stored one, so it survives a
 		// restart the worker does not.
-		progress := s.Backfill.Progress(row.ID)
+		progress := s.progressFor(row)
 		progress.CompletedAt = h.Backfill.CompletedAt
+		// A stored completion turns `pending`/`not_started` into `complete`:
+		// a signed-out account that finished before it was signed out still
+		// has its history indexed, which is the whole point of section 4.7's
+		// "signing out keeps everything", and an agent must not read its
+		// empty result as "not yet".
+		//
+		// It does NOT override a worker that is running or paused right now.
+		// A re-backfill after a re-pair is exactly that case, and "it is
+		// walking at this moment" is the more actionable fact than "it
+		// finished once before".
+		if progress.CompletedAt != nil &&
+			(progress.State == BackfillPending || progress.State == BackfillNotStarted) {
+			progress.State = BackfillComplete
+		}
 		h.Backfill = progress
 	}
 	h.Sweep = SweepHealth{LastSweepAt: msToTime(row.LastSweepAtMS)}

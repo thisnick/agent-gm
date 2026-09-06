@@ -515,11 +515,14 @@ func (s *server) seedAttachment(accountID, convSourceID, msgSourceID string, dat
 	if err != nil || len(atts) == 0 {
 		s.t.Fatalf("attachment row was not written: %v", err)
 	}
-	// Google reports an incoming attachment as available once its bytes are
-	// fetchable; the fake has them, so the row says so.
-	if err := s.Store.SetAttachmentDownloadState(ctx, atts[0].ID, store.DownloadStateAvailable, ""); err != nil {
-		s.t.Fatalf("marking the attachment available: %v", err)
-	}
+	// NO transition is made here. The row's download_state is whatever
+	// production wrote, derived from the attachment's own facts
+	// (store.DownloadStateFor). This helper used to flip it to `available`
+	// itself, which meant section 16 Slice 2 test 18 passed on a transition
+	// no production code ever makes -- while in the real server every
+	// attachment stayed `pending` for ever and no download could be
+	// redeemed. A harness that makes a state change production cannot is a
+	// harness that tests the harness.
 	row, err := s.Store.Attachment(ctx, atts[0].ID)
 	if err != nil {
 		s.t.Fatalf("re-reading the attachment: %v", err)

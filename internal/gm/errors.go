@@ -237,8 +237,16 @@ func Classify(err error) *Error {
 		return e
 
 	case errors.Is(err, ErrNoCookies):
+		// "none were supplied" is only true when none were. The caller that
+		// hits this most often supplied SOME -- a paste scoped to
+		// .google.com carries six of the seven and silently omits OSID -- so
+		// the message says what is missing and the details name them. Which
+		// cookies are absent is in e.Details, put there by the caller that
+		// knows; this is the sentence, and it must not contradict it.
 		e := newError(CodePairingNoCookies, http.StatusConflict,
-			"Google-account pairing requires the seven session cookies; none were supplied")
+			"Google-account pairing needs all seven session cookies, and at least one is "+
+				"missing; details.missing_cookies names them, and OSID in particular is "+
+				"host-scoped to messages.google.com")
 		e.Err = err
 		return e
 

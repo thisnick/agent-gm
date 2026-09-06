@@ -219,17 +219,40 @@ func (w *Workers) note(accountID, msg string, err error) {
 // rather than from this process's memory, so they survive a restart and a
 // resumed backfill reports where it really is rather than starting from zero.
 func (w *Workers) Progress(accountID string) BackfillHealth {
+	return w.ProgressFor(accountID, StateConnected)
+}
+
+// ProgressFor is Progress with the account's own state, which decides between
+// the two "not finished" words.
+//
+// `pending` means scheduled and not started yet; `not_started` means this
+// account will not be scheduled at all -- it is parked, signed out, in error
+// or account_changed, so no worker exists for it. They are different facts,
+// for exactly the reason section 4.7 split `parked` from `degraded`:
+// "waiting its turn" and "not in the queue at all" are not the same thing and
+// an agent reading the block must be able to tell them apart. Reporting
+// `pending` for a parked account would have it wait for a backfill that is
+// never coming.
+//
+// `complete` wins over both whenever backfill_complete_at_ms is set, because
+// a signed-out account that finished before it was signed out still has its
+// history indexed -- which is the whole point of section 4.7's "signing out
+// keeps everything".
+func (w *Workers) ProgressFor(accountID string, accountState State) BackfillHealth {
 	w.mu.Lock()
 	st, running := w.state[accountID]
-	state := "pending"
+	state := BackfillPending
+	if !Schedulable(accountState) {
+		state = BackfillNotStarted
+	}
 	if running && st.started {
 		switch {
 		case st.done:
-			state = "complete"
+			state = BackfillComplete
 		case st.paused:
-			state = "paused"
+			state = BackfillPaused
 		default:
-			state = "running"
+			state = BackfillRunning
 		}
 	}
 	w.mu.Unlock()

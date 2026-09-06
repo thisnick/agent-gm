@@ -672,6 +672,19 @@ func (b *Backend) ResolveConversation(ctx context.Context, numbers []string, gro
 			DefaultOutgoingID: "me@" + b.address,
 			LastActivity:      b.clock.Now(),
 		}
+		// The OWNER's own participant first, then the recipients.
+		//
+		// Omitting it made a conversation created through the real
+		// POST /v1/conversations serve a sender.id that was a well-formed
+		// part_ ID resolving to no participants row, so `sender=me` returned
+		// 0 against the real server while passing against a seeded
+		// conversation. A fake whose shape differs from the real backend's
+		// in one field tests the layer above it in a world that does not
+		// exist -- and `is_me` is the field every `sender=me` query turns on
+		// (spec section 7.6).
+		newConv.Participants = append(newConv.Participants, gm.Participant{
+			SourceID: newConv.DefaultOutgoingID, IsMe: true, IsVisible: true,
+		})
 		for _, n := range numbers {
 			newConv.Participants = append(newConv.Participants, gm.Participant{
 				SourceID: "part-" + n, PhoneE164: n, IsVisible: true,

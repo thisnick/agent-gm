@@ -58,13 +58,59 @@ func runServe(args []string) int {
 		return exitUsage
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	built, code := buildServer(ctx, *addr)
+	if code != exitOK {
+		return code
+	}
+	defer built.Close()
+	return built.listenAndServe(ctx)
+}
+
+// built is everything runServe assembles before it binds.
+//
+// It is a separate function from the binding half for one reason: three
+// reviewer plants -- deleting `sup.Backfill = workers`, deleting
+// `sup.Sweep = workers`, and making `resumeAccounts` return `0, nil` --
+// ALL SURVIVED the whole suite. Each restored exactly one of the blockers
+// this slice was rejected for. The compiler can prove `Workers` satisfies the
+// two interfaces; it cannot prove that `serve` assigns them, and nothing
+// else did either, because the wiring lived inside a function that also
+// bound a socket and blocked.
+//
+// So the wiring is now a value a test can build and assert on.
+type built struct {
+	cfg      config.Config
+	log      zerolog.Logger
+	Store    *store.Store
+	Sessions *store.SessionStore
+	Sup      *accounts.Supervisor
+	Deps     *api.HandlerDeps
+	Server   *api.Server
+	// Resumed is how many accounts came back from sessions/ at startup.
+	Resumed int
+}
+
+// Close releases what buildServer opened.
+func (b *built) Close() {
+	if b.Store != nil {
+		_ = b.Store.Close()
+	}
+}
+
+// buildServer does everything runServe does except bind.
+func buildServer(ctx context.Context, addrOverride string) (*built, int) {
+	addr := &addrOverride
+
 	cfg, err := config.LoadServer()
 	if err != nil {
 		// This is the "refuses to start" of sections 12.3 and 15.1. The
 		// message names the variable and never its value: the admin secret
 		// is the strongest credential Agent GM issues.
 		fmt.Fprintf(os.Stderr, "agent-gm: %v\n", err)
-		return exitLocalConfig
+		return nil, exitLocalConfig
 	}
 	if *addr != "" {
 		cfg.ListenAddr = *addr
@@ -93,9 +139,8 @@ func runServe(args []string) int {
 	st, err := store.Open(cfg.DataDir, clk)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "agent-gm: %v\n", err)
-		return exitLocalConfig
+		return nil, exitLocalConfig
 	}
-	defer func() { _ = st.Close() }()
 
 	// Agent GM tightens what it creates, so a warning here means something
 	// outside it loosened the file. It warns rather than refusing, because
@@ -112,14 +157,11 @@ func runServe(args []string) int {
 	sessions, err := store.NewSessionStore(cfg.DataDir, cfg.DataKey)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "agent-gm: %v\n", err)
-		return exitLocalConfig
+		return nil, exitLocalConfig
 	}
 
 	set := settings.New(settings.NewRegistry(), store.NewSettingsStore(st), os.Getenv)
 	aud := audit.NewWriter(api.NewStoreAppender(st), clk)
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	// Crash recovery, before the listener binds and before any account
 	// connects. Each row is audited; nothing is retried. If the send did
@@ -129,7 +171,7 @@ func runServe(args []string) int {
 	recovered, err := core.RecoverOperations(ctx, st, aud, "startup")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "agent-gm: settling operations left running: %v\n", err)
-		return exitContract
+		return nil, exitContract
 	}
 	if len(recovered) > 0 {
 		log.Warn().Int("operations", len(recovered)).
@@ -143,11 +185,11 @@ func runServe(args []string) int {
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "agent-gm: %v\n", err)
-		return exitLocalConfig
+		return nil, exitLocalConfig
 	}
 	if revoked, err := authzSvc.RevokeSupersededAdminSessions(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "agent-gm: %v\n", err)
-		return exitContract
+		return nil, exitContract
 	} else if len(revoked) > 0 {
 		log.Warn().Int("authorizations", len(revoked)).
 			Msg("revoked admin sessions minted under a previous AGENT_GM_ADMIN_SECRET")
@@ -156,7 +198,7 @@ func runServe(args []string) int {
 	signer, err := media.NewSigner(cfg.DataKey)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "agent-gm: %v\n", err)
-		return exitContract
+		return nil, exitContract
 	}
 
 	sup := accounts.New(st, sessions, clk, nil)
@@ -230,7 +272,7 @@ func runServe(args []string) int {
 	resumed, err := resumeAccounts(ctx, cfg, st, sessions, sup, libLog)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "agent-gm: %v\n", err)
-		return exitLocalConfig
+		return nil, exitLocalConfig
 	}
 	log.Info().Int("accounts", resumed).Msg("resumed")
 
@@ -258,8 +300,18 @@ func runServe(args []string) int {
 	})
 	if err := api.RegisterAll(srv, deps); err != nil {
 		fmt.Fprintf(os.Stderr, "agent-gm: wiring the routes: %v\n", err)
-		return exitContract
+		return nil, exitContract
 	}
+
+	return &built{
+		cfg: cfg, log: log, Store: st, Sessions: sessions,
+		Sup: sup, Deps: deps, Server: srv, Resumed: resumed,
+	}, exitOK
+}
+
+// listenAndServe binds and serves until the context ends.
+func (b *built) listenAndServe(ctx context.Context) int {
+	cfg, log, srv, sup := b.cfg, b.log, b.Server, b.Sup
 
 	ln, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {

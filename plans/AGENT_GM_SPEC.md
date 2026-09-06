@@ -2215,6 +2215,21 @@ global scopes, and it is what the authorization screen discloses (§9.4).
   "client_source": "100.64.0.7" }
 ```
 
+**`backfill.state` is a closed vocabulary**, and it is closed here because an
+agent reads it to decide whether an empty result means "nothing" or "not yet":
+
+| `state` | Meaning |
+|---|---|
+| `complete` | `accounts.backfill_complete_at_ms` is set. The history is indexed; an empty result means there is nothing |
+| `running` | a backfill worker is walking this account now |
+| `paused` | this account's own phone reported a database sync, so its walk is waiting (§5.2). Another account's phone does not cause it |
+| `pending` | this account is scheduled and has not started, or is between attempts |
+| `not_started` | **this account will not be scheduled**: it is `parked`, `signed_out`, `error` or `account_changed`, so no worker exists for it. Distinct from `pending`, for the same reason §4.7 split `parked` from `degraded` — "waiting its turn" and "not in the queue at all" are different facts and an agent must be able to tell them apart |
+
+A `signed_out` account that finished backfilling before it was signed out
+still reports `complete`: the history is indexed and readable, which is the
+whole point of §4.7's "signing out keeps everything".
+
 `config_version_live` and `is_default_sms_app` are per account, cached from
 that account's last `FetchConfig` and `IsBugleDefault`, refreshed on connect
 and every `settings.ingest.sweep_interval`, so `/v1/health` never blocks on a
@@ -3916,6 +3931,13 @@ happened to this account" stays answerable after the account is removed (§4.7).
 **`auth.admin_session_minted`** (source, granted scopes, whether narrowed —
 never the secret), **`auth.admin_session_narrowed`** and
 **`auth.admin_session_refreshed`** (scopes before and after),
+
+> `auth.admin_session_narrowed` belongs to a **refresh** that narrows, not to
+> a mint that was narrowed. A mint has no "before", so the kind would claim a
+> transition that did not happen; `auth.admin_session_minted` carrying
+> `narrowed: true` already says the true thing. Recorded because a Slice 2
+> review read the constant as unemitted and it is not.
+
 **`auth.admin_secret_failed`** (source and the resulting cooldown state, never
 the presented value); every write operation
 and its outcome; enrollment-code creation, consumption, expiry and

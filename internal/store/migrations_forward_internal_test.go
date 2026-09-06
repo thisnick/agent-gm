@@ -190,7 +190,13 @@ func TestMigrationForwardOnAPopulatedV1Database(t *testing.T) {
 	applyMigration(t, db, migration0001)
 	populateV1(t, db)
 
-	tables := []string{"server_meta", "accounts", "conversations", "participants", "messages"}
+	// server_meta is deliberately NOT in this list. Every other table must
+	// come through a migration byte for byte, but server_meta is the one
+	// place a migration is SUPPOSED to write: section 4.3 says a migration
+	// needing derived data recomputed sets `pending_reprocess`, and 0004
+	// does. It is asserted by name below instead, which is a stronger claim
+	// than "unchanged" -- it says exactly what changed and why.
+	tables := []string{"accounts", "conversations", "participants", "messages"}
 	before := map[string][]string{}
 	for _, table := range tables {
 		before[table] = snapshot(t, db, table, v1Columns[table])
@@ -218,6 +224,18 @@ func TestMigrationForwardOnAPopulatedV1Database(t *testing.T) {
 	}
 
 	after := rawOpen(t, path)
+
+	// Migration 0004 rewrote participant IDs and handed the rows it could
+	// not resolve to the sweep, through the key section 4.3 defines for it.
+	var pending string
+	if err := after.QueryRow(
+		`SELECT value FROM server_meta WHERE key = 'pending_reprocess'`).Scan(&pending); err != nil {
+		t.Fatalf("migration 0004 set no pending_reprocess key: %v", err)
+	}
+	if pending != "reconcile_participants" {
+		t.Errorf("pending_reprocess = %q, want reconcile_participants", pending)
+	}
+
 	for _, table := range tables {
 		got := snapshot(t, after, table, v1Columns[table])
 		want := before[table]
