@@ -101,18 +101,18 @@ type Participant struct {
 
 // Conversation is one Google Messages thread.
 type Conversation struct {
-	SourceID          string
-	Name              string
-	IsGroup           bool
-	Type              ConversationType
-	SendModeRaw       SendMode
-	Folder            Folder
-	Unread            bool
-	Pinned            bool
-	ReadOnly          bool
+	SourceID    string
+	Name        string
+	IsGroup     bool
+	Type        ConversationType
+	SendModeRaw SendMode
+	Folder      Folder
+	Unread      bool
+	Pinned      bool
+	ReadOnly    bool
 	// Deleted is Google's own delete-for-me: ConversationStatus DELETED or
 	// TRASH_FOLDER. It is the only delete Agent GM has (non-goal N6).
-	Deleted bool
+	Deleted           bool
 	DefaultOutgoingID string
 	LatestMessageID   string
 	LastActivity      time.Time

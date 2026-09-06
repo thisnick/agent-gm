@@ -36,16 +36,16 @@
         "go vet ./..."
       ],
       "test": [
-        "go test ./... -race -count=1"
+        "CGO_ENABLED=1 go test ./... -race -count=1"
       ],
       "test-live": [
-        "AGENT_GM_LIVE=1 go test -tags live ./... -run 'Live' -race -count=1 -v"
+        "CGO_ENABLED=1 AGENT_GM_LIVE=1 go test -tags live ./... -run 'Live' -race -count=1 -v"
       ],
       "check": [
         "go build ./...",
         "go vet ./...",
         "golangci-lint run ./...",
-        "go test ./... -race -count=1",
+        "CGO_ENABLED=1 go test ./... -race -count=1",
         "./scripts/no-real-numbers.sh"
       ],
       "tidy": [

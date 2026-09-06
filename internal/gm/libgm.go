@@ -30,8 +30,9 @@ type LibGM struct {
 
 	eventsCh chan Event
 
-	dropped atomic.Uint64
-	unknown atomic.Uint64
+	dropped     atomic.Uint64
+	unknown     atomic.Uint64
+	lastPhoneID atomicString
 
 	mu           sync.Mutex
 	lastSessions []byte
@@ -204,6 +205,13 @@ func (b *LibGM) StartGooglePairing(ctx context.Context, cookies map[string]strin
 	// as --device-index N (spec section 3.1).
 	b.client.GaiaHackyDeviceSwitcher = deviceIndex
 
+	// AuthData.Mobile is populated inside StartGaiaPairing, before the owner
+	// confirms the emoji (pair_google.go:325 -> :101-104), and the emoji
+	// callback fires between StartGaiaPairing and FinishGaiaPairing. So the
+	// account identity is knowable at emoji time, which is what gives the
+	// pairing row of spec section 3.2 its bounded lifecycle: a caller's emoji
+	// callback can read AccountAddress() and create or resume the row before
+	// the pairing is known to succeed.
 	if err := b.client.DoGaiaPairing(ctx, emoji); err != nil {
 		return PairedDevice{}, Classify(translateError(err))
 	}
@@ -219,19 +227,32 @@ func (b *LibGM) StartGooglePairing(ctx context.Context, cookies map[string]strin
 	}
 
 	dev := PairedDevice{
-		PhoneID:        fmt.Sprintf("%s/%d", address, 0),
+		// FinishGaiaPairing's return value, "<mobile sourceID>/<destRegDevice
+		// int>", reaches Agent GM on events.PairSuccessful, which
+		// DoGaiaPairing emits synchronously before it returns
+		// (pair_google.go:310).
+		PhoneID:        b.lastPhoneID.Load(),
 		AccountAddress: address,
 		DeviceIndex:    deviceIndex,
 	}
 	if b.auth.DestRegID != uuid.Nil {
 		dev.DestRegUUID = b.auth.DestRegID.String()
 	}
-	// FinishGaiaPairing's return value -- "<mobile sourceID>/<destRegDevice
-	// int>" -- is not surfaced by DoGaiaPairing, and neither is the chosen
-	// device's LastSeen. See the slice report: this is the one place the
-	// section 3.1 contract and the section 11.4 UX cannot both be satisfied
-	// through DoGaiaPairing alone.
+	// DeviceLastSeen and DeviceCount are left zero: StartGaiaPairing logs the
+	// chosen device's LastSeen and the candidate count but does not return
+	// them, and DoGaiaPairing does not surface the PairingSession. Recorded
+	// in the slice report as the one section 11.4 line this cannot serve.
 	return dev, nil
+}
+
+// atomicString is a tiny atomic string cell: the pairing event handler runs
+// on the long-poll goroutine while StartGooglePairing waits on the caller's.
+type atomicString struct{ v atomic.Value }
+
+func (a *atomicString) Store(s string) { a.v.Store(s) }
+func (a *atomicString) Load() string {
+	s, _ := a.v.Load().(string)
+	return s
 }
 
 func plausibleAddress(s string) bool {
@@ -728,6 +749,7 @@ func (b *LibGM) handleEvent(raw any) {
 		b.emit(&EventHackySetActiveMayFail{})
 	case *events.PairSuccessful:
 		// QRData is always nil on this path; it is never dereferenced.
+		b.lastPhoneID.Store(e.PhoneID)
 		b.emit(&EventPairSuccessful{PhoneID: e.PhoneID})
 	case *events.GaiaLoggedOut:
 		b.emit(&EventGaiaLoggedOut{})
