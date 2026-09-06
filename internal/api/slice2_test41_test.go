@@ -288,7 +288,7 @@ func (l *recordingLogger) add(level, msg string, kv []any) {
 	b.WriteString(msg)
 	for _, v := range kv {
 		b.WriteString(" ")
-		b.WriteString(fmt.Sprint(v))
+		_, _ = fmt.Fprint(&b, v)
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
