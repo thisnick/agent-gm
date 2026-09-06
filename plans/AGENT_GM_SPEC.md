@@ -1974,9 +1974,17 @@ Checked **before the transport parses anything**:
 
 ### 8.2 Tools
 
-Eighteen tools. Each is a facade over the REST route that serves the same
+Nineteen tools. Each is a facade over the REST route that serves the same
 data, so the filters, the validation, the error codes and the DTOs are the
 same on both surfaces by construction rather than by discipline.
+
+Three REST routes are deliberately **not** tools, each for a stated reason:
+`POST /v1/conversations/{id}/typing` (no lasting effect and no result a model
+can act on); `GET /v1/messages/{id}/attachments` (its data is already inside
+`get_message`, so a second call would only add a round trip); and the upload
+lifecycle routes `GET`/`DELETE /v1/uploads/{id}` (an agent that has just
+called `create_upload` holds everything they would return). Every other `/v1`
+route has a tool.
 
 **Reads — `messages:read`**
 
@@ -1984,13 +1992,14 @@ same on both surfaces by construction rather than by discipline.
 |---|---|---|
 | `list_conversations` | `GET /v1/conversations` | `query`, `participant`, `folder`, `type`, `unread_only`, `group_only`, `include_deleted`, `cursor`, `limit` |
 | `get_conversation` | `GET /v1/conversations/{id}` | `conversation_id` |
-| `list_messages` | `GET /v1/messages` | `conversation_id`, `cursor`, `limit`, `direction`, `sender`, `after`, `before`, `has_attachment`, `delivery_state`, `include_tombstones` |
+| `list_messages` | `GET /v1/messages` | `conversation_id`, `cursor`, `limit`, `direction`, `sender`, `after`, `before`, `has_attachment`, `delivery_state`, `include_system` |
 | `get_message` | `GET /v1/messages/{id}` | `message_id` |
 | `message_context` | `GET /v1/messages/{id}/context` | `message_id`, `before`, `after` |
-| `search_messages` | `GET /v1/search/messages` | `q` (**required**), `syntax`, `conversation_id`, `sender`, `after`, `before`, `has_attachment`, `cursor`, `limit` |
+| `search_messages` | `GET /v1/search/messages` | `q` (**required**), `mode` (`words`\|`exact`), `conversation_id`, `sender`, `after`, `before`, `has_attachment`, `cursor`, `limit` |
 | `get_attachment` | `GET /v1/attachments/{id}` | `attachment_id` |
 | `list_contacts` | `GET /v1/contacts` | `query`, `top`, `cursor`, `limit` |
 | `get_session` | `GET /v1/session` | — |
+| `get_health` | `GET /v1/health` | — . Serves backfill progress, `is_default_sms_app` and `config_version_stale`, which §15.4 makes the primary diagnostics. Without it those are MCP-invisible |
 
 **Writes — `messages:write`**
 
@@ -2000,9 +2009,10 @@ same on both surfaces by construction rather than by discipline.
 | `start_conversation` | `POST /v1/conversations` | `recipients` (E.164 array), `name`, `client_request_id` |
 | `mark_read` | `POST /v1/conversations/{id}/read` | `conversation_id`, `message_id`, `client_request_id` |
 | `add_reaction` | `POST /v1/messages/{id}/reactions` | `message_id`, `emoji`, `client_request_id` |
-| `remove_reaction` | `DELETE /v1/messages/{id}/reactions/{emoji}` | `message_id`, `emoji`, `client_request_id` |
+| `remove_reaction` | `DELETE /v1/messages/{id}/reactions/{emoji}` or `DELETE /v1/reactions/{id}` | either `reaction_id`, or `message_id` plus `emoji`; supplying neither is an `invalid_request` result. Plus `client_request_id` |
+| `update_conversation` | `PATCH /v1/conversations/{id}` | `conversation_id`, `folder`, `pinned`, `unread`, `client_request_id` |
 | `create_upload` | `POST /v1/uploads` | `filename`, `mime_type`, `size_bytes` (required), `sha256`, `client_request_id` |
-| `get_operation` | `GET /v1/operations/{id}` | `operation_id` |
+| `get_operation` | `GET /v1/operations/{id}` | `operation_id`. **A read, but gated on `messages:write`**: it exposes only operations the caller created, and `messages:write` is the scope that creates them. Its annotations say `readOnlyHint: true`; visibility and read-ness are different questions |
 
 **Deletes — `messages:delete`**
 
@@ -2011,8 +2021,10 @@ same on both surfaces by construction rather than by discipline.
 | `delete_message` | `DELETE /v1/messages/{id}` | `message_id`, `client_request_id` |
 | `delete_conversation` | `DELETE /v1/conversations/{id}` | `conversation_id`, `client_request_id` |
 
-There is **no `set_typing` tool**. Typing is a human affordance with no lasting
-effect and no result an agent can act on; it stays REST-only.
+Emoji arguments are canonicalised through `EmojiType` before anything else
+happens (§3.7), and their descriptions name the eleven reactions Google's own
+picker offers and say that anything else becomes a custom reaction that may not
+render on the recipient's phone.
 
 Schema rules:
 
@@ -2044,15 +2056,18 @@ Annotations, accurate rather than conventional:
 
 | Tools | `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
 |---|---|---|---|---|
-| all reads, `get_operation`, `get_session` | true | false | true | false |
-| `send_message`, `start_conversation`, `mark_read`, `add_reaction`, `create_upload` | false | false | true | true |
+| all reads, `get_operation`, `get_session`, `get_health` | true | false | true | false |
+| `create_upload`, `update_conversation` | false | false | true | **false** |
+| `send_message`, `start_conversation`, `mark_read`, `add_reaction` | false | false | true | true |
 | `remove_reaction` | false | **true** | true | true |
 | `delete_message`, `delete_conversation` | false | true | true | **false** |
 
 The two deletes are `openWorldHint: false` because Google's delete is
 delete-for-me: it changes the owner's own copy and nothing leaves the
-building. `remove_reaction` *is* open-world and destructive: it removes
-something the owner sent and the recipient sees it go.
+building. `create_upload` and `update_conversation` are `false` for the same
+reason — a reservation is purely local, and archiving or pinning is a change to
+the owner's own thread list. `remove_reaction` *is* open-world and destructive:
+it removes something the owner sent and the recipient sees it go.
 
 All writes are `idempotentHint: true`, and that is true **because**
 `client_request_id` is required. Every write tool's description ends with the
@@ -2111,9 +2126,9 @@ reproduced verbatim in `docs/mcp.md` so the two can be diffed by a test.
 > Messages thread: one other person, or a group. It has an ID that starts
 > `conv_`. Messages in it have IDs that start `msg_`. Every ID here is an
 > Agent GM ID with a typed prefix — `conv_` conversations, `msg_` messages,
-> `att_` attachments, `react_` reactions, `contact_` contacts, `upl_`
-> uploads, `op_` operations. Google's own IDs are not accepted in their
-> place.
+> `att_` attachments, `react_` reactions, `part_` people in a thread,
+> `contact_` contacts, `upl_` uploads, `op_` operations. Google's own IDs are
+> not accepted in their place.
 >
 > Words mean what they mean in Google Messages. A *conversation* is a thread.
 > A *contact* is somebody in the phone's contact list. *RCS* is the modern
@@ -2132,12 +2147,13 @@ reproduced verbatim in `docs/mcp.md` so the two can be diffed by a test.
 >    100. `search_messages` needs `q` and searches the whole account.
 > 3. **Reply.** `send_message` with the `conversation_id`, `text`, and a
 >    `client_request_id` you invent. Add `reply_to_message_id` to thread a
->    reply — **but replies are an RCS feature; on an SMS conversation that
->    argument is refused with `unsupported_capability` and
->    `reason: "reply_not_supported"`.** Check the conversation's `type` first.
+>    reply — **but replies are an RCS feature; on an `sms_mms` conversation
+>    that argument is refused with `unsupported_capability` and
+>    `reason: "reply_not_supported"`.** Check the conversation's `type` first,
+>    or read `capabilities.reply`.
 > 4. **Know whether it arrived.** The result carries a `message_id` and an
 >    `operation`. Then watch the message's `delivery.state`, which walks
->    `queued → sending → sent → delivered → read`. **On SMS it usually stops
+>    `sending → sent → delivered → read`. **On SMS it usually stops
 >    at `sent`, and on group threads it usually stops at `sent`. Delivery and
 >    read receipts are an RCS feature and a carrier feature; waiting for
 >    `delivered` on an SMS thread can wait forever.** `sent` means the
@@ -2153,7 +2169,11 @@ reproduced verbatim in `docs/mcp.md` so the two can be diffed by a test.
 >    those recipients already exists you get that thread back and nothing is
 >    sent** — starting is safe, sending is not.
 > 7. **React, or take something back.** `add_reaction` with `emoji` set to a
->    bare emoji; `remove_reaction` with the same. `delete_message` and
+>    bare emoji — Google offers eleven (👍 😍 😂 😮 😥 😠 👎 🤔 😢 😡 ❤️) and
+>    anything else is sent as a custom reaction that may not render on the
+>    recipient's phone. One reaction per person per message: adding a second
+>    replaces the first. `remove_reaction` takes the same `emoji`, or the
+>    `reaction_id` you read. `delete_message` and
 >    `delete_conversation` delete from **this account only** — the recipient
 >    keeps their copy. There is no delete-for-everyone and no mode to choose.
 >
@@ -2166,9 +2186,11 @@ reproduced verbatim in `docs/mcp.md` so the two can be diffed by a test.
 > wakes. **Poll `get_operation`; do not resend.**
 >
 > The phone has to be awake and online for anything to happen. `get_session`
-> tells you whether it is: `state` and `phone_responding`. If `state` is not
-> `connected`, reads still work from the local index but writes will fail,
-> and only the owner can fix it.
+> tells you whether it is: `state` and `phone_responding`. `get_health` tells
+> you whether the index is complete (`backfill`) and whether the two things
+> that break sending are right (`is_default_sms_app`,
+> `config_version_stale`). If `state` is not `connected`, reads still work
+> from the local index but writes will fail, and only the owner can fix it.
 >
 > A call that is refused comes back as an ordinary result with
 > `isError: true` and
@@ -2183,11 +2205,11 @@ reproduced verbatim in `docs/mcp.md` so the two can be diffed by a test.
 >
 > Scopes: `messages:read` gives you `list_conversations`, `get_conversation`,
 > `list_messages`, `get_message`, `message_context`, `search_messages`,
-> `get_attachment`, `list_contacts` and `get_session`. `messages:write` adds
-> `send_message`, `start_conversation`, `mark_read`, `add_reaction`,
-> `remove_reaction`, `create_upload` and `get_operation`. `messages:delete`
-> adds `delete_message` and `delete_conversation`. You only see the tools
-> your token allows.
+> `get_attachment`, `list_contacts`, `get_session` and `get_health`.
+> `messages:write` adds `send_message`, `start_conversation`, `mark_read`,
+> `add_reaction`, `remove_reaction`, `update_conversation`, `create_upload`
+> and `get_operation`. `messages:delete` adds `delete_message` and
+> `delete_conversation`. You only see the tools your token allows.
 
 `docs/mcp.md` opens with the same text under the heading "First five
 minutes", and a test asserts the two are byte-identical apart from the
