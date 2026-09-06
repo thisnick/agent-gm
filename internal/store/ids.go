@@ -16,15 +16,16 @@ var IDNamespace = uuid.MustParse("5ec9ab28-5363-57f8-b543-27672479b604")
 // caller never sees a raw Google conversation ID, message ID or participant
 // ID on a public surface.
 const (
-	PrefixAccount      = "acct_"
-	PrefixConversation = "conv_"
-	PrefixMessage      = "msg_"
-	PrefixAttachment   = "att_"
-	PrefixReaction     = "react_"
-	PrefixContact      = "contact_"
-	PrefixParticipant  = "part_"
-	PrefixOperation    = "op_"
-	PrefixUpload       = "upl_"
+	PrefixAccount       = "acct_"
+	PrefixConversation  = "conv_"
+	PrefixMessage       = "msg_"
+	PrefixAttachment    = "att_"
+	PrefixReaction      = "react_"
+	PrefixContact       = "contact_"
+	PrefixParticipant   = "part_"
+	PrefixOperation     = "op_"
+	PrefixUpload        = "upl_"
+	PrefixAuthorization = "auth_"
 )
 
 // v5 derives a UUIDv5 from the frozen namespace and the joined components.
@@ -106,6 +107,15 @@ func UploadID() string {
 // path or as a caller-supplied parameter.
 func AuditID() string {
 	return uuid.Must(uuid.NewV7()).String()
+}
+
+// AuthorizationID is UUIDv7: Agent GM creates an authorization, so it is not
+// derived from anything (spec section 4.1). The prefix is `auth_`, which is
+// the table's, and NOT `authz_` -- an ID scheme is a public contract and a
+// near-miss in it is the kind of thing that is discovered by a client's
+// regular expression six months later.
+func AuthorizationID() string {
+	return PrefixAuthorization + uuid.Must(uuid.NewV7()).String()
 }
 
 // HasPrefix reports whether an ID carries the expected typed prefix. An ID

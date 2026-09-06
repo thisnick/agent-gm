@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/url"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/thisnick/agent-gm/internal/api"
 	"github.com/thisnick/agent-gm/internal/apierr"
+	"github.com/thisnick/agent-gm/internal/settings"
 )
 
 // Section 16 Slice 2 test 12:
@@ -88,6 +90,21 @@ func TestEveryRouteRejectsAnUnknownBodyField(t *testing.T) {
 
 	for _, r := range api.Routes {
 		if !strings.HasPrefix(r.Path, "/v1/") {
+			continue
+		}
+		if r.RawBody {
+			// The body is bytes, so there is no field to be unknown. The
+			// route is bounded by its reservation instead, which
+			// TestSlice2_17_* asserts.
+			continue
+		}
+		if r.OpenBody {
+			// The field set is not a fixed list -- it IS the settings keys of
+			// section 15.1. Strictness is not waived here, it moves: the
+			// settings registry refuses an unknown key, and refuses it
+			// harder than a name check could. That is asserted separately,
+			// by TestTheOpenBodyRouteIsStillStrict, so this exception cannot
+			// become a hole.
 			continue
 		}
 		t.Run(r.Name, func(t *testing.T) {
@@ -268,4 +285,79 @@ func TestIdempotencyKeyTransports(t *testing.T) {
 			t.Errorf("a key of exactly the maximum length was refused: %v", err)
 		}
 	})
+}
+
+// The two routes exempt from the JSON field check are exempt for a stated
+// reason, and neither reason is "it is easier". This asserts the reasons hold.
+//
+// Plant: set OpenBody on a route that is not the settings PATCH and this test
+// fails at "is declared OpenBody". Planted 2026-09-06.
+func TestTheBodyCheckExemptionsAreExactlyTwoAndBothAreJustified(t *testing.T) {
+	var raw, open []string
+	for _, r := range api.Routes {
+		if r.RawBody {
+			raw = append(raw, r.Name)
+		}
+		if r.OpenBody {
+			open = append(open, r.Name)
+		}
+		if r.RawBody && r.OpenBody {
+			t.Errorf("%s is both RawBody and OpenBody, which is meaningless", r)
+		}
+	}
+	if strings.Join(raw, ",") != "uploads_content" {
+		t.Errorf("RawBody routes = %v; only the upload PUT carries bytes (10.2)", raw)
+	}
+	if strings.Join(open, ",") != "admin_settings_set" {
+		t.Errorf("OpenBody routes = %v; only the settings PATCH is declared OpenBody, "+
+			"because only its field names are somebody else's list (7.7, 15.1)", open)
+	}
+}
+
+// The OpenBody route is still strict, and this is where that is proven: the
+// settings registry refuses an unknown key, naming it, exactly as section 7.1
+// requires -- and refuses more besides, which a name check could not.
+func TestTheOpenBodyRouteIsStillStrict(t *testing.T) {
+	set := settings.New(settings.NewRegistry(), settings.NewMemory(), func(string) string { return "" })
+	ctx := context.Background()
+
+	for name, body := range map[string]string{
+		"an unknown key":  `{"backfill.concurrenc": 4}`,
+		"a made-up key":   `{"totally.invented": 1}`,
+		"a cache buster":  `{"_": 1}`,
+		"a delete switch": `{"action": "wipe"}`,
+	} {
+		raw := map[string]json.RawMessage{}
+		if err := json.Unmarshal([]byte(body), &raw); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := set.Patch(ctx, raw); err == nil {
+			t.Errorf("%s was accepted by the settings registry", name)
+		}
+	}
+
+	// And a real key is accepted, so the check is refusing the right things
+	// rather than everything.
+	raw := map[string]json.RawMessage{"backfill.concurrency": json.RawMessage("4")}
+	if _, err := set.Patch(ctx, raw); err != nil {
+		t.Errorf("a real settings key was refused: %v", err)
+	}
+
+	// The whole body is validated before anything is written: one bad key
+	// rejects the request and changes nothing (7.7).
+	mixed := map[string]json.RawMessage{
+		"backfill.concurrency": json.RawMessage("2"),
+		"nonsense.key":         json.RawMessage("1"),
+	}
+	if _, err := set.Patch(ctx, mixed); err == nil {
+		t.Fatal("a body with one bad key was accepted")
+	}
+	eff, err := set.Get(ctx, "backfill.concurrency")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if eff.Value.Int != 4 {
+		t.Errorf("the rejected PATCH changed backfill.concurrency to %d; it must change nothing",
+			eff.Value.Int)
+	}
 }

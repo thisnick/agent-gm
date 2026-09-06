@@ -85,11 +85,11 @@ type Result struct {
 // construction rather than by discipline: there is no path from a capability
 // refusal to this function.
 //
-//	 7. Look up the idempotency key.
-//	 8. INSERT the operation row with status='running' and COMMIT.
-//	 9. Call that account's libgm client.
-//	10. UPDATE the operation with the outcome, and COMMIT.
-//	11. Respond.
+//  7. Look up the idempotency key.
+//  8. INSERT the operation row with status='running' and COMMIT.
+//  9. Call that account's libgm client.
+//  10. UPDATE the operation with the outcome, and COMMIT.
+//  11. Respond.
 //
 // Step 8 committing before step 9 is what makes the crash story honest: if
 // the process dies between 8 and 9, the operation is found at startup in

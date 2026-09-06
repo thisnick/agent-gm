@@ -19,15 +19,15 @@ import (
 // duplicated, and no amount of local dedup recovers what never arrived. This
 // is the only thing that does.
 //
-//	1. ListConversations(active) and, if backfill.include_archive,
-//	   ListConversations(archived).
-//	2. For each conversation whose last_activity_ms is newer than `since`, or
-//	   whose latest_message_id is not a row we hold:
-//	     FetchMessages(convID, page_size, cursor=nil), walking back until a
-//	     message older than `since` is reached.
-//	3. Upsert everything through the same path as section 5.3. Unchanged rows
-//	   write nothing (content_hash).
-//	4. Record accounts.last_sweep_at_ms for this account.
+//  1. ListConversations(active) and, if backfill.include_archive,
+//     ListConversations(archived).
+//  2. For each conversation whose last_activity_ms is newer than `since`, or
+//     whose latest_message_id is not a row we hold:
+//     FetchMessages(convID, page_size, cursor=nil), walking back until a
+//     message older than `since` is reached.
+//  3. Upsert everything through the same path as section 5.3. Unchanged rows
+//     write nothing (content_hash).
+//  4. Record accounts.last_sweep_at_ms for this account.
 //
 // It is idempotent by construction, because every write goes through the same
 // upsert functions the live stream uses. Running it more often costs

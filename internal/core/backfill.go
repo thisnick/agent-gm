@@ -15,18 +15,18 @@ import (
 // Backfill is spec section 5.2, for THIS account, in the order the spec
 // numbers.
 //
-//	1. Upsert the conversations carried on ClientReady.
-//	2. ListConversations(INBOX, conversation_page_size) -- which is also what
-//	   arms the library's BUGLE_MESSAGE mode (section 3.7).
-//	3. ListConversations(ARCHIVE) if backfill.include_archive.
-//	4. ListContacts() and ListTopContacts(); upsert contacts; link
-//	   participants.
-//	5. For each conversation, oldest-activity first, page FetchMessages until
-//	   the page is empty, max_messages_per_conversation is reached, or a
-//	   message older than backfill.horizon is seen.
-//	6. Record per-conversation progress in backfill_state so a restart
-//	   resumes rather than restarting.
-//	7. Set accounts.backfill_complete_at_ms for THIS account.
+//  1. Upsert the conversations carried on ClientReady.
+//  2. ListConversations(INBOX, conversation_page_size) -- which is also what
+//     arms the library's BUGLE_MESSAGE mode (section 3.7).
+//  3. ListConversations(ARCHIVE) if backfill.include_archive.
+//  4. ListContacts() and ListTopContacts(); upsert contacts; link
+//     participants.
+//  5. For each conversation, oldest-activity first, page FetchMessages until
+//     the page is empty, max_messages_per_conversation is reached, or a
+//     message older than backfill.horizon is seen.
+//  6. Record per-conversation progress in backfill_state so a restart
+//     resumes rather than restarting.
+//  7. Set accounts.backfill_complete_at_ms for THIS account.
 //
 // Every row written carries this account's account_id, and every call is on
 // this account's client. Concurrency is backfill.concurrency conversations at

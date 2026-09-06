@@ -52,6 +52,18 @@ func (r Route) CheckBodyFields(raw []byte) *apierr.Error {
 	if len(raw) == 0 {
 		return nil
 	}
+	if r.RawBody {
+		// The body is bytes, not a JSON object: reading a JPEG as one would
+		// call every upload malformed.
+		return nil
+	}
+	if r.OpenBody {
+		// The field set is the settings registry's, which validates far more
+		// than a name (bounds, type, mutability, the retired-key table). The
+		// strictness section 7.1 asks for is delivered there rather than
+		// lost -- see Route.OpenBody.
+		return nil
+	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		// A body that is not a JSON object at all is malformed, not an

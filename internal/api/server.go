@@ -29,8 +29,22 @@ type Request struct {
 	// Query is the query string, already checked against Route.Query.
 	Query map[string]string
 	// Body is the raw JSON body, already checked against Route.Body. It is
-	// nil when the request carried none.
+	// nil when the request carried none, and always nil on a RawBody route.
 	Body []byte
+	// RawBody is the unread request body, and is non-nil only on a route
+	// declared RawBody -- the upload PUT. The handler is responsible for
+	// bounding it: how many bytes are allowed is the reservation's business
+	// and the transport has no way to know it.
+	RawBody io.ReadCloser
+	// Bearer is the presented bearer value, whatever it was. It is set on
+	// every route that carried an Authorization header, including one whose
+	// value is a media ticket rather than an access token -- which is the
+	// whole point on an AltCredential route, where Auth is nil and the
+	// handler has to check the ticket itself (spec section 10.3).
+	//
+	// It is a credential: it is never logged, never audited and never put in
+	// an error message.
+	Bearer string
 	// Auth is the authenticated caller, or nil on a route whose Scope is
 	// ScopeNone.
 	Auth *authz.Authorization
@@ -180,16 +194,31 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, readErr := readBody(r)
-	if readErr != nil {
-		s.fail(w, requestID, nil, readErr)
-		return
+	// A RawBody route's body is bytes, and how many of them are allowed is
+	// the reservation's business, not the transport's: reading it here would
+	// bound a 100 MiB upload at the 1 MiB JSON limit and buffer it in memory
+	// besides. The handler gets the stream instead.
+	var body []byte
+	if !route.RawBody {
+		var readErr *apierr.Error
+		body, readErr = readBody(r)
+		if readErr != nil {
+			s.fail(w, requestID, nil, readErr)
+			return
+		}
 	}
 
 	auth, authErr := s.authenticate(r, &route, source.Value)
-	if authErr != nil {
+	if authErr != nil && !route.AltCredential {
 		s.fail(w, requestID, &route, authErr)
 		return
+	}
+	if authErr != nil {
+		// AltCredential: the bearer was not an access token, which on this
+		// route is not yet a refusal -- it may be a media ticket, which only
+		// the handler can check (section 10.3). It runs with no
+		// authorization and refuses for itself if the ticket is no good.
+		auth = nil
 	}
 
 	if auth != nil {
@@ -227,6 +256,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Path:                 params,
 		Query:                query,
 		Body:                 body,
+		RawBody:              rawBodyReader(route, r),
+		Bearer:               presentedBearer(r.Header),
 		Auth:                 auth,
 		Source:               source.Value,
 		IdempotencyKeyHeader: r.Header.Get("Idempotency-Key"),
@@ -293,6 +324,17 @@ func bearerToken(h http.Header) (string, *apierr.Error) {
 		return "", apierr.InvalidToken("the Authorization header must be exactly `Bearer <token>`")
 	}
 	return fields[1], nil
+}
+
+// presentedBearer returns the bearer value if the header is well formed, and
+// "" otherwise. It never reports WHY, because a handler that cared would be
+// re-implementing a refusal the transport already owns.
+func presentedBearer(h http.Header) string {
+	token, err := bearerToken(h)
+	if err != nil {
+		return ""
+	}
+	return token
 }
 
 // bucketFor picks the section 12.3 bucket a route spends from. There is
@@ -409,6 +451,17 @@ func (s *Server) fail(w http.ResponseWriter, requestID string, route *Route, e *
 		s.deps.Log("request refused", "request_id", requestID, "code", string(e.Code))
 	}
 	writeJSON(w, e.HTTPStatus(), e.Envelope(requestID))
+}
+
+// rawBodyReader hands the unread body to a RawBody route, and nil to every
+// other one -- so a handler cannot reach a stream the transport has already
+// consumed, and cannot accidentally bypass the JSON path on a route that has
+// one.
+func rawBodyReader(route Route, r *http.Request) io.ReadCloser {
+	if !route.RawBody {
+		return nil
+	}
+	return r.Body
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

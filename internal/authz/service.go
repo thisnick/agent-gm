@@ -199,7 +199,7 @@ func (s *Service) MintAdminSession(ctx context.Context, presentedSecret string, 
 	}
 
 	now := s.clk.Now()
-	authID := "authz_" + uuid.NewString()
+	authID := store.AuthorizationID()
 	familyID := "fam_" + uuid.NewString()
 	absoluteDeadline := now.Add(absoluteTTL)
 	refreshExpiry := earlier(now.Add(idleTTL), absoluteDeadline)

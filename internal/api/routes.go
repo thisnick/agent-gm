@@ -78,6 +78,39 @@ type Route struct {
 	// Paginated marks a listing: `cursor` and `limit`, newest first, limit
 	// defaulting to 50 and capping at 100 (spec section 7.4).
 	Paginated bool
+	// RawBody marks a route whose body is BYTES rather than JSON: the
+	// upload PUT of section 10.2, and nothing else today.
+	//
+	// It exists because the two transport rules that are right for every
+	// other route are wrong for this one. The 1 MiB bound of section 7.2
+	// applies to a JSON body; an upload is bounded by
+	// `media.upload_max_bytes` (100 MiB by default) and by the length the
+	// reservation declared, which only the handler knows. And the
+	// unknown-field check would read a JPEG as a malformed JSON object.
+	// Marking the route is better than special-casing its path in the
+	// middleware, because the exception is then a property of the route a
+	// reader can see rather than a condition buried in a chain.
+	RawBody bool
+	// OpenBody marks a route whose body fields are not a fixed list.
+	//
+	// `PATCH /v1/admin/settings` is the only one: its fields ARE the
+	// settings keys of section 15.1, which live in the settings registry,
+	// and which that registry validates far more strictly than a name check
+	// could -- bounds, types, mutability, downward-only, and the retired-key
+	// table. Enumerating them here would be a second copy that could drift
+	// from the registry, and the strictness section 7.1 asks for is
+	// delivered by the registry rather than lost.
+	OpenBody bool
+	// AltCredential marks a route that accepts something other than an
+	// access token as well as one: `GET /v1/attachments/{id}/content` takes
+	// a `messages:read` token **or** a download ticket (section 10.3).
+	//
+	// The transport still tries the bearer, because most callers present
+	// one; it just does not refuse when that fails, and hands the request to
+	// the handler with no authorization so the ticket path can run. Scope
+	// still names what an access token would need, which is what the
+	// `WWW-Authenticate` challenge on a refusal has to say.
+	AltCredential bool
 	// Notes records anything about the route a reader would otherwise have
 	// to reconstruct from the spec.
 	Notes string
@@ -240,7 +273,7 @@ var Routes = []Route{
 	},
 	{
 		Method: http.MethodGet, Path: "/v1/attachments/{attachment_id}/content",
-		Name: "attachments_content", Scope: ScopeRead,
+		Name: "attachments_content", Scope: ScopeRead, AltCredential: true,
 		Notes: "bytes. An access token OR a download ticket; the ticket is accepted only in the Authorization header, never as ?t= (10.3).",
 	},
 	{
@@ -319,7 +352,7 @@ var Routes = []Route{
 	},
 	{
 		Method: http.MethodPut, Path: "/v1/uploads/{upload_id}/content", Name: "uploads_content",
-		Scope: ScopeNone,
+		Scope: ScopeNone, RawBody: true,
 		Notes: "raw bytes, authenticated by the UPLOAD TOKEN rather than the access token. Its redemption re-checks the issuing authorization's messages:write scope and revocation state (10.3).",
 	},
 
@@ -346,7 +379,8 @@ var Routes = []Route{
 	},
 	{
 		Method: http.MethodPatch, Path: "/v1/admin/settings", Name: "admin_settings_set", Scope: ScopeAdmin,
-		Notes: "validates the WHOLE body: any invalid key rejects the request and changes nothing. Its body fields are the settings keys themselves, so they are validated against the settings registry rather than against a fixed list here.",
+		OpenBody: true,
+		Notes:    "validates the WHOLE body: any invalid key rejects the request and changes nothing. Its body fields are the settings keys themselves, so they are validated against the settings registry -- which checks bounds, type, mutability and the retired-key table, not merely the name -- rather than against a second copy of the key list here.",
 	},
 	{
 		Method: http.MethodPost, Path: "/v1/admin/backfill", Name: "admin_backfill", Scope: ScopeAdmin,

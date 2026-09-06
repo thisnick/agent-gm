@@ -197,6 +197,59 @@ func (a *Account) DeleteMessage(ctx context.Context, in DeleteMessageInput) (Res
 	})
 }
 
+// DeleteConversationInput is DELETE /v1/conversations/{id}.
+type DeleteConversationInput struct {
+	Request
+	ConversationID string
+}
+
+// DeleteConversation is the delete_conversation mutation.
+//
+// It is Google's delete-for-me and nothing else (D14): it removes the owner's
+// own copy of the thread, and the other people in it keep theirs. There is no
+// delete option and no second kind of delete, which is why this takes no
+// switch and why a request carrying one is refused at the route.
+//
+// `libgm.DeleteConversation` wants a participant's number as well as the
+// conversation ID, so the thread's first visible other participant is
+// resolved here rather than at the route: which number that is, is a fact
+// about the conversation, and the route's job is to name the conversation.
+func (a *Account) DeleteConversation(ctx context.Context, in DeleteConversationInput) (Result, error) {
+	conv, err := a.writableConversation(ctx, in.ConversationID, "delete")
+	if err != nil {
+		return Result{}, err
+	}
+	phone, err := a.firstOtherParticipantPhone(ctx, conv.ID)
+	if err != nil {
+		return Result{}, err
+	}
+	req := in.Request
+	req.ConversationID = conv.ID
+	return a.runOperation(ctx, KindDeleteConv, req, func(ctx context.Context, _ store.Operation) (Outcome, error) {
+		return Outcome{ConversationID: conv.ID},
+			a.Backend.DeleteConversation(ctx, conv.SourceID, phone)
+	})
+}
+
+// firstOtherParticipantPhone finds a number to address the delete with.
+//
+// An empty string is not an error: a thread whose participants Agent GM has
+// never seen a number for is still the owner's to delete, and upstream
+// accepts an empty number. Failing here would make a thread undeletable
+// because of an ingest gap, which is the wrong trade.
+func (a *Account) firstOtherParticipantPhone(ctx context.Context, conversationID string) (string, error) {
+	ps, err := a.Store.Participants(ctx, conversationID)
+	if err != nil {
+		return "", err
+	}
+	for _, p := range ps {
+		if !p.IsMe && p.PhoneE164 != "" {
+			return p.PhoneE164, nil
+		}
+	}
+	return "", nil
+}
+
 // --- shared resolution ------------------------------------------------------
 
 // writableConversation is steps 4, 5 and the object half of step 6: resolve
