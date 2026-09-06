@@ -52,7 +52,7 @@ func invocationFor(t *testing.T, name string) (args []string, stdin string) {
 
 		"attachments list":     {"attachments", "list", "msg_01k4z2p8vt"},
 		"attachments show":     {"attachments", "show", "att_9f3c"},
-		"attachments download": {"attachments", "download", "att_9f3c", "--output", dest},
+		"attachments download": {"attachments", "download", "att_9f3c", "--out", dest},
 		"contacts list":        {"contacts", "list", "--top"},
 
 		"operations list": {"operations", "list", "--terminal"},

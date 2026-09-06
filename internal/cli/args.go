@@ -221,9 +221,9 @@ type globals struct {
 //
 // `--json` is a synonym for `--output json`. `--output` is validated here
 // rather than at the point of use, so a misspelled format is exit 2 before a
-// request is sent -- with one exception, `agm attachments download`, where
-// docs/cli.md gives `--output` its documented second meaning of "the file to
-// write".
+// request is sent. There is NO exception: `--output` is a format on every
+// command, and the file `agm attachments download` writes is `--out`
+// (section 11.1).
 func resolveGlobals(inv *invocation) (globals, error) {
 	var g globals
 	g.server = strings.TrimRight(inv.str("--server"), "/")
@@ -242,7 +242,7 @@ func resolveGlobals(inv *invocation) (globals, error) {
 	g.timeoutSet = inv.has("--timeout")
 
 	g.format = FormatTable
-	if inv.has("--output") && !inv.cmd.outputIsAPath {
+	if inv.has("--output") {
 		switch v := inv.str("--output"); v {
 		case FormatTable, FormatJSON, FormatJSONL:
 			g.format = v

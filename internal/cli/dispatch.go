@@ -39,9 +39,6 @@ type command struct {
 	confirm string
 	// paginated marks a listing, so --all can walk it.
 	paginated bool
-	// outputIsAPath gives --output its second, documented meaning: the file
-	// `agm attachments download` writes.
-	outputIsAPath bool
 	// summary is the one line `agm --help` prints.
 	summary string
 	// run overrides the generic executor.
@@ -379,10 +376,19 @@ func buildCommandTable() []*command {
 		},
 		{
 			words: []string{"attachments", "download"}, inventory: "attachments download",
-			route: "attachments_content", outputIsAPath: true,
+			route:   "attachments_content",
 			summary: "download an attachment's bytes",
 			pos:     []posDef{{name: "<att-id>", param: "attachment_id", where: wPath, required: true}},
-			run:     (*runner).download,
+			flags: []flagDef{
+				// The file, not the format. It is `--out` and not `--output`
+				// because --output is a FORMAT on every command without
+				// exception (section 11.1): a global flag whose meaning
+				// changes on one command is how a script that set
+				// `--output json` once ends up writing an attachment to a
+				// file called `json`.
+				{name: "--out", kind: kString, help: "the file to write; the attachment's own name by default"},
+			},
+			run: (*runner).download,
 		},
 		{
 			words: []string{"contacts", "list"}, inventory: "contacts list",

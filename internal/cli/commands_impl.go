@@ -229,9 +229,8 @@ func (r *runner) removeReaction(inv *invocation) error {
 }
 
 // download redeems a download ticket. The ticket goes in the Authorization
-// header and never in the URL (spec section 10.3), and `--output` names the
-// file rather than the format here, which is the one place the two meanings
-// of that flag part company (docs/cli.md).
+// header and never in the URL (spec section 10.3). The file is named by
+// `--out`; `--output` is the format, here as everywhere else.
 func (r *runner) download(inv *invocation) error {
 	attachmentID := inv.positional(0)
 	meta, err := r.client.Do(r.ctx, Request{
@@ -261,7 +260,7 @@ func (r *runner) download(inv *invocation) error {
 		return err
 	}
 
-	dest := inv.str("--output")
+	dest := inv.str("--out")
 	if dest == "" {
 		dest = att.Filename
 	}

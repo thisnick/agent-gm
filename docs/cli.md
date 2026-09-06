@@ -269,12 +269,12 @@ obeyed, because obeying it would send a second real message to a real person.
 ```text
 agm attachments list <msg-id>
 agm attachments show <att-id>
-agm attachments download <att-id> [--output <path>]
+agm attachments download <att-id> [--out <path>]
 agm contacts list [--account] [--query <q>] [--top] [--limit N]
 ```
 
 `agm attachments download` uses the download ticket and puts it in the
-`Authorization` header, never in the URL. `--output` names the file.
+`Authorization` header, never in the URL. `--out` names the file.
 
 ### Operations
 

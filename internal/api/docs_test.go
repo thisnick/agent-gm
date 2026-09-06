@@ -257,6 +257,36 @@ func normaliseFlags(mentioned []string) []string {
 	return out
 }
 
+// mentionsFlag reports whether doc names this exact flag.
+//
+// It is a WHOLE-WORD match, not a substring one, and that distinction is not
+// theoretical: `--output` contains `--out`, so a substring check would have
+// reported `--out` as documented on a page that in fact only ever said
+// `--output`. That is exactly what happened when `agm attachments download`
+// was moved off the overloaded global `--output` onto its own `--out`, and a
+// drift test that cannot see a rename is a drift test that will one day let a
+// page go stale in the direction that matters.
+//
+// A flag name ends at anything that is not a letter, a digit or a hyphen.
+func mentionsFlag(doc, flag string) bool {
+	for i := 0; ; {
+		j := strings.Index(doc[i:], flag)
+		if j < 0 {
+			return false
+		}
+		end := i + j + len(flag)
+		if end >= len(doc) || !isFlagChar(doc[end]) {
+			return true
+		}
+		i = end
+	}
+}
+
+func isFlagChar(b byte) bool {
+	return b == '-' ||
+		(b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
+}
+
 // TestCLIDocDocumentsEveryCommand asserts every command of the CLI inventory,
 // and every flag those commands name, appears in docs/cli.md.
 func TestCLIDocDocumentsEveryCommand(t *testing.T) {
@@ -267,16 +297,37 @@ func TestCLIDocDocumentsEveryCommand(t *testing.T) {
 			t.Errorf("docs/cli.md does not document the command %q", c.String())
 		}
 		for _, f := range normaliseFlags(c.FlagsMentioned()) {
-			if !strings.Contains(doc, f) {
-				t.Errorf("docs/cli.md does not mention %s, which %s supplies a route "+
-					"parameter with", f, c.String())
+			if !mentionsFlag(doc, f) {
+				t.Errorf("docs/cli.md does not mention %s, which %s names", f, c.String())
 			}
 		}
 	}
 	for _, f := range cli.GlobalFlags() {
-		if !strings.Contains(doc, f) {
+		if !mentionsFlag(doc, f) {
 			t.Errorf("docs/cli.md does not document the global flag %s (spec 11.1)", f)
 		}
+	}
+}
+
+// The whole-word matcher has its own test, because a matcher that silently
+// matched substrings would make the test above pass on a stale page and
+// nobody would know.
+func TestMentionsFlagIsWholeWord(t *testing.T) {
+	const page = "use --output json, and --out <path> on download, and --wait-for sent"
+	for _, want := range []string{"--output", "--out", "--wait-for"} {
+		if !mentionsFlag(page, want) {
+			t.Errorf("mentionsFlag did not find %s", want)
+		}
+	}
+	for _, absent := range []string{"--outp", "--wait", "--o", "--waits"} {
+		if mentionsFlag(page, absent) {
+			t.Errorf("mentionsFlag found %s, which the page does not name", absent)
+		}
+	}
+	// The case that actually bit: a page saying only --output must not
+	// report --out as documented.
+	if mentionsFlag("only --output here", "--out") {
+		t.Error("a page saying only --output reported --out as documented")
 	}
 }
 

@@ -23,7 +23,8 @@
     ],
     "scripts": {
       "build": [
-        "go build -trimpath -o bin/agent-gm ./cmd/agent-gm"
+        "go build -trimpath -o bin/agent-gm ./cmd/agent-gm",
+        "go build -trimpath -o bin/agm ./cmd/agm"
       ],
       "fmt": [
         "go fmt ./...",

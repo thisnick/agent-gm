@@ -347,9 +347,9 @@ var Commands = []Command{
 	{
 		Name: "attachments download", Routes: []string{"attachments_content"},
 		Supplies: map[string]string{"attachment_id": "positional <att-id>"},
-		Notes:    "--output names the file. The ticket goes in the Authorization header, never in the URL (10.3).",
+		Notes:    "--out names the file, defaulting to the attachment's own. The ticket goes in the Authorization header, never in the URL (10.3).",
 		LocalFlags: map[string]string{
-			"--output": "the file to write; on this command --output names a path rather than a format",
+			"--out": "the file to write, defaulting to the attachment's own name",
 		},
 	},
 
