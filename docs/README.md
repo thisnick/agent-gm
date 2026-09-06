@@ -12,7 +12,7 @@ owes so an implementer does not have to invent a structure.
 
 | Page | Slice | Spec sections it serves |
 |---|---|---|
-| `pairing.md` | 2 | §3.2, §11.4 — both pairing flows, exactly what the owner does on the phone, the paired-device slot, the two phone settings that must be right (default SMS app; group messaging set to MMS), and how to recover from an unpair |
+| `pairing.md` | 2 | §3.2, §4.7, §11.4 — the pairing flow, the account model (adding, logging out, removing, re-pairing), exactly what the owner does on the phone, the two phone settings that must be right (default SMS app; group messaging set to MMS), and how to recover when an account's cookies expire |
 | `api.md` | 2 | §7, §10 — every REST route, its parameters, its DTOs, the error envelope and the full code table, pagination, idempotency, and the media ticket flow with its exact `curl` commands |
 | `cli.md` | 2 | §11 — every `agm` command, the global flags, the exit-code table, `--wait`/`--wait-for`, credential precedence and write-back safety |
 | `operations.md` | 2 | §12, §15 — the environment table, the settings table with bounds, backup and restore (the three things that move together), health and diagnosis, and the runbook |

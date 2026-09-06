@@ -1,8 +1,8 @@
 # Agent GM
 
-MCP and CLI access to your own Google Messages account, paired directly with
-your phone through the Google Messages web protocol. One Go binary, one
-owner, one phone. No Matrix, no bridge, no UI for humans.
+MCP and CLI access to your own Google Messages, paired directly with your
+phone through the Google Messages web protocol. One Go binary, one owner, as
+many Google accounts as you have. No Matrix, no bridge, no UI for humans.
 
 It imports the Google Messages client library from
 [mautrix-gmessages](https://github.com/mautrix/gmessages) (`pkg/libgm`,
