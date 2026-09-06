@@ -5,3 +5,4 @@
 *.env
 /testdata/live-numbers.local
 *.local
+/.claude/settings.local.json
