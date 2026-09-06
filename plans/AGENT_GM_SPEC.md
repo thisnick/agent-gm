@@ -3269,7 +3269,7 @@ else is exit 2 naming the flag.
 3   authentication required or expired credentials
 4   authorization or insufficient scope
 5   requested resource absent
-6   unsupported capability for this conversation or message
+6   unsupported capability for this account, conversation or message
 7   retryable network, Google, phone, or rate-limit failure
 8   an operation reached a terminal failure
 9   local configuration or credential-store failure
@@ -3285,7 +3285,7 @@ code, and the mapping is exhaustive — §16 Slice 2 test 18 enumerates it:
 | `invalid_token` | `3` |
 | `insufficient_scope` | `4` |
 | `not_found` | `5` |
-| `unsupported_capability` | `6` |
+| `unsupported_capability`, including `not_signed_in` — an **account**-level condition, which is why the gloss above names the account | `6` |
 | `rate_limited`, `disconnected`, `phone_not_responding`, `google_http_error`, `pairing_init_timeout` | `7` |
 | an operation reaching `failed` or `unknown` while waiting | `8` |
 | `not_paired`, every other `pairing_*`, `not_default_sms_app`, `config_version_stale`, `google_error`, `google_undocumented_status`, `google_permission_denied` | `10` |
@@ -3300,29 +3300,37 @@ operation is pending and must not be resent.
 ### 11.3 Commands
 
 ```text
-agm pair [--device-index N] [--timeout 5m]     # default: Chrome over CDP
-agm pair --refresh-cookies                     # re-auth without re-pairing
+agm pair [--account <acct-id>] [--device-index N] [--timeout 5m]
+                                               # adds an account, or resumes one
+agm pair --refresh-cookies --account <acct-id> # re-auth without re-pairing
 agm pair --paste [--paste-file <path>]         # fallback: curl / JSON paste
-agm pair --forget-browser
-agm unpair [--yes]
-agm session [--watch]
-agm reconnect
+agm pair --forget-browser [--account <acct-id>]
+
+agm accounts list [--all]
+agm accounts show <acct-id>
+agm accounts label <acct-id> <label>
+agm accounts sign-out <acct-id> [--yes]        # keeps everything, refuses writes
+agm accounts remove <acct-id> [--yes]          # the ONLY thing that deletes data
+
+agm session [--account <acct-id>] [--watch]
+agm reconnect --account <acct-id>
 agm health
 
-agm conversations list [--query|--participant|--folder|--type|--unread|--group
-                        |--include-deleted|--all]
+agm conversations list [--account|--query|--participant|--folder|--type
+                        |--unread|--group|--include-deleted|--all]
 agm conversations show <conv-id>
-agm conversations start <e164>... [--name <name>]
+agm conversations start <e164>... [--account <acct-id>] [--name <name>]
 agm conversations archive|unarchive|pin|unpin|mark-unread <conv-id>
 agm conversations mark-read <conv-id> --message <msg-id>
 agm conversations delete <conv-id> [--yes]
 agm conversations typing <conv-id>
 
-agm messages list [<conv-id>] [--direction|--sender|--after|--before
+agm messages list [<conv-id>] [--account|--direction|--sender|--after|--before
                    |--has-attachment|--delivery-state|--include-system|--all]
 agm messages show <msg-id>
 agm messages context <msg-id> [--before 5] [--after 5]
-agm messages search <query> [--mode words|exact] [--conversation <conv-id>]
+agm messages search <query> [--account] [--mode words|exact]
+                            [--conversation <conv-id>]
                             [--sender|--after|--before|--has-attachment]
 agm messages send <conv-id> [--text <t>] [--file <path>] [--reply-to <msg-id>]
                             [--force-rcs]
@@ -3334,8 +3342,9 @@ agm messages remove-reaction <msg-id> <emoji> | --reaction <react-id>
 agm attachments show <att-id>
 agm attachments download <att-id> [--output <path>]
 
-agm contacts list [--query <q>] [--top]
+agm contacts list [--account] [--query <q>] [--top]
 
+agm operations list [--account] [--kind|--status|--terminal|--after|--before|--all]
 agm operations show <op-id>
 agm operations wait <op-id> [--for sent|delivered|read|terminal] [--timeout 60s]
 
@@ -3349,8 +3358,8 @@ agm admin enrollment-codes create|list|show|revoke
 agm admin authorization-requests list|show|approve|deny
 agm admin authorizations list|show|revoke
 agm admin clients list|show|revoke
-agm admin audit list
-agm admin backfill [--conversation <conv-id>]
+agm admin audit list [--account <acct-id>] [--kind|--kind-prefix|--after|--before]
+agm admin backfill [--account <acct-id>] [--conversation <conv-id>] [--yes]
 agm admin backup
 agm admin diagnostics
 
@@ -3358,9 +3367,9 @@ agm completion bash|zsh|fish
 agm version
 ```
 
-**Every `/v1` route parameter has a flag**, with one stated exception:
-`GET`/`DELETE /v1/uploads/{id}` have no command, for the same reason they have
-no MCP tool (§8.2) — `agm messages send --file` performs the whole reserve /
+**Every `/v1` route parameter has a flag, and every `/v1` route has a
+command**, with one stated exception: `GET`/`DELETE /v1/uploads/{id}` have no
+command, for the same reason they have no MCP tool (§8.2) — `agm messages send --file` performs the whole reserve /
 `PUT` / send sequence in one process and never surfaces an `upl_` ID for a
 human to inspect or cancel. `agm messages list` with no
 conversation ID is `GET /v1/messages` across every account, or one account
@@ -3392,8 +3401,11 @@ to wait after the operation is terminal — that is deliberate, and
 settled". **`agm` warns on stderr when `--wait-for delivered` or `read` is
 used on an `sms_mms` conversation**, for the reason in §5.5.
 
-Destructive commands (`unpair`, `conversations delete`, `messages delete`,
-`auth logout`, `admin ... revoke`, `pair --forget-browser`) print the **exact
+Destructive commands — `accounts remove` (the only one that deletes an
+account's history), `accounts sign-out`, `conversations delete`,
+`messages delete`, `auth logout`, `admin ... revoke`, `pair --forget-browser`,
+and `admin backfill` with neither `--account` nor `--conversation` — print the
+**exact
 `effect` sentence returned by the route** (§7.6) and require an interactive
 `y`, or `--yes`. The `effect` field, the MCP tool description's closing
 sentence, and this prompt are the same words.
@@ -3491,7 +3503,10 @@ Three things the owner is told, once, at this point:
   session and usually needs no interaction at all. Adding a *new* account uses
   a fresh directory, so it always starts signed out and the owner is never
   offered the wrong account by accident. `--forget-browser` without
-  `--account` removes them all, and with it removes one.
+  `--account` removes them all, and with it removes one. Its effect sentence is
+  *"deletes the saved Chrome sign-in for this account; the next pair or cookie
+  refresh will ask you to sign in to Google again"* — the same words in the
+  prompt and in the route's `effect` field, per the rule above.
 
 **Reading the user's existing Chrome profile is explicitly not done.** On Linux
 the cookie DB key lives in the login keyring, on Windows Chrome has used
@@ -3729,7 +3744,14 @@ assert none of them appear in captured logs, in `agent-gm.sqlite3`, in its
 | concurrent downloads | 8 per authorization, 32 globally |
 | `/mcp` in flight | 8 per authorization, 32 globally |
 
-Holding several scopes does not multiply the allowance. Exceeding one is
+Holding several scopes does not multiply the allowance, and **neither does
+holding several accounts**: the buckets are per authorization and per source,
+never per account (D29). One authorization sending to three accounts shares one
+120/min mutation budget, so adding an account divides the per-account send rate
+rather than adding to it. That is deliberate — the limits protect the server
+and the phones from a runaway agent, and an agent is no less runaway for
+spreading itself across accounts — but an operator should know it before adding
+the fourth account. §16 Slice 2 asserts it. Exceeding one is
 `rate_limited` with `Retry-After`. Token buckets for ordinary traffic;
 durable cooldown metadata for the credential-failure limiters.
 
@@ -3778,12 +3800,13 @@ happened to this account" stays answerable after the account is removed (§4.7).
 `audit_events` records security-relevant metadata:
 **`account.paired`**, **`account.resumed`**, **`account.signed_out`**,
 **`account.removed`** (with the deleted row counts),
-**`account.label_changed`**, **`account.state_changed`** (from, to, cause);
+**`account.label_changed`**, **`account.pair_failed`**,
+**`account.state_changed`** (from, to, `state_reason`);
 **`auth.admin_session_minted`** (source, granted scopes, whether narrowed —
 never the secret), **`auth.admin_session_narrowed`** and
 **`auth.admin_session_refreshed`** (scopes before and after),
 **`auth.admin_secret_failed`** (source and the resulting cooldown state, never
-the presented value); pairing start, success, failure and unpair; session invalidation and its cause; every write operation
+the presented value); every write operation
 and its outcome; enrollment-code creation, consumption, expiry and
 revocation; authorization request creation, approval, denial and expiry;
 authorization and client revocation; refresh-token reuse detection; settings
@@ -3844,14 +3867,25 @@ It must:
   `config_version_stale` is testable with no phone.
 - Return a scriptable `ResolveResult.Status`, including an integer the proto
   has no name for, so `google_undocumented_status` is testable.
-- Run both pairing flows including `RefreshGoogleCookies`, a wrong-account
+- Run the pairing flow including `RefreshGoogleCookies`, a wrong-account
   refresh, and several primary devices with a settable `device_index`.
 
-**The fake takes a clock.** Every timeout in this spec —
+**Accounts diverge on purpose.** Because one fake is one account, every
+scriptable behaviour above is scripted **per fake**, and the tests that matter
+depend on it: account A healthy while B returns `ErrInvalidCredentials`; A's
+batch abandoned by the dedup while B's is not; A backfilling while B is paused
+by a `MOBILE_DATABASE_SYNC_STARTED`; A `connected` while B is `parked`. Nothing
+in the fake is process-global.
+
+**The fake takes a clock, and each fake takes its own.** Every timeout in this
+spec —
 `operations.pending_timeout` (24h), the `[3s, 8s, 20s]` send backoff,
 `responseHardTimeout`, ticket expiry, the sweep interval — is measured against
-an injected `Clock` whose test implementation advances on demand. No test
-sleeps, and no test waits out a real 24 hours.
+an injected `Clock` whose test implementation advances on demand. Two fakes may
+share one clock or hold two, and each test says which: §16 Slice 2's sign-out
+and re-pair tests advance **one** account's clock while the other's stands
+still, which is only expressible with separate clocks. No test sleeps, and no
+test waits out a real 24 hours.
 
 `AGENT_GM_BACKEND=fake` **together with `AGENT_GM_ALLOW_FAKE=1`** selects it at
 runtime — both are required, and a `fake` backend without the second refuses to
@@ -3863,9 +3897,12 @@ conformance run all drive a real server with no phone.
 
 Under `devbox run test`, no gate:
 
-- **ID derivation**, including that the `account_key` component is present and
-  that a different phone produces different IDs. A test that computes the
-  UUIDv5 independently, not by calling the same function twice.
+- **ID derivation**, including that the `account_id` component is present in
+  every root derivation, and — the direction that matters — that **the same
+  Google account on a *different phone* produces the *same* IDs**, while a
+  **different Google account** produces different ones (§3.2, §4.1, D28). A
+  test that computes the UUIDv5 independently, not by calling the same function
+  twice.
 - **Delivery-state mapping** for every one of the ~70 `MessageStatusType`
   values, as a table test enumerating the enum from the pinned proto (§13.4),
   so a value added upstream fails the test rather than silently landing in
@@ -3908,6 +3945,17 @@ Under `devbox run test`, no gate:
   requires `client_request_id`, and every write tool's description ends with
   the fresh-key sentence.
 
+- **Two accounts, in the ordinary suite**: ingest, ordering, dedup and the
+  reconciliation sweep run with two fakes interleaved, asserting no cross-talk
+  — every row lands under the right `account_id`, one account's sweep does not
+  touch the other's rows, and one account's dedup loss does not trigger the
+  other's sweep. These are the paths most likely to break under D27, and they
+  need no gate.
+- **Every query carries its account**: a test enumerates the store's queries
+  and fails on one that filters conversations, messages, participants,
+  contacts, operations or backfill state without either an `account_id`
+  predicate or an explicit all-accounts marker.
+
 Nothing here needs Docker or a phone, so **nothing here is behind a gate**.
 Parking a test behind a gate it does not need is how a clause stays unverified
 for a phase.
@@ -3934,6 +3982,11 @@ has approved, referred to throughout this repository by placeholder:
 > `testdata/live-numbers.local`, read only by the live-gated tests. No commit,
 > no fixture, no doc page, no example, no log and no commit message contains a
 > real phone number. A commit that adds one is reverted, not amended.
+
+**There is one approved set, for one account.** A second account would need a
+second phone and a second approved set; §17 resolves this by running every
+two-account test against two **fakes**, so no live gate is ever multi-account
+and no second placeholder is needed.
 
 Fictional `555` numbers (`+12025550123`) are reserved for examples and
 fixtures and must never be dialled. **Only the coordinator sends live**; an
@@ -4213,7 +4266,7 @@ Environment only, plus a runtime settings table. **There is no config file.**
 | `AGENT_GM_BACKEND` | `libgm` | `libgm` \| `fake` |
 | `AGENT_GM_ALLOW_FAKE` | unset | `1` permits `AGENT_GM_BACKEND=fake`. Without it a `fake` backend refuses to start, so a production deployment cannot be talked into serving an empty in-memory phone |
 | `AGENT_GM_LIVE_NUMBERS` | unset | live-gate targets, `direct,group1,group2` (§13.3). Read only by `-tags live` tests; never committed |
-| `AGENT_GM_PAIRING_TIMEOUT` | `5m` | §3.2 |
+| `AGENT_GM_PAIRING_TIMEOUT` | `5m` | how long a started pairing may sit unconfirmed before Agent GM discards the half-built `AuthData` and deletes any `pairing` row (§3.2). Distinct from upstream's `GaiaInitTimeout` (20s) and from Google's own `ErrPairingTimeout` |
 | `AGENT_GM_ACCOUNT` | unset | CLI only. Default `acct_` ID for `--account` (§11.1) |
 | `AGENT_GM_CHROME` | unset | CLI only. Path to a Chrome or Chromium binary for the default pairing flow; searched before the platform's usual locations and `PATH` (§11.4) |
 | `AGENT_GM_URL` / `AGENT_GM_ACCESS_TOKEN` / `AGENT_GM_REFRESH_TOKEN_FILE` / `AGENT_GM_CLIENT_ID` / `AGENT_GM_CREDENTIALS_FILE` | — | CLI side only (§11.5) |
@@ -4223,26 +4276,31 @@ Runtime settings, mutable through `PATCH /v1/admin/settings`, each reporting
 its effective value, source (`default` \| `environment` \| `database`),
 mutability and restart requirement:
 
-| Key | Default | Bounds |
-|---|---|---|
-| `backfill.concurrency` | 2 | 1–8 |
-| `backfill.conversation_page_size` | 100 | 10–500 |
-| `backfill.message_page_size` | 100 | 10–500 |
-| `backfill.max_messages_per_conversation` | 2000 | 100–100000 |
-| `backfill.horizon` | 365d | 7d–3650d |
-| `backfill.include_archive` | true | — |
-| `ingest.sweep_interval` | 15m | 1m–6h. Per account |
-| `accounts.max_concurrent` | 8 | 1–32 (§4.7) |
-| `operations.send_deadline` | 300s | 60s–600s |
-| `operations.idempotency_ttl` | 30d | 1d–365d |
-| `operations.pending_timeout` | 24h | 1h–7d |
-| `operations.wait_timeout` | 60s | 5s–10m |
-| `media.upload_max_bytes` | 104857600 | mutable downward only |
-| `media.cache_max_bytes` | 2 GiB | — |
-| `media.inline_mcp_image_max_bytes` | 1 MiB | — |
-| `oauth.*` | §9.6 | |
-| `backup.keep` | 7 | 1–100 |
-| `logging.level` | `info` | reloadable without restart |
+**Scope** says whether a value is one server-wide budget (`server`) or a
+server-wide value **applied to each account independently** (`per account`).
+Getting this wrong is how a two-account deployment does twice the work it was
+configured for, or half.
+
+| Key | Default | Bounds | Scope |
+|---|---|---|---|
+| `backfill.concurrency` | 2 | 1–8 | per account — worst case is this × `accounts.max_concurrent` |
+| `backfill.conversation_page_size` | 100 | 10–500 | per account |
+| `backfill.message_page_size` | 100 | 10–500 | per account |
+| `backfill.max_messages_per_conversation` | 2000 | 100–100000 | per account |
+| `backfill.horizon` | 365d | 7d–3650d | per account — cost multiplies by account count |
+| `backfill.include_archive` | true | — | per account |
+| `ingest.sweep_interval` | 15m | 1m–6h | per account |
+| `accounts.max_concurrent` | 8 | 1–32 (§4.7) | **server** |
+| `operations.send_deadline` | 300s | 60s–600s | server |
+| `operations.idempotency_ttl` | 30d | 1d–365d | server |
+| `operations.pending_timeout` | 24h | 1h–7d | server |
+| `operations.wait_timeout` | 60s | 5s–10m | server |
+| `media.upload_max_bytes` | 104857600 | mutable downward only | server |
+| `media.cache_max_bytes` | 2 GiB | — | **server** — the LRU is cross-account (§10.3) |
+| `media.inline_mcp_image_max_bytes` | 1 MiB | — | server |
+| `oauth.*`, `admin.*` | §9.6 | | server |
+| `backup.keep` | 7 | 1–100 | server |
+| `logging.level` | `info` | reloadable without restart | server |
 
 A retired key becomes an unknown key: setting one answers `invalid_request`
 naming its replacement, rather than silently writing a key nothing reads.
@@ -4288,13 +4346,18 @@ was chosen that way (D28).
 
 ### 15.3 Health and diagnosis
 
-`GET /healthz` for liveness. `GET /v1/health` for everything else:
-`session.state`, `google.*` (§3.7), `backfill`, `counters`
-(`dropped_events`, `unknown_events`, `pending_operations`), `version`,
-`commit`, `source_url`, and the `client_source` this request resolved to.
+`GET /healthz` for liveness — `ok` whenever the process is serving, whatever
+the accounts are doing. `GET /v1/health` for everything else, in the shape §7.5
+defines: `version`, `commit`, `source_url`, `config_version_compiled`,
+`upstream_commit`, an **`accounts_summary`** of totals by state, and an
+**`accounts[]`** array carrying per account its `state`, `state_reason`,
+`phone_responding`, `google` block, `backfill`, `sweep` and `counters` — plus
+the `client_source` this request resolved to. There is no server-level
+`session` object; §7.5 holds the one authoritative shape.
 
-`agm session --watch` streams state changes for an operator watching a
-reconnect.
+`agm accounts list` is the fast operator view. `agm session --account <id>
+--watch` streams one account's state changes; `agm session --watch` streams
+every account's.
 
 ### 15.4 Runbook
 
@@ -4309,6 +4372,8 @@ reconnect.
 | one account is `signed_out`, others fine | its cookies expired, or the owner signed it out | `agm pair --refresh-cookies --account <id>`, or `agm pair` again. Its history was never touched (§4.7) |
 | an account's Google address changed | the owner renamed the Google account (§3.2) | a re-pair creates a **second** account. Confirm, then `agm accounts remove` the stale one — that is the only command that deletes |
 | paired against the wrong Android phone | the account has several and the library picked the most recently seen | `agm pair --device-index 1` (§11.4) |
+| an account sits in `parked` | `accounts.max_concurrent` is reached, so it holds no client — **not** an error and not transient; `state_reason` is `capacity` | raise `accounts.max_concurrent`, or sign out an account that is no longer needed. `agm accounts list` shows which accounts hold the slots |
+| an account is `account_changed` and refuses writes | the phone switched to a different Google account underneath the pairing (§3.4) | decide which account the phone should serve. To keep the original, switch the phone back and `agm pair --refresh-cookies --account <id>`. To adopt the new one, `agm pair` it as a **new** account; the old account's history stays readable and is deleted only by `agm accounts remove` |
 | `agm pair` reports no Chrome found | no Chrome or Chromium on this machine | use `--server` from a machine that has one, or `--paste` (§11.4). Set `AGENT_GM_CHROME` if Chrome is in an unusual place |
 | every send is `not_default_sms_app` | Google Messages is not the phone's default SMS app | change it on the phone; `agm health` reports `is_default_sms_app` |
 | a group send fans out as separate SMS threads | the phone's *Group messaging* is set to "Send an SMS reply to all recipients" | set it to MMS on the phone (§11.4). Agent GM can only report what Google returns |
@@ -4329,7 +4394,10 @@ indistinguishable from having done nothing.
 
 Migrations are the whole mechanism (§4.3). Pull the new image tag by digest,
 recreate the container, and the process migrates before it binds. Downgrade is
-not supported: a database at a higher `user_version` refuses to open.
+not supported: a database at a higher `user_version` refuses to open. A
+migration that adds a column every existing row needs — `account_id` being the
+archetype — sets `server_meta.pending_reprocess` and derives the values once
+after startup (§4.3) rather than shipping a hand-written data migration.
 
 Upgrading the `libgm` pin is a **deliberate slice**, never part of a routine
 upgrade — see §3.6 for the required steps and the live gate.
@@ -4420,7 +4488,7 @@ idempotency, the audit log.
    update.
 11. **Live gate.** The owner replies from that phone; `spike watch` prints the
    inbound message within 10 seconds, with the right text and sender.
-12. **Live gate.** Restart the process; the session file reloads, `Connect`
+12. **Live gate.** Restart the process; each account's session file reloads, `Connect`
     succeeds without re-pairing, and `IsLoggedIn()` is true.
 13. **Live gate.** `agent-gm spike diag` prints the compiled and live
     `ConfigVersion` and `is_default_sms_app` from a real round trip; both are
@@ -4433,7 +4501,9 @@ idempotency, the audit log.
 backfill, live events and the reconciliation sweep; operations with
 idempotency and crash recovery; every `/v1` route of §7 including
 `/v1/auth/admin-session` and the admin subtree; the media ticket system of
-§10; the `agm` CLI of §11 including both pairing flows; the audit log; rate
+§10; the `agm` CLI of §11 including the pairing flow and its `--paste` fallback,
+the `agm accounts` subtree and `--account`; the `internal/accounts`
+supervisor; the audit log; rate
 limits and trusted-proxy resolution; `docs/api.md`, `docs/cli.md`,
 `docs/pairing.md`, `docs/operations.md`.
 
@@ -4507,7 +4577,10 @@ model.
 16. `PATCH /v1/conversations/{id}` archives, unarchives, pins, unpins and marks
     unread; repeating one returns `changed: false` with `operation: null` and
     calls the backend zero times.
-17. The full upload path: reserve, `PUT` the exact bytes, send. A short body, a
+17. The full upload path: reserve, `PUT` the exact bytes, send. **Uploads are
+    account-agnostic** (§10.2): an upload reserved with no account in mind
+    sends successfully into a *second* account's conversation, and a second
+    send of the same upload — into either account — is refused. A short body, a
     long body, a wrong `sha256` and a contradicted content type are each
     refused **and spend the reservation**. A second `PUT` with the same token
     fails. The token presented at another upload's URL is refused **and not
@@ -4520,9 +4593,11 @@ model.
     `scopes`) makes the next redemption fail.
 19. `upload_url` and `download_url` are built from `AGENT_GM_PUBLIC_URL` even
     when the request carries a hostile `Host` and `X-Forwarded-Host`.
-20. Erasure order: a purge collects paths inside the transaction, commits,
-    then unlinks; a fault injected between commit and unlink leaves an orphan
-    file and **no** orphan `media_cache_entries` row.
+20. Erasure order, tested through `DELETE /v1/accounts/{id}` specifically,
+    since §4.7 makes account removal *the* erasure path: it collects the cached
+    media paths inside the transaction, commits, then unlinks; a fault injected
+    between commit and unlink leaves an orphan file and **no** orphan
+    `media_cache_entries` row.
 21. The exit-code mapping table of §11.2 in full: every §7.2 code produced
     against a fake-backed server maps to the stated exit code. Exit 3 comes
     from an expired admin access token (advanced past
@@ -4592,15 +4667,41 @@ model.
     wrong `account_id` is `invalid_request` naming both, never `not_found`.
 35. **Idempotency is per account.** The same `client_request_id` sent to two
     accounts creates two operations and calls each backend once.
-36. Sentinel secrets — including each of the seven Google cookie values by
+36. **`agm accounts remove` is the *only* purge.** Each of signing out,
+    `pair --forget-browser`, a `RevokePairData` from the phone, cookie expiry
+    (`GaiaLoggedOut`), `account_changed`, an abandoned re-pair and
+    `accounts.max_concurrent` parking deletes **zero** conversation, message,
+    attachment, reaction, contact and operation rows — asserted by row counts
+    before and after each. This is the negative half of D30 and test 33 is the
+    positive half.
+37. **`accounts.max_concurrent` bounds concurrency and is diagnosable.** With
+    it set to 1 and two accounts paired, exactly one is `connected` and the
+    other is **`parked`** with `state_reason: "capacity"` — not `degraded` and
+    not `error`; the parked account is fully readable and its writes are
+    `not_signed_in`; raising the setting connects it without a restart.
+38. **A pairing that never completes leaves nothing behind.** Start a pairing,
+    then cancel it, let it time out, and kill the process mid-pairing. In each
+    case no `acct_` row survives, no session file is written, and — critically
+    — a subsequent write with one real account still succeeds **without**
+    `account_id`, proving the abandoned row never tripped the §7.3 ambiguity
+    rule. A pairing whose `Mobile.SourceID` is empty is `pairing_no_account`
+    and likewise creates nothing.
+39. **Every advertised listing is indexed in both forms.** `EXPLAIN QUERY PLAN`
+    over each list and search route, with and without `account_id`, shows an
+    index for every filter combination the route advertises — no `SCAN` of
+    `conversations`, `messages`, `participants` or `contacts`.
+40. **Rate limits do not multiply with accounts.** One authorization sending to
+    two accounts shares one mutation bucket (§12.3).
+41. Sentinel secrets — including each of the seven Google cookie values, **for
+    both accounts**, and both session files, by
     name — appear in no log line, no audit payload, and nowhere in
     `agent-gm.sqlite3`, `-wal` or `-shm`, proven by `strings | grep`.
-37. `PRAGMA foreign_key_check` is empty after every migration; a database at a
+42. `PRAGMA foreign_key_check` is empty after every migration; a database at a
     higher `user_version` refuses to open, naming both numbers.
-38. `POST /v1/admin/backup` produces a file that opens standalone, and pruning
+43. `POST /v1/admin/backup` produces a file that opens standalone, and pruning
     keeps exactly `backup.keep` and audits each removal.
-39. `no-real-numbers` passes over the whole tree.
-40. **Live gate.** `agm pair` from a clean data directory, then
+44. `no-real-numbers` passes over the whole tree.
+45. **Live gate.** `agm pair` from a clean data directory, then
     `agm conversations list`, then `agm messages send` one text to
     `<APPROVED_DIRECT_NUMBER>` with `--wait --wait-for sent`, then
     `agm messages send --file` of a small JPEG to the same number, then the
@@ -4608,16 +4709,16 @@ model.
     add-reaction` and `remove-reaction`. Then `agm messages delete` on Agent
     GM's own test message, with the owner confirming the effect sentence
     first. Then `agm conversations archive` and `unarchive`.
-41. **Live gate.** The fallback path works from a clean data directory:
+46. **Live gate.** The fallback path works from a clean data directory:
     `agm pair --paste`, fed a cURL command copied from devtools on stdin,
     reaches `connected`; and a paste missing `OSID` is refused with a message
     naming `OSID` and `messages.google.com` rather than a generic failure.
-42. **Live gate.** `agm pair --refresh-cookies` re-authenticates the existing
+47. **Live gate.** `agm pair --refresh-cookies` re-authenticates the existing
     pairing **without** a re-pair and without a new emoji; a capture from a
     different Google account is `pairing_wrong_account` and changes nothing.
     Then `agm pair --forget-browser` removes the profile directory, after
     printing its effect sentence.
-43. **Live gate.** `agm conversations start <APPROVED_GROUP_NUMBER_1>
+48. **Live gate.** `agm conversations start <APPROVED_GROUP_NUMBER_1>
     <APPROVED_GROUP_NUMBER_2> --name "agent-gm test"` creates a group. If it
     fails, the failure is diagnosed against the §15.4 runbook rows
     (group-MMS setting, `config_version_stale`, `google_undocumented_status`)
@@ -4676,7 +4777,7 @@ lint and its meta-test; `docs/mcp.md`, `docs/oauth.md`.
 13. An OAuth authorization can never hold `admin`, and an admin session can
     never be minted through `/oauth/token`; the two credential paths do not
     cross (§9.6).
-14. `tools/list` under `messages:read` returns exactly the ten read tools and
+14. `tools/list` under `messages:read` returns exactly the **eleven** read tools and
     **no** write or delete tool; under `messages:write` exactly the eight
     more; under `messages:delete` exactly the two. `tools/call` on a
     non-visible name is refused again at call time.
@@ -4685,31 +4786,43 @@ lint and its meta-test; `docs/mcp.md`, `docs/oauth.md`.
     `client_request_id`; every write tool's description ends with the
     fresh-key sentence of §8.2. Asserted by fetching `tools/list` from a
     running server and counting, so a stale description fails the claim.
-16. A two-way table test over the route inventory and the tool inventory
-    asserts §8.2's rule exactly: **every `/v1` route whose scope is
-    `messages:read`, `messages:write` or `messages:delete` has a tool, except
-    the three named exclusions; every `admin`-scoped route and every
-    credential route (`/v1/auth/*`) has none.** A tool with no route, or a
-    messaging route with neither a tool nor a listed exclusion, fails it.
-17. A domain failure is a **result** with `isError: true` and
+16. A two-way table test over the route inventory and the MCP surface asserts
+    §8.2's rule exactly, with **three** categories: every `/v1` route whose
+    scope is `messages:read`, `messages:write` or `messages:delete` is served
+    as a **tool**, as a **resource**, or as a **named exclusion**; every
+    `admin`-scoped route and every credential route (`/v1/auth/*`) is served as
+    none of the three. A tool with no route, or a messaging route in none of
+    the three categories, fails it.
+17. **Multi-account MCP.** With two accounts: `list_accounts` returns both with
+    their states; a read tool omitting `account_id` covers both and every row
+    carries its `account_id`; a **write** tool omitting it returns
+    `isError: true` with `details.accounts` naming both, and retrying with one
+    of those IDs succeeds; `get_session` works with and without `account_id`
+    under the §7.3 rule; `get_health` returns two account rows and an
+    `accounts_summary`. With **one** account, every one of those calls
+    succeeds with `account_id` omitted.
+18. The §9.4 authorization screen renders the global-scope disclosure line
+    verbatim, above the scope checkboxes, followed by the current accounts —
+    asserted as a string, which is what makes §9.7's honesty claim testable.
+19. A domain failure is a **result** with `isError: true` and
     `structuredContent.error`, not a JSON-RPC error; an unknown tool name
     **is** a JSON-RPC error. Both directions asserted.
-18. The `initialize` instructions block is byte-identical to the "First five
+20. The `initialize` instructions block is byte-identical to the "First five
     minutes" section of `docs/mcp.md` modulo markdown quoting.
-19. `Origin: https://evil.example` on `/mcp` is `403` before parsing; no
+21. `Origin: https://evil.example` on `/mcp` is `403` before parsing; no
     `Origin` is accepted; two `Authorization` headers are refused rather than
     resolved.
-20. `get_attachment` returns inline image content under
+22. `get_attachment` returns inline image content under
     `media.inline_mcp_image_max_bytes` and a resource link above it, **and the
     download ticket either way**; the first content block is the text summary.
-21. `devbox run conformance` runs against a token minted through the **whole**
+23. `devbox run conformance` runs against a token minted through the **whole**
     OAuth flow, passes its baseline in both directions, and fails if the
     chosen spec revision runs zero scenarios.
-22. `devbox run lint-names` fails on each banned word in a served tool
+24. `devbox run lint-names` fails on each banned word in a served tool
     description and in a `docs/` page, and its meta-test proves the exempt
     cases — §18.3, a fenced block quoting upstream, `send_mode`,
     `search.mode` — still pass.
-23. **Live gate.** A real MCP client completes discovery, dynamic
+25. **Live gate.** A real MCP client completes discovery, dynamic
     registration, the authorization screen with an enrollment code, owner
     approval and the token exchange against a **temporary public URL**
     (`cloudflared tunnel --url` against the locally built binary — this needs
@@ -4841,11 +4954,11 @@ add missing tools to `devbox.json` rather than installing on the host.
 | **D23** | **One reaction per person per message** | Google's picker is single-select and `SendReactionRequest_SWITCH` exists precisely to replace (`gmproto/client.proto:305-317`). A schema permitting several would be modelling something Google does not do |
 | **D24** | **Download tickets are stateful rows** | A five-redemption cap cannot be enforced by a signed blob. The token value is still signed and only hashed at rest |
 | **D25** | **The admin bootstrap session carries the three messaging scopes** | The owner presenting `AGENT_GM_ADMIN_SECRET` is the person the service belongs to. A credential that could administer the server but not read a message would be useless, and Slice 2 could not test itself |
+| **D26** | **The live event stream is treated as lossy; a reconciliation sweep is mandatory** | `deduplicateUpdate`'s callers `return` out of the batch loop on a hit (`event_handler.go:263-266,272-275`), abandoning every remaining part. That is message *loss*, and no local dedup recovers it |
 | **D27** | **Agent GM is multi-account.** One owner, N Google accounts, each with its own `libgm` client, session file, event stream, backfill and sweep, all concurrent. **Owner decision, 2026-09-06** | The premise that one owner means one account was never argued, only assumed — an owner with a personal and a work Google account has two phones and wants both here. Nothing in `libgm` is a singleton: a `Client` is constructed per `AuthData` (`client.go:164`), so N clients is the library's own shape rather than a workaround. The cost is a column, a selection rule (§7.3) and a supervisor (§4.7); the alternative was N servers, N tunnels, N OAuth registrations, and an agent that cannot see across them |
 | **D28** | **The account identifier is `AuthData.Mobile.SourceID`**, lowercased — the Google account address — hashed into `acct_` (§4.1) | It is the only field at `be48a58` that identifies an *account* rather than a device or a session. Upstream compares it against `Config.GetDeviceInfo().GetEmail()` to decide whether a re-authentication is the same account (`connector/login.go:267-270`) and lowercases it at sign-in (`pair_google.go:102-105`). `DestRegID`, `SessionID`, `PairingID`, `Browser.SourceID` and `FinishGaiaPairing`'s return are all device- or session-scoped; §3.2 tabulates why each is unusable. Hashing keeps the address out of IDs and URLs |
 | **D29** | **OAuth scopes are global across accounts; per-account scoping is deferred** | A scope grammar naming accounts needs accounts to exist before a token is issued, an account picker on the authorization screen, and enrollment ceilings that can name accounts that do not exist yet. None of that is worth building before the owner has met a case for it. The honest statement is made where it matters (§9.7, and the authorization screen): a token reads and sends as **any** account. An owner needing real separation runs a second Agent GM |
 | **D30** | **Signing out keeps history; only `agm accounts remove` deletes** | Losing access to an account is common — cookies expire, a phone is replaced — and losing years of searchable history because of it would be a disaster with no upside. Splitting the two makes deletion an explicit, confirmed, audited act, and makes re-pairing free: IDs derive from the account and Google's own stable IDs, so resuming reconciles rather than duplicating (§4.7) |
-| **D26** | **The live event stream is treated as lossy; a reconciliation sweep is mandatory** | `deduplicateUpdate`'s callers `return` out of the batch loop on a hit (`event_handler.go:263-266,272-275`), abandoning every remaining part. That is message *loss*, and no local dedup recovers it |
 
 #### Field observation behind D3 — the ConfigVersion, and status 4
 
@@ -4893,7 +5006,7 @@ below 2:
 
 ### 18.2 Open questions for the owner
 
-Six questions remain. Everything the first review could answer from the
+Seven questions remain. Everything the first review could answer from the
 pinned source has been answered and moved into §18.1 or §18.3.
 
 The multi-account decision of 2026-09-06 (D27) resolved the largest open
@@ -4910,6 +5023,8 @@ multiplied by the number of accounts.
 | **OQ-5** | **Should the GHCR image be public?** AGPL §13 is satisfied by serving the source URL (§1.4), not by a public image, so this is preference, not obligation | Slice 4 | A private image means the deployment needs a pull secret |
 | **OQ-6** | **Should `accounts.max_concurrent` (default 8) ever be lower?** Every `connected` account holds a long poll, an ingest goroutine and a sweep timer. How many accounts does the owner actually expect? | Slice 2 | The default is a guess; if it is two, the setting is noise, and if it is twenty, the backfill scheduling in §4.7 needs more thought |
 | **OQ-7** | **What should happen when a phone is unreachable for a long time?** `pending` operations become `unknown` after 24 hours and nothing tells anyone. Is an alert wanted, and through what channel? | Slice 2 | There is deliberately no notification channel in this design; adding one is a new dependency |
+
+| **OQ-7** | **Should `backfill.horizon` and `media.cache_max_bytes` become per-account?** Both are server-wide today (§15.1): the horizon is *applied to* each account, so its cost multiplies, and the media cache is one cross-account LRU, so a busy account can evict a quiet one's thumbnails. Per-account values would be more predictable and more configuration to keep straight | Slice 2 | Only matters once there are several accounts of very different sizes, which the owner knows and the spec does not |
 
 Two smaller confirmations, not blockers:
 

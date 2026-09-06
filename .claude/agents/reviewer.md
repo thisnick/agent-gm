@@ -36,7 +36,11 @@ Method:
 5. Look for silent failure modes: a crash boundary with no replay test;
    idempotency with no duplicate test; `ErrPhoneNotResponding` reported as a
    failure instead of `pending`; a delivery-state value that falls to
-   `unknown` unnoticed; ID derivation missing the account component; secrets
+   `unknown` unnoticed; ID derivation missing the account component; **a store
+   query or index with no `account_id` predicate**; **a per-account fact stored
+   as a `server_meta` key**; **`not_paired` used where `not_signed_in` is
+   meant** (§7.8) — these three are where the multi-account change is most
+   likely to be got wrong; secrets
    reachable from logs, the WAL or an audit payload; a fixture validated
    against the implementation instead of against the pinned upstream tree at
    `be48a58`; a test that passes without exercising the code.
