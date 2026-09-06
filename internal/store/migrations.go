@@ -25,6 +25,7 @@ type migration struct {
 var migrations = []migration{
 	migration0001,
 	migration0002,
+	migration0003,
 }
 
 var migration0001 = migration{
@@ -430,6 +431,77 @@ var migration0002 = migration{
 		// Rows written before this migration are indexed once, here, rather
 		// than by a hand-written data migration.
 		`INSERT INTO messages_fts(rowid, text, subject) SELECT rowid, text, subject FROM messages`,
+	},
+}
+
+// Migration 0003 adds the credential tables Slice 2 needs: `authorizations`,
+// `tokens` and the durable failure limiter `oauth_attempts` (spec section
+// 4.2, listed there with elided bodies because section 9 defines their
+// contents).
+//
+// Slice 2 mints exactly one kind of authorization -- the admin bootstrap of
+// section 9.7 -- but the shape is the OAuth one, because Slice 3 adds a
+// second token SOURCE and not a second security model. Two columns carry the
+// rules that make a narrowed admin session mean something:
+//
+//   - `minted_scopes` is what the session was minted with, and a refresh may
+//     only narrow relative to THAT, never back up to it (spec section 9.6).
+//     Without it a narrowed session is one refresh away from full privilege.
+//   - `secret_generation` records which AGENT_GM_ADMIN_SECRET minted an admin
+//     authorization, so changing the secret revokes every previous admin
+//     bootstrap on the next start (spec section 12.1).
+//
+// Only hashes are stored. No token value is ever written to the database, a
+// log, or an audit payload (spec section 9.6).
+var migration0003 = migration{
+	version: 3,
+	name:    "authorizations, tokens, oauth_attempts",
+	stmts: []string{
+		`CREATE TABLE authorizations (
+		    id                TEXT PRIMARY KEY,
+		    kind              TEXT NOT NULL,
+		    client_id         TEXT,
+		    scopes            TEXT NOT NULL,
+		    minted_scopes     TEXT NOT NULL,
+		    secret_generation TEXT,
+		    source            TEXT,
+		    revoked_at_ms     INTEGER,
+		    expires_at_ms     INTEGER,
+		    created_at_ms     INTEGER NOT NULL,
+		    updated_at_ms     INTEGER NOT NULL
+		)`,
+		`CREATE INDEX authorizations_kind ON authorizations(kind, created_at_ms DESC)`,
+		`CREATE INDEX authorizations_live ON authorizations(kind) WHERE revoked_at_ms IS NULL`,
+
+		`CREATE TABLE tokens (
+		    token_hash       TEXT PRIMARY KEY,
+		    authorization_id TEXT NOT NULL REFERENCES authorizations(id) ON DELETE CASCADE,
+		    kind             TEXT NOT NULL,
+		    family_id        TEXT NOT NULL,
+		    spent_at_ms      INTEGER,
+		    revoked_at_ms    INTEGER,
+		    expires_at_ms    INTEGER NOT NULL,
+		    created_at_ms    INTEGER NOT NULL
+		)`,
+		`CREATE INDEX tokens_authorization ON tokens(authorization_id, kind)`,
+		`CREATE INDEX tokens_family        ON tokens(family_id)`,
+		`CREATE INDEX tokens_expiry        ON tokens(expires_at_ms)`,
+
+		// The limit an attacker would restart-cycle to reset, so it is
+		// durable rather than in memory (spec sections 9.8, 12.3). The
+		// cooldown doubles per further failure in the window and caps at 24
+		// hours; a successful presentation does not clear the counter.
+		`CREATE TABLE oauth_attempts (
+		    kind              TEXT NOT NULL,
+		    source            TEXT NOT NULL,
+		    window_start_ms   INTEGER NOT NULL,
+		    failures          INTEGER NOT NULL DEFAULT 0,
+		    cooldown_steps    INTEGER NOT NULL DEFAULT 0,
+		    cooldown_until_ms INTEGER,
+		    updated_at_ms     INTEGER NOT NULL,
+		    PRIMARY KEY (kind, source)
+		)`,
+		`CREATE INDEX oauth_attempts_cooldown ON oauth_attempts(cooldown_until_ms)`,
 	},
 }
 
