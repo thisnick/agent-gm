@@ -3285,7 +3285,12 @@ directly, so anything the CLI can do an agent can do too, and vice versa.
 --server <url>        Override the configured server.
 --profile <name>      Select a saved server and authorization profile.
 --json                Emit one stable JSON value on stdout.
---output <format>     table (default) | json | jsonl
+--output <format>     table (default) | json | jsonl. It is a FORMAT on every
+                      command, without exception -- `agm attachments download`
+                      writes to `--out <path>`, not to `--output`, because a
+                      global flag whose meaning changes on one command is how a
+                      script that sets `--output json` once ends up writing an
+                      attachment to a file called `json`
 --timeout <duration>  Bound the request, and any operation wait.
 --quiet               Suppress non-result output.
 --verbose             Diagnostic detail on stderr.
@@ -3375,7 +3380,7 @@ agm messages remove-reaction <msg-id> <emoji> | --reaction <react-id>
 
 agm attachments list <msg-id>
 agm attachments show <att-id>
-agm attachments download <att-id> [--output <path>]
+agm attachments download <att-id> [--out <path>]
 
 agm contacts list [--account] [--query <q>] [--top]
 
@@ -3435,6 +3440,12 @@ Names are the same words on all three surfaces: `mark-read` is `mark_read` is
 `remove_reaction`. There is no `unreact` and no `read` subcommand that could be
 misread as "read the conversation".
 
+**`--wait` and `--wait-for` are accepted on every command that returns an
+operation**, not only on `messages send`: `conversations start`, `mark-read`,
+the five state verbs, `add-reaction`, `remove-reaction` and `messages send`.
+A flag a command accepts but does not declare is exactly the drift the
+two-way inventory test of §16 Slice 2 test 27 exists to catch.
+
 `--wait` defaults to `--wait-for sent`. `terminal` means an operation status of
 `succeeded`, `failed` or `unknown`, **or** a message `delivery_state` of
 `delivered`, `read`, `failed`, `canceled` or `deleted`. `delivered` and `read`
@@ -3448,15 +3459,38 @@ Destructive commands — `accounts remove` (the only one that deletes an
 account's history), `accounts sign-out`, `conversations delete`,
 `messages delete`, `auth logout`, `admin ... revoke`,
 and `admin backfill` with neither `--account` nor `--conversation` — print the
-**exact
-`effect` sentence returned by the route** (§7.6) and require an interactive
-`y`, or `--yes`. The `effect` field, the MCP tool description's closing
-sentence, and this prompt are the same words.
+**exact `effect` sentence** (§7.6) and require an interactive `y`, or `--yes`.
+The `effect` field, the MCP tool description's closing sentence, and this
+prompt are the same words.
+
+**Where the prompt's copy comes from, and why it is not a round trip.**
+Confirmation necessarily happens *before* the call, and the route's `effect`
+field necessarily arrives *after* it, so the prompt cannot be the response.
+The sentences are therefore compiled in — held once in `internal/apierr` and
+asserted, by a test, against the text of this specification rather than
+against a second copy of themselves. The route returns the same constant. So:
+
+- the **prompt** shows the compiled sentence;
+- after the call, the CLI prints the **`effect` field from the response**,
+  byte for byte (§16 Slice 2 test 28 asserts exactly this);
+- if the two differ, the CLI **warns on stderr**. They can only differ when
+  the server is a different build from the client, which is a thing an owner
+  wants to be told about before they trust a confirmation prompt again.
 
 Human output prints the operation ID first for every mutation. `--json` writes
 the server envelope plus CLI metadata (effective profile and server) as one
 value on stdout; diagnostics, progress, warnings and confirmation prompts go to
 stderr, so stdout stays machine-readable.
+
+**One stated exception, and only one.** `agm session --watch` consumes a
+stream, so it writes newline-delimited JSON — one value per state change, for
+as long as it runs. Every other command writes exactly one JSON value, which
+is what §16 Slice 2 test 26 asserts by parsing stdout and requiring the
+decoder to reach end of input.
+
+`agm auth login` without `--admin` performs the OAuth flow of §11.5, which
+arrives in Slice 3; in Slice 2 it is a usage error (exit 2) naming `--admin`,
+because the admin bootstrap is the only credential the server can yet issue.
 
 ### 11.4 Pairing UX
 

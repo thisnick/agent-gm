@@ -107,7 +107,12 @@ func toCandidates(accounts []AccountRef) []apierr.AccountCandidate {
 // the thread is gone when in fact the caller merely named the wrong account.
 //
 // `param` is the parameter the object ID arrived under, so the message names
-// the thing the caller typed.
+// the thing the caller typed. The refusal itself is apierr's
+// IDFromAnotherAccount, which is the one constructor for this shape.
+//
+// objectAccountID is the account the object really belongs to; it is compared
+// here and is not echoed into the error, which names the account_id the
+// caller supplied.
 func CheckObjectAccount(param, objectID, objectAccountID, requestedAccountID string) error {
 	if requestedAccountID == "" || objectAccountID == requestedAccountID {
 		return nil

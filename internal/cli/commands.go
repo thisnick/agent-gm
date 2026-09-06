@@ -29,6 +29,13 @@ type Command struct {
 	// Supplies maps a route parameter to how this command supplies it. Every
 	// parameter of every route in Routes must appear here or in Managed.
 	Supplies map[string]string
+	// LocalFlags are the flags this command takes that supply no route
+	// parameter -- --wait, --for, --no-browser and the rest. They are
+	// declared here for the same reason Supplies is: docs/cli.md and the
+	// implementation are checked against one table rather than against each
+	// other's memory. A flag that supplies a route parameter belongs in
+	// Supplies and may not appear here as well.
+	LocalFlags map[string]string
 	// Managed lists route parameters the CLI supplies without asking the
 	// owner, with the reason. `cursor` is the archetype: `agm ... --all`
 	// walks the pages itself, and a human pasting an opaque signed cursor on
@@ -71,6 +78,10 @@ var Commands = []Command{
 			"pairing_id":   "held by the running command; GET is the poll and DELETE is what Ctrl-C issues",
 		},
 		Notes: "one command from start to paired. It covers POST, GET and DELETE /v1/pairing/* (11.3).",
+		LocalFlags: map[string]string{
+			"--paste":      "read the cookies from stdin instead of capturing them over CDP",
+			"--paste-file": "read the cookies from a file instead of capturing them over CDP",
+		},
 	},
 	{
 		Name:   "pair --refresh-cookies",
@@ -79,12 +90,16 @@ var Commands = []Command{
 			"account_id": "--account, which --refresh-cookies requires",
 			"cookies":    "the same capture, in a fresh short-lived profile (D33)",
 		},
+		LocalFlags: map[string]string{
+			"--refresh-cookies": "re-authenticate an existing pairing rather than adding an account",
+		},
 	},
 
 	{
 		Name: "accounts list", Routes: []string{"accounts_list"},
-		Supplies: map[string]string{},
-		Notes:    "the fast operator view (15.3). --all is a display switch here, not a paging one: the route is not paginated.",
+		Supplies:   map[string]string{},
+		Notes:      "the fast operator view (15.3). --all is a display switch here, not a paging one: the route is not paginated.",
+		LocalFlags: map[string]string{"--all": "show every column rather than the operator view"},
 	},
 	{
 		Name: "accounts show", Routes: []string{"accounts_get"},
@@ -120,7 +135,8 @@ var Commands = []Command{
 		Supplies: map[string]string{
 			"account_id": "--account; omitting it with --watch streams every account's changes",
 		},
-		Notes: "--watch consumes the SSE route; without --account it is the all-accounts form (11.3).",
+		Notes:      "--watch consumes the SSE route; without --account it is the all-accounts form (11.3).",
+		LocalFlags: map[string]string{"--watch": "stream state changes over SSE"},
 	},
 	{
 		Name: "reconnect", Routes: []string{"accounts_reconnect"},
@@ -144,6 +160,9 @@ var Commands = []Command{
 			"limit":           "--limit",
 		},
 		Managed: map[string]string{"cursor": managedCursor},
+		LocalFlags: map[string]string{
+			"--all": "walk every page rather than the first",
+		},
 	},
 	{
 		Name: "conversations show", Routes: []string{"conversations_get"},
@@ -157,6 +176,10 @@ var Commands = []Command{
 			"name":              "--name, accepted only for 2+ recipients",
 			"client_request_id": "--idempotency-key, or minted per invocation",
 		},
+		LocalFlags: map[string]string{
+			"--wait":     "wait for the operation before returning",
+			"--wait-for": "sent (default), delivered, read or terminal (11.3)",
+		},
 	},
 	{
 		Name:   "conversations archive|unarchive|pin|unpin|mark-unread",
@@ -169,6 +192,10 @@ var Commands = []Command{
 			"client_request_id": "--idempotency-key, or minted per invocation",
 		},
 		Notes: "five subcommands over one route. Naming the state as a verb is what keeps a `mode` argument off the surface (13.5).",
+		LocalFlags: map[string]string{
+			"--wait":     "wait for the operation before returning",
+			"--wait-for": "sent (default), delivered, read or terminal (11.3)",
+		},
 	},
 	{
 		Name: "conversations mark-read", Routes: []string{"conversations_mark_read"},
@@ -178,6 +205,10 @@ var Commands = []Command{
 			"client_request_id": "--idempotency-key, or minted per invocation",
 		},
 		Notes: "mark-read is mark_read is POST .../read: the same word on all three surfaces (11.3).",
+		LocalFlags: map[string]string{
+			"--wait":     "wait for the operation before returning",
+			"--wait-for": "sent (default), delivered, read or terminal (11.3)",
+		},
 	},
 	{
 		Name: "conversations delete", Routes: []string{"conversations_delete"}, Destructive: true,
@@ -209,6 +240,9 @@ var Commands = []Command{
 		},
 		Managed: map[string]string{"cursor": managedCursor},
 		Notes:   "with no conversation ID it is GET /v1/messages across every account, or one with --account (11.3).",
+		LocalFlags: map[string]string{
+			"--all": "walk every page rather than the first",
+		},
 	},
 	{
 		Name: "messages show", Routes: []string{"messages_get"},
@@ -236,6 +270,9 @@ var Commands = []Command{
 			"limit":           "--limit",
 		},
 		Managed: map[string]string{"cursor": managedCursor},
+		LocalFlags: map[string]string{
+			"--all": "walk every page rather than the first",
+		},
 	},
 	{
 		Name:   "messages send",
@@ -256,6 +293,11 @@ var Commands = []Command{
 			"upload_id":  "held between the reserve and the PUT within one invocation",
 		},
 		Notes: "--wait defaults to --wait-for sent, and warns on stderr when delivered or read is asked for on an sms_mms conversation (5.5).",
+		LocalFlags: map[string]string{
+			"--file":     "ONE path; the reserve, PUT and send happen in this process (11.3)",
+			"--wait":     "wait for the operation before returning",
+			"--wait-for": "sent (default), delivered, read or terminal (11.3)",
+		},
 	},
 	{
 		Name: "messages delete", Routes: []string{"messages_delete"}, Destructive: true,
@@ -272,6 +314,10 @@ var Commands = []Command{
 			"emoji":             "positional <emoji>",
 			"client_request_id": "--idempotency-key, or minted per invocation",
 		},
+		LocalFlags: map[string]string{
+			"--wait":     "wait for the operation before returning",
+			"--wait-for": "sent (default), delivered, read or terminal (11.3)",
+		},
 	},
 	{
 		Name:   "messages remove-reaction",
@@ -283,6 +329,10 @@ var Commands = []Command{
 			"client_request_id": "--idempotency-key, or minted per invocation",
 		},
 		Notes: "there is no `unreact`: remove-reaction is remove_reaction is DELETE .../reactions/{emoji} (11.3).",
+		LocalFlags: map[string]string{
+			"--wait":     "wait for the operation before returning",
+			"--wait-for": "sent (default), delivered, read or terminal (11.3)",
+		},
 	},
 
 	{
@@ -298,6 +348,9 @@ var Commands = []Command{
 		Name: "attachments download", Routes: []string{"attachments_content"},
 		Supplies: map[string]string{"attachment_id": "positional <att-id>"},
 		Notes:    "--output names the file. The ticket goes in the Authorization header, never in the URL (10.3).",
+		LocalFlags: map[string]string{
+			"--output": "the file to write; on this command --output names a path rather than a format",
+		},
 	},
 
 	{
@@ -309,6 +362,9 @@ var Commands = []Command{
 			"limit":      "--limit",
 		},
 		Managed: map[string]string{"cursor": managedCursor},
+		LocalFlags: map[string]string{
+			"--all": "walk every page rather than the first",
+		},
 	},
 
 	{
@@ -323,6 +379,9 @@ var Commands = []Command{
 			"limit":      "--limit",
 		},
 		Managed: map[string]string{"cursor": managedCursor},
+		LocalFlags: map[string]string{
+			"--all": "walk every page rather than the first",
+		},
 	},
 	{
 		Name: "operations show", Routes: []string{"operations_get"},
@@ -332,6 +391,9 @@ var Commands = []Command{
 		Name: "operations wait", Routes: []string{"operations_get"},
 		Supplies: map[string]string{"operation_id": "positional <op-id>"},
 		Notes:    "polls GET /v1/operations/{id} on the client side and takes its default bound from the server's operations.wait_timeout (11.3).",
+		LocalFlags: map[string]string{
+			"--for": "sent (default), delivered, read or terminal (11.3)",
+		},
 	},
 
 	{
@@ -341,6 +403,10 @@ var Commands = []Command{
 			"secret":        "--secret-stdin or a TTY prompt, for --admin. Never argv (12.1)",
 			"scopes":        "--scopes",
 			"refresh_token": "held in the credentials file and rotated on use (11.5)",
+		},
+		LocalFlags: map[string]string{
+			"--admin":      "the admin bootstrap path, the only one Slice 2 has",
+			"--no-browser": "print the URL instead of opening a browser (the OAuth path, Slice 3)",
 		},
 	},
 	{
@@ -375,6 +441,9 @@ var Commands = []Command{
 			"limit":            "--limit",
 		},
 		Managed: map[string]string{"cursor": managedCursor},
+		LocalFlags: map[string]string{
+			"--all": "walk every page rather than the first",
+		},
 	},
 	{
 		Name: "admin backfill", Routes: []string{"admin_backfill"},
@@ -429,11 +498,20 @@ var RoutesWithoutCommand = map[string]string{
 // String renders a command the way help text and an error message name it.
 func (c Command) String() string { return "agm " + c.Name }
 
-// FlagsMentioned extracts the `--flag` names out of a Supplies description,
-// so the two-way test can assert a described flag looks like one.
+// FlagsMentioned extracts the `--flag` names out of a Supplies description
+// and the LocalFlags keys, so the two-way test can assert a described flag
+// looks like one and docs/cli.md is checked against both halves. A flag that
+// drives no route parameter -- `--for`, `--no-browser` -- is exactly the kind
+// that would otherwise drift out of the page unnoticed.
 func (c Command) FlagsMentioned() []string {
 	seen := map[string]bool{}
 	var out []string
+	for name := range c.LocalFlags {
+		if !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
 	for _, how := range c.Supplies {
 		for _, word := range strings.Fields(how) {
 			word = strings.Trim(word, ",.;:'`\"")
@@ -465,5 +543,49 @@ func (c Command) Validate() error {
 			return fmt.Errorf("%s manages %q with no reason", c, p)
 		}
 	}
+	for flag, what := range c.LocalFlags {
+		if strings.TrimSpace(what) == "" {
+			return fmt.Errorf("%s takes the local flag %q with no description of what it does", c, flag)
+		}
+		if !strings.HasPrefix(flag, "--") || len(flag) < 3 {
+			return fmt.Errorf("%s declares %q as a local flag, which is not a flag name", c, flag)
+		}
+		// A flag is either how a route parameter is supplied or a local one.
+		// It cannot be both, and a flag that became one should stop being
+		// the other in the same edit.
+		for _, supplier := range c.primarySupplierFlags() {
+			if supplier == flag {
+				return fmt.Errorf("%s declares %q both as a local flag and as how it supplies "+
+					"a route parameter", c, flag)
+			}
+		}
+	}
 	return nil
+}
+
+// primarySupplierFlags are the flags a Supplies description NAMES FIRST --
+// the convention this table uses for "this is the flag that supplies it":
+// `"account_id": "--account"`, `"secret": "--secret-stdin or a TTY prompt"`.
+//
+// It is deliberately narrower than FlagsMentioned. A description may mention
+// a local flag in passing -- `agm session`'s account_id says "omitting it
+// with --watch streams every account's changes" -- and that mention does not
+// make --watch a supplier. Only the flag a description LEADS with is one, so
+// only that one may not also be declared local.
+func (c Command) primarySupplierFlags() []string {
+	var out []string
+	for _, how := range c.Supplies {
+		fields := strings.Fields(how)
+		if len(fields) == 0 {
+			continue
+		}
+		for _, part := range strings.Split(fields[0], "/") {
+			part = strings.TrimSuffix(part, "'s")
+			part = strings.Trim(part, ",.;:'`\"")
+			if strings.HasPrefix(part, "--") && len(part) > 2 {
+				out = append(out, part)
+			}
+		}
+	}
+	return out
 }
