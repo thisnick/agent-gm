@@ -1342,9 +1342,9 @@ For a `*libgm.WrappedMessage`:
 ```
 1. If shouldIgnoreStatus(status, isDM) says ignore -> drop, count it, done.
    (The set is carried over verbatim from
-   connector/handlegmessages.go:shouldIgnoreStatus.)
-2. If status is in 200..299 -> kind="tombstone", store, exclude from
-   messages.list unless include_tombstones=true.
+   connector/handlegmessages.go:913-940.)
+2. If status is in 200..279 -> kind="system", store, exclude from
+   messages.list unless include_system=true.
 3. Derive msg_ ID from (conversation source ID, message source ID).
 4. Compute content_hash over the canonical content (text parts joined with
    \n, then each media part's mediaID and size, then the reaction set).
@@ -1378,7 +1378,8 @@ replace its participant set.
   `last_activity_ms` past a newer value, and is never counted as "new".
 - **Three layers of dedup**, in order:
   1. `libgm`'s own 8-entry (id, payload hash) window (§3.4). Too small to rely
-     on; Agent GM assumes it does nothing.
+     on, and on a hit it abandons the rest of the batch; Agent GM assumes it
+     does nothing except lose messages.
   2. The primary key on `(conversation_id, source_id)` — a repeat is an
      upsert, never a second row.
   3. `content_hash` — an upsert whose content and raw status are both
@@ -1387,6 +1388,42 @@ replace its participant set.
 - **`last_activity_ms` is monotonic per conversation.** It is only ever moved
   forward, with `MAX(existing, new)`, so a replayed old message cannot make a
   conversation jump to the top of the list.
+
+#### The reconciliation sweep
+
+**The live event stream is not a complete record.** The library's dedup
+abandons every remaining part of a batch on a hit (§3.4,
+`event_handler.go:263-266,272-275`), so messages can be *lost*, not merely
+duplicated, and no amount of local dedup recovers what never arrived.
+
+Agent GM therefore runs `core.reconcile(since)`:
+
+```
+1. ListConversations(active, page_size) and, if backfill.include_archive,
+   ListConversations(archived, page_size).
+2. For each conversation whose last_activity_ms is newer than `since`, or
+   whose latest_message_id is not a row we hold:
+     FetchMessages(convID, page_size, cursor=nil), walking back until a
+     message older than `since` is reached.
+3. Upsert everything through the same path as 5.3. Unchanged rows write
+   nothing (content_hash).
+4. Record server_meta.last_sweep_at_ms.
+```
+
+It is triggered by:
+
+| Trigger | `since` |
+|---|---|
+| `BROWSER_ACTIVE` alert whose session ID differs from the last seen, or after an inactive period (§3.4) | `last_event_at_ms` |
+| `MOBILE_DATABASE_SYNC_COMPLETE` | `last_event_at_ms` |
+| `events.NoDataReceived` | `last_event_at_ms` |
+| `events.ListenRecovered`, and every successful `Connect` | `last_event_at_ms` |
+| a timer, every `settings.ingest.sweep_interval` (default 15m, bounds 1m–6h) | `last_sweep_at_ms` |
+| `POST /v1/admin/backfill` with no body | epoch |
+
+The sweep is idempotent by construction — it writes through the same upsert
+functions as §5.3 — so running it more often costs bandwidth and nothing else.
+`GET /v1/health` reports `last_sweep_at` and `sweeps_total`.
 
 ### 5.5 Delivery-status transitions in practice
 
@@ -1430,9 +1467,12 @@ returns the phone's own answer**, with a hard 60-second bound
   no `queued`/`accepted` states that mean "we have not tried yet".
 - The only retries are the three upstream-derived ones for transient Google
   statuses (`FAILURE_2`, `FAILURE_3`; backoff `[3s, 8s, 20s]`; §3.7), executed
-  inside the same request. Total worst-case latency for a send is therefore
-  bounded at roughly 4 × 60s + 31s; the HTTP handler enforces a 240-second
-  deadline and returns `phone_not_responding` if it is exceeded.
+  inside the same request. Worst case is four library calls at
+  `responseHardTimeout` = 60s each plus `3 + 8 + 20` = 31s of backoff, so
+  **271s**. The HTTP handler's deadline is `settings.operations.send_deadline`,
+  **default 300s** (bounds 60s–600s), which is above that bound so the last
+  retry can actually complete; exceeding it returns `phone_not_responding` with
+  the operation left `pending`.
 
 The `operations` table still exists, for two reasons only: **idempotency**
 and **status**. It is a record of what happened, not a queue of what to do.
@@ -1485,11 +1525,15 @@ Carried over from Agent MX, unchanged in substance:
   bounds 1d–365d), after which the row is swept. A replay of a swept key is a
   new operation; the CLI and the tool descriptions state the retention.
 
-The operation's `tmp_id` is set to the operation ID and is what goes into
-`SendMessageRequest.TmpID` / `MessagePayload.TmpID` / `TmpID2` (§3.1). When
-the remote echo arrives carrying that `TmpID`, the ingest loop writes the
-message's `msg_` ID onto the operation and, if the operation is `pending`,
-settles it (§6.4).
+The operation's `tmp_id` is a **bare UUID**, minted per send attempt and
+written to the indexed `operations.tmp_id` column before the library call
+(§3.1, F-13). It is *not* the `op_`-prefixed operation ID. It goes into all
+three of `SendMessageRequest.TmpID`, `MessagePayload.TmpID` and
+`MessagePayload.TmpID2`. When the remote echo arrives carrying that value, the
+ingest loop looks up `tmp_id → operation_id`, writes the message's `msg_` ID
+onto the operation, and, if the operation is `pending`, settles it (§6.4).
+A retry within one request reuses the same `tmp_id`, so a retried send cannot
+produce two correlations.
 
 ### 6.4 Operation status
 
@@ -1498,6 +1542,7 @@ settles it (§6.4).
 | `running` | in flight, or the process died mid-call | no |
 | `succeeded` | the phone accepted it (`SendMessageResponse_SUCCESS`, or a `Success: true` for reactions/deletes) | yes |
 | `pending` | **`libgm.ErrPhoneNotResponding` only.** The server accepted the request; the phone may still act on it when it wakes. This is *not* a failure. | no |
+| — | (there is no `queued` or `accepted`: there is no queue) | — |
 | `failed` | the phone refused it, or a non-retryable error | yes |
 | `unknown` | never settled within `settings.operations.pending_timeout` (default 24h, bounds 1h–7d), or recovered from a crash | yes |
 
@@ -1505,7 +1550,8 @@ Transitions:
 
 ```text
 running -> succeeded | failed | pending
-pending -> succeeded            (the remote echo arrived)
+pending -> succeeded            (the echo arrived)
+pending -> failed               (the echo arrived reporting a failed status)
 pending -> unknown              (pending_timeout elapsed)
 running -> unknown              (crash recovery)
 unknown -> succeeded | failed   (late authoritative evidence)
@@ -1519,7 +1565,49 @@ The critical rule, stated once and tested: **`ErrPhoneNotResponding` produces
 `pending`, not `failed`.** Reporting it as a failure invites the caller to
 resend, which sends the message twice when the phone wakes up.
 
-### 6.5 Crash recovery
+### 6.5 The operation object
+
+Returned inline by every mutation, and by `GET /v1/operations/{id}` and the
+`get_operation` tool. This is the only definition; every surface serves
+exactly these fields.
+
+```json
+{ "id": "op_01k4...",
+  "kind": "send_text",
+  "status": "succeeded",
+  "terminal": true,
+  "terminal_at": "2026-09-06T09:41:03.201Z",
+  "corrected_at": null,
+  "conversation_id": "conv_...",
+  "message_id": "msg_...",
+  "error": null,
+  "created_at": "2026-09-06T09:41:02.980Z",
+  "updated_at": "2026-09-06T09:41:03.201Z" }
+```
+
+- `kind` ∈ `send_text`, `send_media`, `start_conversation`, `mark_read`,
+  `add_reaction`, `remove_reaction`, `delete_message`,
+  `delete_conversation`.
+- `status` is §6.4's vocabulary; `terminal` is derived from it and is never
+  stored independently.
+- `terminal_at` is the moment the operation *first* became terminal and is
+  never cleared or rewritten. `corrected_at` is set when a late fact moves it
+  out of `unknown`.
+- `error` is `null` or the §7.1 error object — `{code, message, retryable,
+  details}` — with the same codes as REST. A `pending` operation carries
+  `error.code = "phone_not_responding"` with `retryable: true` **and
+  `terminal: false`**, which is how a caller tells "not yet" from "no".
+- `message_id` is `null` until the remote echo lands, including on a
+  `succeeded` send whose echo has not yet arrived.
+- Raw Google values (`google_status_raw`) are **not** in this object; they are
+  served only on `GET /v1/admin/diagnostics`.
+
+A caller sees only its own operations, keyed on the authorization that created
+them; `admin` sees all. Another authorization's ID answers `not_found` with a
+body byte-identical to a genuinely absent one. A malformed ID is
+`invalid_request`.
+
+### 6.6 Crash recovery
 
 At startup, before the listener binds:
 
@@ -1536,6 +1624,10 @@ correction transition out of `unknown` exists.
 
 A `pending` operation is left alone at startup; the reaper settles it at
 `pending_timeout` measured from `created_at_ms`.
+
+`operations.idempotency_key` rows are swept after
+`settings.operations.idempotency_ttl` (§15.1); the sweep never deletes a row
+that is not terminal.
 
 ---
 
