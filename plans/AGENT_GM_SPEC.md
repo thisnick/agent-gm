@@ -2714,7 +2714,6 @@ directly, so anything the CLI can do an agent can do too, and vice versa.
 
 Durations are integer + unit, `s|m|h|d`: `30s`, `15m`, `2h`, `7d`. Anything
 else is exit 2 naming the flag.
-
 ### 11.2 Exit codes
 
 ```text
@@ -2730,7 +2729,23 @@ else is exit 2 naming the flag.
 10  server contract or internal failure
 ```
 
-`1` is deliberately unassigned. A command that times out waiting returns `7`,
+`1` is deliberately unassigned. Every code in §7.2 maps onto exactly one exit
+code, and the mapping is exhaustive — §16 Slice 2 test 18 enumerates it:
+
+| §7.2 code | exit |
+|---|---|
+| `invalid_request`, `idempotency_conflict`, `payload_too_large`, `media_unsupported_type` | `2` |
+| `invalid_token` | `3` |
+| `insufficient_scope` | `4` |
+| `not_found` | `5` |
+| `unsupported_capability` | `6` |
+| `rate_limited`, `disconnected`, `phone_not_responding`, `google_http_error`, `pairing_init_timeout` | `7` |
+| an operation reaching `failed` or `unknown` while waiting | `8` |
+| `not_paired`, every other `pairing_*`, `not_default_sms_app`, `config_version_stale`, `google_error`, `google_undocumented_status`, `google_permission_denied` | `10` |
+| `internal_error` | `10` |
+
+`idempotency_conflict` is exit `2` because it is a caller mistake: the same key
+was reused with a different body. A command that times out waiting returns `7`,
 prints the operation ID, and leaves it available to `agm operations wait`.
 `phone_not_responding` is exit `7`, **not** `8`, and the message says the
 operation is pending and must not be resent.
@@ -2738,27 +2753,36 @@ operation is pending and must not be resent.
 ### 11.3 Commands
 
 ```text
-agm pair [--qr | --google --cookies-file <path>] [--timeout 5m]
+agm pair [--google] [--device-index N] [--timeout 5m]
+agm pair --google --refresh-cookies
+agm pair --google --cookies-file <path>        # fallback, see 11.4
+agm pair --forget-browser
 agm unpair [--yes]
 agm session [--watch]
+agm reconnect
 agm health
 
-agm conversations list [--query|--participant|--folder|--type|--unread|--group|--all]
+agm conversations list [--query|--participant|--folder|--type|--unread|--group
+                        |--include-deleted|--all]
 agm conversations show <conv-id>
 agm conversations start <e164>... [--name <name>]
+agm conversations archive|unarchive|pin|unpin|mark-unread <conv-id>
+agm conversations mark-read <conv-id> --message <msg-id>
 agm conversations delete <conv-id> [--yes]
-agm conversations read <conv-id> --message <msg-id>
 agm conversations typing <conv-id>
 
-agm messages list <conv-id> [--direction|--sender|--after|--before|--has-attachment|--all]
+agm messages list [<conv-id>] [--direction|--sender|--after|--before
+                   |--has-attachment|--delivery-state|--include-system|--all]
 agm messages show <msg-id>
 agm messages context <msg-id> [--before 5] [--after 5]
-agm messages search <query> [--syntax literal|fts5] [--conversation <conv-id>]
-agm messages send <conv-id> [--text <t>] [--file <path>]... [--reply-to <msg-id>]
+agm messages search <query> [--mode words|exact] [--conversation <conv-id>]
+                            [--sender|--after|--before|--has-attachment]
+agm messages send <conv-id> [--text <t>] [--file <path>] [--reply-to <msg-id>]
+                            [--force-rcs]
                             [--wait] [--wait-for sent|delivered|read|terminal]
 agm messages delete <msg-id> [--yes]
-agm messages react <msg-id> <emoji>
-agm messages unreact <msg-id> <emoji>
+agm messages add-reaction <msg-id> <emoji>
+agm messages remove-reaction <msg-id> <emoji> | --reaction <react-id>
 
 agm attachments show <att-id>
 agm attachments download <att-id> [--output <path>]
@@ -2768,7 +2792,8 @@ agm contacts list [--query <q>] [--top]
 agm operations show <op-id>
 agm operations wait <op-id> [--for sent|delivered|read|terminal] [--timeout 60s]
 
-agm auth login [--admin] [--server <url>] [--scopes ...] [--no-browser] [--secret-stdin]
+agm auth login [--admin] [--server <url>] [--scopes ...] [--no-browser]
+               [--secret-stdin]
 agm auth logout
 agm auth whoami
 
@@ -2786,34 +2811,59 @@ agm completion bash|zsh|fish
 agm version
 ```
 
+**Every `/v1` route parameter has a flag.** `agm messages list` with no
+conversation ID is the account-wide `GET /v1/messages`. `agm pair` covers
+`POST`/`GET`/`DELETE /v1/pairing/*` — abandoning is Ctrl-C, which issues the
+`DELETE`. `agm reconnect` is `POST /v1/session/reconnect`. `agm session
+--watch` consumes `GET /v1/session/events`. `agm operations wait` polls
+`GET /v1/operations/{id}` on the client side and takes its default bound from
+the server's `operations.wait_timeout` setting, reported by
+`GET /v1/admin/settings`.
+
 `agm messages send --file <path>` does the whole media dance for the owner:
 reserve, `PUT`, send. An agent does the three steps itself (§10.2), because it
-has no filesystem the server can reach.
+has no filesystem the server can reach. `--file` takes **one** path, matching
+the one-attachment-per-message limit of §7.6.
 
-`--wait` defaults to `--wait-for sent`. `terminal` means `succeeded`,
-`failed`, `unknown`, or a message `delivery_state` of `delivered`, `read`,
-`failed` or `canceled`. **`agm` warns on stderr when `--wait-for delivered` is
-used on an SMS conversation**, for the reason in §5.5.
+Names are the same words on all three surfaces: `mark-read` is `mark_read` is
+`POST …/read`; `add-reaction`/`remove-reaction` are `add_reaction`/
+`remove_reaction`. There is no `unreact` and no `read` subcommand that could be
+misread as "read the conversation".
+
+`--wait` defaults to `--wait-for sent`. `terminal` means an operation status of
+`succeeded`, `failed` or `unknown`, **or** a message `delivery_state` of
+`delivered`, `read`, `failed`, `canceled` or `deleted`. `delivered` and `read`
+are message states, not operation states, and `--wait-for delivered` continues
+to wait after the operation is terminal — that is deliberate, and
+`--wait-for terminal` is the flag that means "stop as soon as anything is
+settled". **`agm` warns on stderr when `--wait-for delivered` or `read` is
+used on an `sms_mms` conversation**, for the reason in §5.5.
 
 Destructive commands (`unpair`, `conversations delete`, `messages delete`,
-`auth logout`, `admin ... revoke`) print the **exact effect sentence** from
-§7.6 and require an interactive `y`, or `--yes`. The effect sentence, the
-REST `effect` field, and the MCP tool description are the same words, so a
-model or a human cannot read a broader claim off one surface than another.
+`auth logout`, `admin ... revoke`, `pair --forget-browser`) print the **exact
+`effect` sentence returned by the route** (§7.6) and require an interactive
+`y`, or `--yes`. The `effect` field, the MCP tool description's closing
+sentence, and this prompt are the same words.
 
-Human output prints the operation ID first for every mutation. `--json`
-writes the server envelope plus CLI metadata (effective profile and server) as
-one value on stdout; diagnostics, progress, warnings and confirmation prompts
-go to stderr, so stdout stays machine-readable.
+Human output prints the operation ID first for every mutation. `--json` writes
+the server envelope plus CLI metadata (effective profile and server) as one
+value on stdout; diagnostics, progress, warnings and confirmation prompts go to
+stderr, so stdout stays machine-readable.
 
 ### 11.4 Pairing UX
 
+**QR is the primary path** (D19). It needs no Google account credentials, no
+browser and no cookies; `session.enc` then holds only a tachyon token, not live
+Google account cookies (§3.2, F-7).
+
+#### `agm pair` — QR, the default
+
 ```console
-$ agm pair --qr
+$ agm pair
 Pairing Agent GM with your phone.
 
   Open Google Messages on your Android phone
-    -> profile picture / overflow menu
+    -> profile picture or overflow menu
     -> Device pairing
     -> QR code scanner
   then scan this:
@@ -2822,20 +2872,36 @@ Pairing Agent GM with your phone.
     █ ███ █ ▀ ▄█▀██ █ ███ █
     █ ▀▀▀ █ █▄▀ ▄▀▄ █ ▀▀▀ █
     ▀▀▀▀▀▀▀ █ █ █▄█ ▀▀▀▀▀▀▀
-    ... (rendered at 1 module = 1 half-block, so it fits an 80x24 terminal)
+    ... (1 module = 1 half-block, so a version-6 code fits 80x24)
 
-  Waiting for the phone... (the code refreshes every 60s; press Ctrl-C to stop)
+  Waiting for the phone... (the code refreshes every 60s; Ctrl-C to stop)
 ```
 
-The QR is rendered in the terminal with half-block characters
-(`▀`/`▄`/`█`/space), which halves the height and makes a version-6 code fit
-80×24. `--qr-ascii` falls back to two-space-per-module ASCII for terminals
-without Unicode block support, and `--qr-file <path.png>` writes a PNG
-instead. On `RefreshPhoneRelay` the terminal is redrawn in place.
+Rendered with half-block characters (`▀`, `▄`, `█`, space), which halves the
+height. `--qr-ascii` falls back to two spaces per module for terminals without
+Unicode block support; `--qr-file <path.png>` writes a PNG. On
+`RefreshPhoneRelay` the terminal is redrawn in place.
+
+#### `agm pair --google` — dedicated Chrome over CDP
+
+The gaia flow needs seven cookies, six of them required, all `httpOnly`, one of
+them (`OSID`) host-scoped to `messages.google.com` (§3.2). Because they are
+`httpOnly`, no injected JavaScript and no `document.cookie` read can reach
+them: the only honest capture is the browser's own cookie store, read through
+the browser's own debugging protocol.
 
 ```console
-$ agm pair --google --cookies-file ~/gm-cookies.json
-Pairing Agent GM with your Google account.
+$ agm pair --google
+Opening a dedicated Chrome window for Google sign-in.
+This profile belongs to agm alone; your normal Chrome is untouched.
+
+  Sign in to your Google account in that window, and wait for
+  Google Messages for web to load.
+
+  [Chrome opens at accounts.google.com/AccountChooser?continue=
+   https://messages.google.com/web/config]
+
+  Captured 7 cookies.  Closing Chrome.
 
   Your phone will show three emoji and ask which one matches.
   Tap this one:
@@ -2845,10 +2911,91 @@ Pairing Agent GM with your Google account.
   Waiting for the phone...
 ```
 
-The emoji is printed large and alone. Nothing else is printed while waiting,
-so it cannot be misread.
+What the CLI does, precisely:
 
-Both flows end with:
+1. Launches the **system Chrome** with
+   `--user-data-dir=<state>/chrome-profile` and
+   `--remote-debugging-port=<random>` bound to `127.0.0.1`.
+   **The dedicated `--user-data-dir` is mandatory, not stylistic**: current
+   Chrome refuses `--remote-debugging-port` against the default profile
+   directory. No other flag is passed — no `--enable-automation`, no
+   `--headless` — so `navigator.webdriver` is unset, there is no automation
+   infobar, and Google's sign-in sees an ordinary Chrome.
+2. Navigates to
+   `https://accounts.google.com/AccountChooser?continue=https://messages.google.com/web/config`
+   (upstream's own capture URL, `connector/login.go:229`).
+3. Waits for the user to finish signing in, and then **waits for `OSID` to
+   exist** before reading. `OSID` is not set by the `accounts.google.com`
+   sign-in alone; it appears once `messages.google.com` has been loaded.
+   Reading before it exists silently returns an unusable set.
+4. Reads, over CDP, **exactly** `SID`, `HSID`, `OSID`, `SSID`, `APISID`,
+   `SAPISID` and `__Secure-1PSIDTS` — and nothing else — using
+   `Storage.getCookies`/`Network.getCookies`, which return `httpOnly` cookies.
+   **The read must cover `https://messages.google.com` as well as
+   `https://www.google.com`**, because `OSID` is host-scoped to the former;
+   a read of `.google.com` alone is the most common way this fails.
+   `__Secure-1PSIDTS` is read last, because it rotates.
+5. **Terminates Chrome immediately**, then starts `DoGaiaPairing` and prints
+   the emoji.
+6. Never writes the cookies to a file of its own. They go from CDP into the
+   request body and nowhere else.
+
+Three things the owner is told, once, at this point:
+
+- **A brand-new empty Chrome profile is a new device to Google** and may
+  trigger 2FA or a device-verification challenge. That is a one-time cost, not
+  a failure, and the CLI waits rather than aborting.
+- **The debugging port is a live credential channel.** Anything that can
+  connect to it reads every cookie in that profile. It is bound to loopback on
+  a random port and Chrome is killed the moment the capture completes.
+- **The kept profile.** `<state>/chrome-profile` persists at mode `0700` under
+  `$XDG_STATE_HOME/agent-gm/`, so a later `--refresh-cookies` does not require
+  signing in again. It contains a logged-in Google session. `agm pair
+  --forget-browser` deletes it, and its `effect` sentence says so.
+
+**Reading the user's existing Chrome profile is explicitly not done.** On Linux
+the cookie DB key lives in the login keyring, on Windows Chrome has used
+app-bound encryption since version 127, and the database is locked while Chrome
+runs. It is platform-forked and brittle for no gain over a dedicated profile.
+
+**`--cookies-file <path>` is the documented fallback**, for a machine with no
+Chrome at all. It accepts either a JSON object of cookie name → value or a cURL
+command copied from browser devtools, matching upstream's own instruction text
+(`connector/login.go:227`). It is read once and never copied.
+
+#### Headless servers
+
+```console
+$ agm pair --google --server https://gm.agent-wx.app
+```
+
+Chrome runs on the owner's laptop; the CLI POSTs **only the seven cookies** to
+`POST /v1/pairing/start` over TLS. Stated plainly, because it is the trust
+decision being made:
+
+> **The server then holds live Google account cookies for the whole life of the
+> pairing** (§3.2), inside `session.enc`. Not "saw them once" — *holds them*,
+> and rotates them in place as Google reissues them. Anyone with the data
+> directory **and** `AGENT_GM_DATA_KEY` has the owner's Google account. That is
+> why `session.enc` is mode `0600`, why §12.2 redacts cookies from every log
+> and audit payload, why §15.2 treats a backup of it as equivalent to a
+> credential, and why QR is the default.
+
+#### `agm pair --google --refresh-cookies`
+
+When cookies expire the session goes `logged_out` and writes fail, but **the
+pairing survives** (§3.2). This re-runs the capture in the kept Chrome profile
+— usually with no sign-in prompt at all — and re-authenticates the existing
+pairing. A capture from a different Google account is refused with
+`pairing_wrong_account` and changes nothing.
+
+#### Several Android devices on one Google account
+
+The library picks the most-recently-seen (§3.2). If that is the wrong phone,
+`agm pair --google --device-index 1` selects the next one. `agm pair` prints
+which device it chose and when it was last seen, so the owner can tell.
+
+#### After either flow
 
 ```console
 Paired.  phone: <phone_id>
@@ -2856,17 +3003,16 @@ Backfilling 41 conversations... done (2,183 messages).
 
 Two things to check on the phone, once:
   * Google Messages must be your default SMS app, or sends will fail.
-    Agent GM reports this as `is_default_sms_app` in `agm health`.
-  * For group messages, Settings -> Advanced -> Group messaging must be
-    "Send an MMS reply to all recipients", not "Send an SMS reply".
-    A phone set the other way cannot create a group at all.
+    `agm health` reports this as is_default_sms_app.
+  * For group messages, Settings -> Advanced -> Group messaging should be
+    "Send an MMS reply to all recipients". With the SMS setting, a group
+    send may fan out as separate SMS threads instead.
 
-Agent GM is now the paired web device for this phone. Pairing Google
-Messages Web in a browser may evict it, and vice versa.
+Using Google Messages for web in a browser at the same time is fine; it
+causes extra resyncs, not a lost pairing.
 ```
 
-Both prerequisites are checked by `agm health` where checkable and are
-repeated in `docs/pairing.md`.
+Both phone settings are repeated in `docs/pairing.md`.
 
 ### 11.5 Credentials
 
@@ -2879,6 +3025,7 @@ Precedence:
 
 | Source | Use |
 |---|---|
+| `--server`, else `AGENT_GM_URL`, else the profile's server | which server a command talks to |
 | `AGENT_GM_ACCESS_TOKEN` | one access token, used as given, not refreshable |
 | `AGENT_GM_REFRESH_TOKEN_FILE` + `AGENT_GM_CLIENT_ID` | automation. Every invocation exchanges the token and rewrites the file with the rotated value, atomically, at mode `0600` |
 | the stored profile | the ordinary case, written by `agm auth login` |
@@ -2914,7 +3061,8 @@ profile's token to a new origin.
 | `AGENT_GM_ADMIN_SECRET` | environment only. ≥43 characters; the server refuses shorter | yes — changing it revokes every previous admin bootstrap authorization on next start |
 | `AGENT_GM_DATA_KEY` | environment only. 256 bits as 64 hex or base64 | **no.** §4.5 |
 | Google session (`AuthData`) | `session.enc`, sealed with the data key, mode `0600` | by re-pairing |
-| Google cookies | inside `AuthData`, never on disk unencrypted, never logged | by re-pairing |
+| **Google account cookies** (gaia flow only) | inside `AuthData`, therefore inside `session.enc`, **for the whole life of the pairing** (§3.2). Never on disk unencrypted, never logged | by `agm pair --google --refresh-cookies` |
+| Kept Chrome profile (gaia flow only) | `$XDG_STATE_HOME/agent-gm/chrome-profile`, mode `0700`, on the **client** machine. Contains a logged-in Google session | `agm pair --forget-browser` |
 | OAuth tokens | SQLite, **hashes only** | rotate on use |
 | Enrollment codes | SQLite, **SHA-256 only**; the value is returned once, at creation | revoke and reissue |
 | Media tickets | signed, not stored as values | expire |
@@ -2922,8 +3070,17 @@ profile's token to a new origin.
 Generate both with `devbox run gen-secret` (`openssl rand -hex 32`).
 
 Secrets never appear in `argv`: `--secret-stdin`, `--cookies-file`. Passphrases
-and cookies are read from a TTY prompt, stdin, or a file read once, and are
-excluded from process arguments, logs, audit payloads and error messages.
+and cookies are read from a TTY prompt, stdin, a file read once, or the CDP
+capture of §11.4, and are excluded from process arguments, logs, audit payloads
+and error messages.
+
+**On the gaia flow, `session.enc` is equivalent to the owner's Google account
+credential.** Anyone holding both the data directory and `AGENT_GM_DATA_KEY`
+can act as that Google account, not merely as this Messages session. This
+governs §15.2 (a backup of `session.enc` is a credential backup and is stored
+accordingly) and is the reason QR is the default path (D19). The QR flow's
+`session.enc` holds a tachyon token scoped to Google Messages and nothing
+else.
 
 ### 12.2 Logging
 
@@ -2932,7 +3089,9 @@ error codes and state transitions. Mandatory redaction covers:
 
 - `Authorization` headers and bearer tokens.
 - The admin secret and the data key.
-- The Google tachyon token, refresh key, request-crypto keys and cookies.
+- The Google tachyon token, refresh key, request-crypto keys, and **every one
+  of the seven Google account cookies by name** (§3.2) — including in error
+  strings bubbled up from `libgm`.
 - Enrollment-code values and OAuth authorization codes.
 - Message bodies, subjects and attachment bytes.
 - Full phone numbers — logs carry a stable salted hash and the last four
