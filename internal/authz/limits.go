@@ -138,10 +138,10 @@ var (
 
 // ConcurrencyLimiter bounds simultaneous work.
 type ConcurrencyLimiter struct {
-	spec  ConcurrencySpec
-	mu    sync.Mutex
+	spec   ConcurrencySpec
+	mu     sync.Mutex
 	perKey map[string]int
-	total int
+	total  int
 }
 
 // NewConcurrencyLimiter builds a limiter for one spec.

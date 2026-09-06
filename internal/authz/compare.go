@@ -75,16 +75,25 @@ func tokenDigest(audience, kind, value string) Digest {
 	return digest(domainToken, audience, kind, value)
 }
 
+// hexDigest renders any digest the way `tokens.token_hash` stores it.
+func hexDigest(d Digest) string { return hex.EncodeToString(d[:]) }
+
 // tokenHash is tokenDigest in the hex form stored in `tokens.token_hash`.
 func tokenHash(audience, kind, value string) string {
-	d := tokenDigest(audience, kind, value)
-	return hex.EncodeToString(d[:])
+	return hexDigest(tokenDigest(audience, kind, value))
 }
 
 // equalDigest is the constant-time comparison. hmac.Equal wraps
 // crypto/subtle.ConstantTimeCompare; both operands are fixed-length by
 // construction.
-func equalDigest(a, b Digest) bool { return hmac.Equal(a[:], b[:]) }
+//
+// The parameters are named for what they hold rather than a and b, so that the
+// comparison-site audit of spec section 16 Slice 2 test 23 recognises this
+// site: a plant rewriting the body to `presentedDigest == storedDigest` is
+// then caught by name, not by luck.
+func equalDigest(presentedDigest, storedDigest Digest) bool {
+	return hmac.Equal(presentedDigest[:], storedDigest[:])
+}
 
 // equalHashHex compares a computed digest against a hex digest read back from
 // the database, constant-time. A stored value that is not a well-formed digest

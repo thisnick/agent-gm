@@ -33,7 +33,7 @@ import (
 
 // Startup log values for client_source_mode (spec section 12.3).
 const (
-	SourceModeSocketPeer  = "socket_peer"
+	SourceModeSocketPeer   = "socket_peer"
 	SourceModeTrustedProxy = "trusted_proxy"
 )
 
