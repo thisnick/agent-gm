@@ -703,3 +703,825 @@ Detection rule for `config_version_stale`: status is 4, **or** status is not
   `unsafe_trace=true` (§12.2).
 
 ---
+
+## 4. Data model and identifiers
+
+### 4.1 Identifier scheme
+
+Public IDs are opaque, URL-safe, stable strings with a typed prefix. A caller
+never sees a raw Google conversation ID, message ID or participant ID on a
+public surface; those live in internal `source_*` columns and in
+`admin`-gated diagnostics.
+
+| Prefix | Object | Derivation |
+|---|---|---|
+| `conv_` | conversation | UUIDv5(ns, `account_key` ‖ `"conversation"` ‖ Google conversation ID) |
+| `msg_` | message | UUIDv5(ns, `account_key` ‖ `"message"` ‖ Google conversation ID ‖ Google message ID) |
+| `att_` | attachment (one media part of a message) | UUIDv5(ns, message ID ‖ part index ‖ Google media ID) |
+| `react_` | reaction | UUIDv5(ns, message ID ‖ participant ID ‖ fully-qualified emoji) |
+| `contact_` | contact | UUIDv5(ns, `account_key` ‖ `"contact"` ‖ Google participant ID) |
+| `part_` | participant of a conversation | UUIDv5(ns, conversation ID ‖ Google participant ID) |
+| `op_` | operation | UUIDv7 (locally created) |
+| `upl_` | upload reservation | UUIDv7 |
+| `authreq_` | pending OAuth authorization request | UUIDv7 |
+| `auth_` | active authorization (grant) | UUIDv7 |
+| `client_` | registered OAuth client | UUIDv7 |
+| `enroll_` | enrollment code record | UUIDv7 |
+| `req_` | request ID, in every response envelope | UUIDv7, not stored |
+
+Rules:
+
+- **One frozen namespace UUID**, declared once in `internal/store/ids.go` as
+  `IDNamespace`, never changed. Changing it renames every object in the world.
+- **`account_key` is in every derivation**, even though there is exactly one
+  account. It is `SHA-256(AuthData.Mobile.SourceID)` truncated to 16 bytes,
+  captured at pair time and stored in `server_meta`. This is carried over from
+  Agent MX deliberately: it means a database rebuilt from Google reproduces the
+  same IDs, and it means a *different* phone can never produce a colliding ID.
+  **Re-pairing the same phone reuses the same `account_key`, so conversations
+  and messages keep their IDs across a re-pair.** Pairing a different phone
+  produces a completely different ID space, which is the correct outcome.
+- Deterministic (UUIDv5) IDs are used for everything derived from Google, so a
+  wiped database that is re-backfilled hands agents the same IDs they had
+  before. UUIDv7 is used for everything Agent GM itself creates.
+- An ID with the wrong prefix for the parameter is `invalid_request` naming the
+  parameter and the expected prefix — **never `not_found`**, which would read
+  as "that thing is gone".
+- A raw Google ID presented where an Agent GM ID is expected is
+  `invalid_request` with the same message. There are no aliases and no
+  fallbacks.
+
+### 4.2 SQLite schema
+
+One database file, `$AGENT_GM_DATA_DIR/agent-gm.sqlite3`. Opened with
+`journal_mode=WAL`, `foreign_keys=ON`, `busy_timeout=5000`,
+`synchronous=NORMAL`. One writer goroutine; a read-only pool for queries.
+
+```sql
+-- identity and process state -------------------------------------------------
+CREATE TABLE server_meta (
+    key            TEXT PRIMARY KEY,
+    value          TEXT NOT NULL
+);
+-- keys: account_key, phone_id, schema_version_note, pending_reprocess,
+--       upstream_commit, config_version_compiled, session_state,
+--       backfill_complete_at
+
+-- conversations --------------------------------------------------------------
+CREATE TABLE conversations (
+    id                     TEXT PRIMARY KEY,          -- conv_...
+    source_id              TEXT NOT NULL UNIQUE,      -- Google conversationID
+    name                   TEXT,                      -- may be empty for DMs
+    is_group               INTEGER NOT NULL DEFAULT 0,
+    conversation_type      TEXT NOT NULL,             -- unknown|sms|rcs
+    send_mode              TEXT NOT NULL,             -- auto|xms|xms_latch
+    folder                 TEXT NOT NULL DEFAULT 'inbox', -- inbox|archive|spam_blocked
+    unread                 INTEGER NOT NULL DEFAULT 0,
+    pinned                 INTEGER NOT NULL DEFAULT 0,
+    read_only              INTEGER NOT NULL DEFAULT 0,
+    default_outgoing_id    TEXT,                      -- participantID to send as
+    latest_message_id      TEXT,                      -- msg_... , nullable
+    last_activity_ms       INTEGER NOT NULL,          -- ms since epoch
+    group_avatar_url       TEXT,
+    sim_payload_json       TEXT,                      -- opaque, re-sent verbatim
+    deleted_at_ms          INTEGER,                   -- set by delete-for-me
+    created_at_ms          INTEGER NOT NULL,
+    updated_at_ms          INTEGER NOT NULL
+);
+CREATE INDEX conversations_activity ON conversations(last_activity_ms DESC, id);
+CREATE INDEX conversations_folder   ON conversations(folder, last_activity_ms DESC);
+
+-- participants ---------------------------------------------------------------
+CREATE TABLE participants (
+    id                TEXT PRIMARY KEY,               -- part_...
+    conversation_id   TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    source_id         TEXT NOT NULL,                  -- Google participantID
+    contact_id        TEXT REFERENCES contacts(id),
+    display_name      TEXT,
+    first_name        TEXT,
+    phone_e164        TEXT,
+    formatted_number  TEXT,
+    identifier_type   TEXT,                           -- phone|email|unknown|...
+    is_me             INTEGER NOT NULL DEFAULT 0,
+    is_visible        INTEGER NOT NULL DEFAULT 1,
+    UNIQUE (conversation_id, source_id)
+);
+CREATE INDEX participants_phone ON participants(phone_e164);
+
+CREATE TABLE contacts (
+    id            TEXT PRIMARY KEY,                   -- contact_...
+    source_id     TEXT NOT NULL UNIQUE,
+    display_name  TEXT,
+    phone_e164    TEXT,
+    avatar_hash   TEXT,
+    is_top        INTEGER NOT NULL DEFAULT 0,
+    updated_at_ms INTEGER NOT NULL
+);
+CREATE INDEX contacts_phone ON contacts(phone_e164);
+
+-- messages -------------------------------------------------------------------
+CREATE TABLE messages (
+    id                  TEXT PRIMARY KEY,             -- msg_...
+    conversation_id     TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    source_id           TEXT NOT NULL,                -- Google messageID
+    kind                TEXT NOT NULL,                -- message|tombstone
+    direction           TEXT NOT NULL,                -- incoming|outgoing
+    sender_participant  TEXT,                         -- part_... , null for system
+    text                TEXT,                         -- concatenated text parts
+    subject             TEXT,
+    delivery_state      TEXT NOT NULL,                -- see 4.4
+    delivery_state_raw  INTEGER NOT NULL,             -- the numeric MessageStatusType
+    delivery_error      TEXT,                         -- Message.MessageStatus.errMsg
+    reply_to_message_id TEXT,                         -- msg_... , nullable
+    operation_id        TEXT,                         -- op_... , outgoing only
+    tmp_id              TEXT,                         -- the TmpID we sent, for echo match
+    is_deleted          INTEGER NOT NULL DEFAULT 0,
+    sent_at_ms          INTEGER NOT NULL,             -- Google timestamp, us -> ms
+    ingested_at_ms      INTEGER NOT NULL,
+    content_hash        TEXT NOT NULL,                -- sha256 of canonical content
+    UNIQUE (conversation_id, source_id)
+);
+CREATE INDEX messages_conv_time ON messages(conversation_id, sent_at_ms DESC, id DESC);
+CREATE INDEX messages_time      ON messages(sent_at_ms DESC, id DESC);
+CREATE INDEX messages_tmp_id    ON messages(tmp_id) WHERE tmp_id IS NOT NULL;
+
+CREATE VIRTUAL TABLE messages_fts USING fts5(
+    text, subject, content='messages', content_rowid='rowid', tokenize='unicode61'
+);
+
+-- attachments ----------------------------------------------------------------
+CREATE TABLE attachments (
+    id                 TEXT PRIMARY KEY,              -- att_...
+    message_id         TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    part_index         INTEGER NOT NULL,
+    media_id           TEXT,                          -- Google mediaID, may be empty
+    thumbnail_media_id TEXT,
+    decryption_key     BLOB,                          -- encrypted at rest, see 4.5
+    filename           TEXT,
+    mime_type          TEXT,
+    media_format       TEXT,                          -- gmproto MediaFormats name
+    size_bytes         INTEGER,
+    width              INTEGER,
+    height             INTEGER,
+    download_state     TEXT NOT NULL,                 -- available|pending|failed|unavailable
+    cache_path         TEXT,                          -- relative to media-cache/objects
+    sha256             TEXT,                          -- of decrypted bytes, nullable
+    UNIQUE (message_id, part_index)
+);
+
+-- reactions ------------------------------------------------------------------
+CREATE TABLE reactions (
+    id              TEXT PRIMARY KEY,                 -- react_...
+    message_id      TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    participant_id  TEXT NOT NULL,                    -- part_...
+    emoji           TEXT NOT NULL,                    -- fully-qualified unicode
+    emoji_type      TEXT NOT NULL,                    -- LIKE|LOVE|...|CUSTOM
+    is_mine         INTEGER NOT NULL DEFAULT 0,
+    updated_at_ms   INTEGER NOT NULL,
+    UNIQUE (message_id, participant_id, emoji)
+);
+
+-- operations (idempotency + status, NOT an outbox) ---------------------------
+CREATE TABLE operations (
+    id                    TEXT PRIMARY KEY,           -- op_...
+    kind                  TEXT NOT NULL,              -- send_text|send_media|react|...
+    authorization_id      TEXT NOT NULL,
+    idempotency_key       TEXT NOT NULL,
+    request_fingerprint   TEXT NOT NULL,              -- sha256 of canonical body
+    conversation_id       TEXT,
+    message_id            TEXT,                       -- filled by the echo
+    status                TEXT NOT NULL,              -- see 6.4
+    terminal              INTEGER NOT NULL DEFAULT 0,
+    terminal_at_ms        INTEGER,
+    corrected_at_ms       INTEGER,
+    error_code            TEXT,
+    error_message         TEXT,
+    error_retryable       INTEGER,
+    google_status_raw     INTEGER,                    -- SendMessageResponse.Status
+    request_payload_json  TEXT NOT NULL,              -- redacted: no bodies
+    created_at_ms         INTEGER NOT NULL,
+    updated_at_ms         INTEGER NOT NULL,
+    UNIQUE (authorization_id, kind, idempotency_key)
+);
+CREATE INDEX operations_pending ON operations(status) WHERE terminal = 0;
+
+-- uploads --------------------------------------------------------------------
+CREATE TABLE uploads (
+    id                  TEXT PRIMARY KEY,             -- upl_...
+    authorization_id    TEXT NOT NULL,
+    idempotency_key     TEXT,
+    filename            TEXT NOT NULL,
+    mime_type           TEXT NOT NULL,
+    size_bytes          INTEGER NOT NULL,
+    sha256_declared     TEXT,
+    state               TEXT NOT NULL,                -- reserved|complete|consumed|expired
+    token_hash          TEXT NOT NULL,
+    staged_path         TEXT,
+    expires_at_ms       INTEGER NOT NULL,
+    created_at_ms       INTEGER NOT NULL
+);
+
+-- media cache ----------------------------------------------------------------
+CREATE TABLE media_cache_entries (
+    attachment_id   TEXT PRIMARY KEY REFERENCES attachments(id) ON DELETE CASCADE,
+    relative_path   TEXT NOT NULL,
+    size_bytes      INTEGER NOT NULL,
+    last_used_ms    INTEGER NOT NULL
+);
+
+-- auth -----------------------------------------------------------------------
+CREATE TABLE oauth_clients (...);            -- client_...
+CREATE TABLE enrollment_codes (...);         -- enroll_... , code_hash only
+CREATE TABLE authorization_requests (...);   -- authreq_...
+CREATE TABLE authorizations (...);           -- auth_...
+CREATE TABLE tokens (...);                   -- hashes only, never values
+CREATE TABLE oauth_attempts (...);           -- durable failure limiter
+
+-- settings and audit ---------------------------------------------------------
+CREATE TABLE settings (
+    key         TEXT PRIMARY KEY,
+    value_json  TEXT NOT NULL,
+    updated_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE audit_events (
+    id                TEXT PRIMARY KEY,               -- UUIDv7
+    kind              TEXT NOT NULL,
+    authorization_id  TEXT,
+    target_type       TEXT,
+    target_id         TEXT,
+    result            TEXT NOT NULL,                  -- ok|refused|failed
+    source            TEXT,                           -- resolved client source
+    payload_json      TEXT NOT NULL,                  -- redacted, see 12.4
+    created_at_ms     INTEGER NOT NULL
+);
+CREATE INDEX audit_kind_time ON audit_events(kind, created_at_ms DESC);
+CREATE INDEX audit_time      ON audit_events(created_at_ms DESC);
+```
+
+### 4.3 Migrations
+
+- **Forward-only, numbered, never edited after they ship.** `0001_init.sql`,
+  `0002_...`. `PRAGMA user_version` is the version. A database at a *higher*
+  version than the binary knows refuses to open, with an error naming both
+  numbers. There is no down-migration.
+- Migrations run **inside one transaction each**, on the writer goroutine,
+  before any HTTP listener binds.
+- A migration that needs data recomputed sets
+  `server_meta.pending_reprocess = <task name>`; the process runs that task
+  once after startup and clears the key. This is how a schema change that
+  affects derived data (e.g. a delivery-state remap) is applied without a
+  hand-written data migration.
+- `PRAGMA foreign_key_check` runs after every migration in tests, and its
+  output must be empty (§13.2).
+- **Audit rows are never rewritten by a migration.** An audit row records what
+  happened when it happened; rewriting it would make the trail claim a value
+  that did not exist then.
+
+### 4.4 Timestamps and the delivery-state vocabulary
+
+Google timestamps are **microseconds**; Agent GM converts at the `gm` boundary
+and stores **milliseconds since the Unix epoch** in every `*_ms` column. Every
+JSON surface renders them as RFC 3339 UTC with millisecond precision.
+
+`messages.delivery_state` is Agent GM's own closed vocabulary, mapped from
+`gmproto.MessageStatusType` (the numeric value is kept in
+`delivery_state_raw` so nothing is lost):
+
+| `delivery_state` | Meaning | `MessageStatusType` sources |
+|---|---|---|
+| `queued` | accepted locally, not yet at the carrier | `OUTGOING_YET_TO_SEND(4)`, `OUTGOING_SEND_AFTER_PROCESSING(10)`, `OUTGOING_SCHEDULED(16)`, `OUTGOING_DRAFT(3)` |
+| `sending` | in flight | `OUTGOING_SENDING(5)`, `OUTGOING_RESENDING(6)`, `OUTGOING_AWAITING_RETRY(7)`, `OUTGOING_VALIDATING(20)` |
+| `sent` | the carrier took it | `OUTGOING_COMPLETE(1)`, `OUTGOING_NOT_DELIVERED_YET(14)` |
+| `delivered` | the recipient's device has it | `OUTGOING_DELIVERED(2)` |
+| `read` | the recipient opened it | `OUTGOING_DISPLAYED(11)` |
+| `failed` | terminal failure | every `OUTGOING_FAILED_*` (8, 9, 13, 17, 18, 19, 21, 22, 24, 25, 27), `OUTGOING_RESTRICTED(26)` |
+| `canceled` | withdrawn | `OUTGOING_CANCELED(12)`, `OUTGOING_REVOCATION_PENDING(15)` |
+| `deleted` | removed | `OUTGOING_DELETED(23)`, `INCOMING_DELETED(117)` |
+| `received` | an incoming message that is complete | `INCOMING_COMPLETE(100)`, `INCOMING_DELIVERED(108)`, `INCOMING_DISPLAYED(109)` |
+| `downloading` | incoming media not yet fetched | `INCOMING_*_DOWNLOADING`, `INCOMING_*_DOWNLOAD`, `INCOMING_AWAITING_AUTO_DOWNLOAD(115)` |
+| `download_failed` | incoming media unavailable | `INCOMING_DOWNLOAD_FAILED*`, `INCOMING_EXPIRED_OR_NOT_AVAILABLE(107)`, `INCOMING_FAILED_TO_DECRYPT(113)`, `INCOMING_DECRYPTION_ABORTED(114)`, `INCOMING_DOWNLOAD_RESTRICTED(118)` |
+| `unknown` | anything else, including a value the pinned proto has no name for | `STATUS_UNKNOWN(0)` and unmapped values |
+
+Permitted transitions for an **outgoing** message, enforced in SQL by a
+trigger, not only in Go:
+
+```text
+queued -> sending -> sent -> delivered -> read
+queued|sending|sent      -> failed
+queued|sending           -> canceled
+any                      -> deleted
+unknown                  -> any (a late authoritative status corrects it)
+```
+
+A transition that skips forward (`queued -> delivered`) is **accepted** — the
+phone genuinely reports coarse jumps — but a *backward* move (`read -> sent`)
+is refused, logged, and audited as `message.status_out_of_order`, and the
+stored state is left alone. `delivery_state_raw` is always overwritten with
+whatever Google last said, so a reviewer can always see the raw truth.
+
+`read` is a state on the *message*, not on the operation (§6.4).
+
+### 4.5 The data key
+
+`AGENT_GM_DATA_KEY` is a 256-bit key supplied as 64 hex characters or standard
+base64. It is used to derive, by HKDF-SHA256 with distinct `info` strings:
+
+| Purpose | `info` |
+|---|---|
+| session file envelope (§3.3) | `agent-gm/session/v1` |
+| `attachments.decryption_key` column encryption | `agent-gm/attachment-key/v1` |
+| upload and download ticket signing (§10.3) | `agent-gm/ticket/v1` |
+| pagination cursor signing (§7.3) | `agent-gm/cursor/v1` |
+
+**The data key is not rotatable in place.** A database restored without the
+key that sealed it cannot decrypt the session file or any attachment key. The
+key and the data directory move together, always. If the key is lost the
+recovery path is: delete `session.enc`, re-pair (§11.4), and re-backfill;
+message text survives because it is not encrypted at rest, but cached media
+and the session do not.
+
+Refusing to start with `session envelope cannot be decrypted` means the key
+differs from the one that sealed the session. Restore the original key; there
+is no in-place rotation.
+
+---
+
+## 5. Ingestion
+
+### 5.1 The two sources of truth
+
+Everything in `conversations`, `messages`, `attachments`, `reactions`,
+`participants` and `contacts` comes from exactly two places:
+
+1. **Backfill** — explicit `ListConversations` / `FetchMessages` /
+   `ListContacts` calls (§5.2).
+2. **Live events** — the `gm.Events()` channel (§3.4, §5.3).
+
+They write through the **same upsert functions**. There is no separate
+"backfill writer" whose behaviour could drift from the live path. This is the
+single most important structural rule in this section: a bug in ordering or
+dedup must be reproducible from either source.
+
+### 5.2 Initial backfill
+
+Triggered on `events.ClientReady`, and again on demand via
+`POST /v1/admin/backfill`.
+
+```
+1. Upsert the conversations carried on ClientReady.
+2. ListConversations(INBOX, count=settings.backfill.conversation_page_size)
+   -- this call is also what arms the library's BUGLE_MESSAGE mode (§3.7).
+3. ListConversations(ARCHIVE, ...) if settings.backfill.include_archive.
+4. ListContacts() and ListTopContacts(); upsert contacts; link participants.
+5. For each conversation, oldest-activity first:
+     FetchMessages(convID, count=settings.backfill.message_page_size, cursor=nil)
+     loop on the returned Cursor until either
+       - the page is empty, or
+       - settings.backfill.max_messages_per_conversation is reached, or
+       - a message older than settings.backfill.horizon is seen.
+6. Record per-conversation progress in backfill_state so a restart resumes
+   rather than restarting.
+7. Set server_meta.backfill_complete_at.
+```
+
+Concurrency is `settings.backfill.concurrency` (default 2, bounds 1–8)
+conversations at a time. Backfill is **paused** while a
+`MOBILE_DATABASE_SYNC_STARTED`/`SYNCING` alert is outstanding and resumes on
+`MOBILE_DATABASE_SYNC_COMPLETE` (§3.4), because results during a phone-side
+sync are unstable.
+
+Backfill never blocks reads. `GET /v1/health` reports
+`backfill: {state, conversations_done, conversations_total}`, and every list
+response carries a `history_incomplete` warning until
+`backfill_complete_at` is set, so an empty result during backfill is not read
+as an absent message.
+
+### 5.3 Live ingestion
+
+One goroutine, `core.ingestLoop`, drains `gm.Events()` and applies each event
+as one store write transaction. It is the **only** writer of message rows.
+
+For a `*libgm.WrappedMessage`:
+
+```
+1. If shouldIgnoreStatus(status, isDM) says ignore -> drop, count it, done.
+   (The set is carried over verbatim from
+   connector/handlegmessages.go:shouldIgnoreStatus.)
+2. If status is in 200..299 -> kind="tombstone", store, exclude from
+   messages.list unless include_tombstones=true.
+3. Derive msg_ ID from (conversation source ID, message source ID).
+4. Compute content_hash over the canonical content (text parts joined with
+   \n, then each media part's mediaID and size, then the reaction set).
+5. If a row with that ID exists:
+     - if content_hash and delivery_state_raw are both unchanged -> no-op.
+     - else update, honouring the transition rules of 4.4.
+   Else insert.
+6. Upsert attachments from MessageInfo entries.
+7. Replace the reaction set from Message.Reactions (it is authoritative and
+   complete, so this is a set-replace, not a merge).
+8. If Message.TmpID matches an operation's tmp_id, resolve that operation
+   (6.3).
+9. Update the conversation's last_activity_ms and latest_message_id.
+```
+
+Conversation events (`*gmproto.Conversation`) upsert the conversation row and
+replace its participant set.
+
+### 5.4 Ordering and deduplication
+
+- **Ordering is by `sent_at_ms` descending, then `id` descending.** Google
+  timestamps collide (two messages in the same millisecond is common in a
+  burst), so the ID is always the tiebreaker and it is part of every cursor.
+  Ordering is *never* by ingestion order; a backfilled message and a live
+  message of the same age must sort identically.
+- **Events can arrive out of order and can be replayed.** After a reconnect
+  the server replays its backlog with `IsOld=true`. Agent GM does not use
+  `IsOld` to decide whether to store — an old event may carry information the
+  database lacks — it uses it only to suppress side effects: an `IsOld`
+  message never triggers an operation resolution, never bumps
+  `last_activity_ms` past a newer value, and is never counted as "new".
+- **Three layers of dedup**, in order:
+  1. `libgm`'s own 8-entry (id, payload hash) window (§3.4). Too small to rely
+     on; Agent GM assumes it does nothing.
+  2. The primary key on `(conversation_id, source_id)` — a repeat is an
+     upsert, never a second row.
+  3. `content_hash` — an upsert whose content and raw status are both
+     unchanged writes nothing at all, so a replay storm does not churn the WAL
+     or bump `updated_at_ms`.
+- **`last_activity_ms` is monotonic per conversation.** It is only ever moved
+  forward, with `MAX(existing, new)`, so a replayed old message cannot make a
+  conversation jump to the top of the list.
+
+### 5.5 Delivery-status transitions in practice
+
+The sequence an agent observes for its own outgoing text, in the normal case:
+
+```
+POST /v1/conversations/{id}/messages      -> 200, operation succeeded,
+                                             message_id present
+message.delivery_state: queued            (echo, MessageStatusType 4 or 5)
+                     -> sent              (OUTGOING_COMPLETE 1)
+                     -> delivered         (OUTGOING_DELIVERED 2, RCS/SMS-DR)
+                     -> read              (OUTGOING_DISPLAYED 11, RCS only)
+```
+
+Facts an implementer must not get wrong:
+
+- **SMS usually stops at `sent`.** Delivery reports are carrier- and
+  handset-dependent. `delivered` and `read` are RCS features in practice. An
+  agent waiting for `delivered` on an SMS thread can wait forever; this is
+  stated in the MCP instructions block (§8.3) and in `agm --help`.
+- **Group threads frequently stop at `sent`.**
+- The echo can arrive **before** the HTTP response is written, because the
+  send is synchronous and the long poll is concurrent. The operation row is
+  therefore committed *before* the library call is made (§6.2), so the echo
+  always has something to attach to.
+- A `read` state never regresses. See §4.4.
+
+---
+
+## 6. Operations: sends are synchronous
+
+### 6.1 No outbox
+
+Agent MX needed a durable outbox because it reconciled two systems of record.
+Agent GM has one. `libgm.Client.SendMessage` is a **synchronous request that
+returns the phone's own answer**, with a hard 60-second bound
+(`responseHardTimeout`). Therefore:
+
+- A send handler calls the library inline and answers with the real result.
+- There is **no queue, no worker, no retry schedule owned by Agent GM**, and
+  no `queued`/`accepted` states that mean "we have not tried yet".
+- The only retries are the three upstream-derived ones for transient Google
+  statuses (`FAILURE_2`, `FAILURE_3`; backoff `[3s, 8s, 20s]`; §3.7), executed
+  inside the same request. Total worst-case latency for a send is therefore
+  bounded at roughly 4 × 60s + 31s; the HTTP handler enforces a 240-second
+  deadline and returns `phone_not_responding` if it is exceeded.
+
+The `operations` table still exists, for two reasons only: **idempotency**
+and **status**. It is a record of what happened, not a queue of what to do.
+
+### 6.2 The order of a mutation
+
+This order is part of the contract and is tested (§13.2):
+
+```
+1. Authenticate; check scope.  -> 401 / 403 at the transport
+2. Parse strictly.             -> invalid_request naming the key
+3. Resolve the conversation.   -> not_found (indistinguishable from unseen)
+4. Check it is actionable.     -> unsupported_capability + details.reason,
+                                  and NO operation row is created
+5. Look up the idempotency key.
+     same key + same fingerprint  -> return the existing operation, do nothing
+     same key + different body    -> idempotency_conflict, do nothing
+6. INSERT the operation row with status='running' and COMMIT.
+7. Call libgm.
+8. UPDATE the operation with the outcome, and COMMIT.
+9. Respond.
+```
+
+Step 6 committing *before* step 7 is what makes the crash story honest: if the
+process dies between 6 and 8, the operation is found at startup in `running`
+and is settled to `unknown` by the recovery pass (§6.5), never silently
+retried. **Agent GM never re-sends a message on behalf of a crashed request.**
+
+### 6.3 Idempotency
+
+Carried over from Agent MX, unchanged in substance:
+
+- **The idempotency key is required on every mutation.** It comes from the
+  `Idempotency-Key` header or from `client_request_id` in the body. Supplying
+  both with *different* values is `invalid_request`, because it is a
+  contradiction rather than a preference. An empty key, a key over 200 bytes,
+  or a key containing control characters is `invalid_request` naming
+  `client_request_id` in `details.field`, and writes nothing.
+- Uniqueness is scoped to **(authorization, operation kind, key)**. Two
+  clients may use the same key value; one client may use one key for a send
+  and for a mark-read.
+- "The same request" is decided by a **SHA-256 over the canonically
+  serialised body** (keys sorted, no insignificant whitespace), so reordered
+  JSON keys are a replay and any changed value is not.
+- A replay returns the existing operation **and its `message_id`**, and sends
+  nothing. A fresh key is a different call, not a repeat — every tool
+  description and CLI help text says so, because this is the mistake that
+  sends a second text message to a real person.
+- Keys are retained for **30 days** (`settings.operations.idempotency_ttl`,
+  bounds 1d–365d), after which the row is swept. A replay of a swept key is a
+  new operation; the CLI and the tool descriptions state the retention.
+
+The operation's `tmp_id` is set to the operation ID and is what goes into
+`SendMessageRequest.TmpID` / `MessagePayload.TmpID` / `TmpID2` (§3.1). When
+the remote echo arrives carrying that `TmpID`, the ingest loop writes the
+message's `msg_` ID onto the operation and, if the operation is `pending`,
+settles it (§6.4).
+
+### 6.4 Operation status
+
+| Status | Meaning | Terminal |
+|---|---|---|
+| `running` | in flight, or the process died mid-call | no |
+| `succeeded` | the phone accepted it (`SendMessageResponse_SUCCESS`, or a `Success: true` for reactions/deletes) | yes |
+| `pending` | **`libgm.ErrPhoneNotResponding` only.** The server accepted the request; the phone may still act on it when it wakes. This is *not* a failure. | no |
+| `failed` | the phone refused it, or a non-retryable error | yes |
+| `unknown` | never settled within `settings.operations.pending_timeout` (default 24h, bounds 1h–7d), or recovered from a crash | yes |
+
+Transitions:
+
+```text
+running -> succeeded | failed | pending
+pending -> succeeded            (the remote echo arrived)
+pending -> unknown              (pending_timeout elapsed)
+running -> unknown              (crash recovery)
+unknown -> succeeded | failed   (late authoritative evidence)
+```
+
+`terminal_at_ms` records when the operation *first* became terminal and is
+never cleared. A correction out of `unknown` records `corrected_at_ms`. A wait
+that was satisfied by `unknown` is not retroactively unsatisfied.
+
+The critical rule, stated once and tested: **`ErrPhoneNotResponding` produces
+`pending`, not `failed`.** Reporting it as a failure invites the caller to
+resend, which sends the message twice when the phone wakes up.
+
+### 6.5 Crash recovery
+
+At startup, before the listener binds:
+
+```
+UPDATE operations
+   SET status='unknown', terminal=1, terminal_at_ms=?, error_code='crash_recovered'
+ WHERE status='running';
+```
+
+Each row is audited as `operation.crash_recovered`. Nothing is retried. If the
+send did reach Google, the remote echo will arrive on reconnect and correct
+the operation to `succeeded` with a `message_id` — which is exactly why the
+correction transition out of `unknown` exists.
+
+A `pending` operation is left alone at startup; the reaper settles it at
+`pending_timeout` measured from `created_at_ms`.
+
+---
+
+## 7. REST API
+
+Base: `https://gm.agent-wx.app/v1`. JSON in, JSON out. Every route requires a
+bearer token except `/healthz`, `/oauth/*` and `/.well-known/*`.
+
+### 7.1 Envelopes
+
+Success:
+
+```json
+{ "data": {}, "next_cursor": null, "warnings": [], "request_id": "req_..." }
+```
+
+Error:
+
+```json
+{ "error": { "code": "not_found", "message": "No such conversation.",
+             "retryable": false, "details": {} },
+  "request_id": "req_..." }
+```
+
+**Strict parameter rejection.** Every `/v1` route rejects an unknown query
+parameter or an unknown JSON body field with `invalid_request`, naming it in
+`details.parameter` or `details.field`. Nothing is allowlisted, including
+cache-busting parameters such as `_=`. A misspelled filter is refused rather
+than silently ignored, because `?directon=incoming` returning a full
+unfiltered list looks exactly like a correct answer. A refused request has no
+effect. The rule applies to `/v1` only: `/mcp`, `/oauth/*` and
+`/.well-known/*` keep their RFC behaviour and ignore what they do not
+recognise, because those are the surfaces third-party MCP clients drive.
+
+**Text normalisation is never silent.** A `reason` or a `filename` carrying
+control characters or exceeding its length bound is accepted, cleaned, and
+reported in `warnings` as `reason_normalized`, `reason_truncated`,
+`filename_normalized` or `filename_truncated`.
+
+### 7.2 Error codes
+
+| Code | HTTP | Retryable | Meaning |
+|---|---|---|---|
+| `invalid_request` | 400 | no | malformed, unknown parameter/field, wrong ID prefix, contradictory idempotency key |
+| `invalid_token` | 401 | no | absent, expired, unknown, or wrong-audience bearer |
+| `insufficient_scope` | 403 | no | valid token, wrong scope |
+| `not_found` | 404 | no | no such object. Byte-identical whether it never existed or the caller may not see it |
+| `idempotency_conflict` | 409 | no | same key, different body |
+| `not_paired` | 409 | no | no Google Messages session, or the session was invalidated |
+| `pairing_no_cookies` | 409 | no | Google-account pairing without cookies |
+| `pairing_no_devices` | 409 | no | the account has no primary device |
+| `pairing_multiple_devices` | 409 | no | more than one primary-looking device |
+| `pairing_wrong_emoji` | 409 | no | the owner tapped the wrong emoji |
+| `pairing_cancelled` | 409 | no | the owner dismissed or chose "not me" |
+| `pairing_timeout` | 409 | no | no response within the window |
+| `pairing_init_timeout` | 409 | yes | `GaiaInitTimeout` (20s) elapsed |
+| `unsupported_capability` | 409 | no | the action cannot apply here; `details.reason` from §7.7 |
+| `payload_too_large` | 413 | no | body over 1 MiB, or media over `media.upload_max_bytes` |
+| `media_unsupported_type` | 415 | no | mime not in `libgm.MimeToMediaType` |
+| `rate_limited` | 429 | yes | with `Retry-After` |
+| `internal_error` | 500 | yes | a bug |
+| `not_default_sms_app` | 502 | no | `FAILURE_4` and `IsBugleDefault` is false |
+| `config_version_stale` | 502 | no | §3.7. Names both ConfigVersions and says the fix is a pin bump |
+| `google_error` | 502 | maybe | a tachyon error; `details.google_type`, `details.google_message` |
+| `google_http_error` | 502 | yes | transport-level; `details.status` |
+| `google_permission_denied` | 502 | no | `ErrCallerNoPermission` |
+| `disconnected` | 503 | yes | `ErrConnectionClosed`; the long poll is down |
+| `phone_not_responding` | 504 | yes | `ErrPhoneNotResponding`. **The operation is `pending`, not failed — do not resend.** |
+
+A body over 1 MiB is `413` carrying `payload_too_large`; a body that fails to
+read for any other reason is `400`, because "too large" would be a guess.
+
+`401` and `403` carry `WWW-Authenticate` with `realm="agent-gm"`, an `error`
+parameter, `resource_metadata` pointing at
+`https://gm.agent-wx.app/.well-known/oauth-protected-resource/mcp`, and, for a
+scope refusal, the `scope` the route requires.
+
+### 7.3 Pagination
+
+Cursors are **opaque, HMAC-signed (data key, `agent-gm/cursor/v1`), and bound
+to the endpoint and the filter set as written**. Reusing a cursor with
+different filters is `invalid_request`. The binding is to the query as
+written, not to a normalised form: a cursor issued without `folder` is not
+valid when replayed with `folder=inbox`, although the two select the same
+rows. A client that walks a listing sends the same query string on every page
+anyway.
+
+`limit` defaults to 50 and caps at 100 on every listing.
+`GET /v1/messages/{id}/context` takes `before`/`after`, each defaulting to 5
+and capped at 100. Ordering is newest-first unless the route says otherwise.
+The cursor encodes `(sent_at_ms, id)` so it is stable across equal timestamps.
+
+### 7.4 Routes — health, session, pairing
+
+| Method | Path | Scope | Notes |
+|---|---|---|---|
+| `GET` | `/healthz` | none | liveness. Never touches SQLite. `200 {"status":"ok"}` |
+| `GET` | `/v1/health` | `messages:read` | the full picture: `google` (§3.7), `session`, `backfill`, `counters`, `version`, `source_url` (§1.4) |
+| `GET` | `/v1/session` | `messages:read` | pairing state: `state`, `phone_id`, `paired_at`, `connected`, `phone_responding`, `last_event_at` |
+| `POST` | `/v1/pairing/start` | `admin` | `{"method":"qr"}` or `{"method":"google","cookies":{...}}`. Returns `{"pairing_id","method","qr":{"payload","png_data_url"},"expires_at"}` for QR, or `{"pairing_id","method","emoji"}` for Google. |
+| `GET` | `/v1/pairing/{pairing_id}` | `admin` | poll: `{"state":"waiting|paired|failed|expired","qr":{...},"emoji":"…","error":{...}}`. A refreshed QR appears here. |
+| `DELETE` | `/v1/pairing/{pairing_id}` | `admin` | abandon an in-flight pairing |
+| `POST` | `/v1/session/unpair` | `admin` | `libgm.Unpair`. Requires `{"confirm":true}`. Audited. |
+| `POST` | `/v1/session/reconnect` | `admin` | force `Reconnect()`. For operator use after a network event. |
+
+`session.state` vocabulary: `unpaired`, `pairing`, `connected`, `degraded`
+(temporary listen error), `error`, `bad_credentials`, `account_changed`,
+`logged_out`.
+
+### 7.5 Routes — reads
+
+`messages:read` on all of these.
+
+| Method | Path | Parameters |
+|---|---|---|
+| `GET` | `/v1/conversations` | `query`, `participant`, `folder` (`inbox`\|`archive`\|`spam_blocked`), `type` (`sms`\|`rcs`), `unread_only`, `group_only`, `include_deleted`, `cursor`, `limit` |
+| `GET` | `/v1/conversations/{conversation_id}` | — |
+| `GET` | `/v1/conversations/{conversation_id}/messages` | `cursor`, `limit`, `direction` (`incoming`\|`outgoing`), `sender`, `after`, `before` (RFC 3339), `has_attachment`, `delivery_state`, `include_tombstones` |
+| `GET` | `/v1/messages` | the same plus `conversation_id` |
+| `GET` | `/v1/messages/{message_id}` | — |
+| `GET` | `/v1/messages/{message_id}/context` | `before` (default 5, max 100), `after` |
+| `GET` | `/v1/messages/{message_id}/attachments` | metadata only |
+| `GET` | `/v1/search/messages` | `q` (required), `syntax` (`literal` default, `fts5`), `conversation_id`, `sender`, `after`, `before`, `has_attachment`, `cursor`, `limit`. Returns `results[{message, rank, snippet, conversation}]` plus `coverage` |
+| `GET` | `/v1/contacts` | `query`, `top`, `cursor`, `limit` |
+| `GET` | `/v1/attachments/{attachment_id}` | metadata + a download ticket (§10) |
+| `GET` | `/v1/attachments/{attachment_id}/content` | bytes. Access token **or** download ticket |
+| `GET` | `/v1/operations/{operation_id}` | `messages:write`. The caller's own operations; another authorization's is `not_found` |
+
+`participant` accepts an E.164 number (`+1<APPROVED_DIRECT_NUMBER>`), the bare digits, a
+national form, or a `part_`/`contact_` ID. `sender` accepts the same plus the
+literal `me`.
+
+Conversation DTO:
+
+```json
+{ "id": "conv_...", "name": "Alex", "is_group": false, "type": "rcs",
+  "send_mode": "auto", "folder": "inbox", "unread": true, "pinned": false,
+  "read_only": false,
+  "participants": [ { "id": "part_...", "contact_id": "contact_...",
+                      "display_name": "Alex", "phone": "+15105550123",
+                      "is_me": false } ],
+  "last_activity_at": "2026-09-06T09:41:02.115Z",
+  "latest_message_id": "msg_...",
+  "capabilities": { "send_text": true, "send_media": true, "reply": true,
+                    "react": true, "mark_read": true, "delete_message": true,
+                    "delete_conversation": true, "typing": true },
+  "created_at": "…", "updated_at": "…" }
+```
+
+Message DTO:
+
+```json
+{ "id": "msg_...", "conversation_id": "conv_...", "kind": "message",
+  "direction": "outgoing", "sender": { "id": "part_...", "is_me": true },
+  "text": "on my way", "subject": null,
+  "delivery": { "state": "delivered", "state_raw": 2, "error": null,
+                "updated_at": "2026-09-06T09:41:07.900Z" },
+  "reply_to_message_id": null, "operation_id": "op_...",
+  "attachments": [ { "id": "att_...", "mime_type": "image/jpeg",
+                     "filename": "IMG_0421.jpg", "size": 184320,
+                     "width": 1024, "height": 768,
+                     "download_state": "available" } ],
+  "reactions": [ { "id": "react_...", "emoji": "👍",
+                   "participant_id": "part_...", "is_mine": false } ],
+  "is_deleted": false,
+  "sent_at": "2026-09-06T09:41:02.115Z" }
+```
+
+### 7.6 Routes — writes
+
+`messages:write` unless noted.
+
+| Method | Path | Body | Answer |
+|---|---|---|---|
+| `POST` | `/v1/conversations` | `{"recipients":["+1…"], "name"?, "client_request_id"}` | `200` with the existing conversation, or `200` with a newly created one. `GetOrCreateConversation`; the `CREATE_RCS` retry of §3.7 is internal. `name` is accepted only for 2+ recipients. Zero recipients, or two that normalise to one number, is `invalid_request` **before** an operation row exists. |
+| `POST` | `/v1/conversations/{id}/messages` | `{"text"?, "upload_ids"?, "reply_to_message_id"?, "force_rcs"?, "client_request_id"}` | `200` with `{operation, message_id}`. At least `text` or one upload. `force_rcs` is `invalid_request` unless the conversation is RCS with `send_mode=auto`. |
+| `POST` | `/v1/conversations/{id}/typing` | `{}` | `204`. Fire-and-forget. Not idempotency-keyed; it has no lasting effect. |
+| `POST` | `/v1/conversations/{id}/read` | `{"message_id", "client_request_id"}` | `200`. Marks the conversation read through that message. |
+| `POST` | `/v1/messages/{id}/reactions` | `{"emoji", "client_request_id"}` | `200`. `SendReaction` with `ADD`, or `SWITCH` if the owner already has a different reaction on that message. `200` with `operation: null` if the owner already has exactly that reaction. |
+| `DELETE` | `/v1/messages/{id}/reactions/{emoji}` | `?client_request_id=` | `200`. `REMOVE`. `200` with `operation: null` if there is nothing to remove. |
+| `POST` | `/v1/uploads` | see §10.2 | `201` with an upload ticket |
+| `GET`/`DELETE` | `/v1/uploads/{upload_id}` | — | the caller's own reservation |
+| `PUT` | `/v1/uploads/{upload_id}/content` | raw bytes | authenticated by the **upload token**, not the access token |
+
+`messages:delete` — and only these two:
+
+| Method | Path | Body | Effect sentence (verbatim on all three surfaces) |
+|---|---|---|---|
+| `DELETE` | `/v1/messages/{message_id}` | `{"client_request_id"}` | *"deletes this message from your Google Messages account only; the recipient keeps it"* |
+| `DELETE` | `/v1/conversations/{conversation_id}` | `{"client_request_id"}` | *"deletes this conversation from your Google Messages account only; the other people in it keep it"* |
+
+There is no `mode` and no other delete. A request carrying `mode` anywhere is
+`invalid_request` naming it.
+
+`admin`:
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET`/`PATCH` | `/v1/admin/settings` | effective value, source (`default`\|`environment`\|`database`), mutability, restart requirement. `PATCH` validates the whole body; any invalid key rejects the request and changes nothing |
+| `POST` | `/v1/admin/backfill` | `{"conversation_id"?}`; re-opens backfill |
+| `POST` | `/v1/admin/backup` | writes `<data_dir>/backups/agent-gm-<ts>-<id>.sqlite3` via the SQLite backup API. The caller does not choose the path |
+| `GET` | `/v1/admin/audit` | `kind`, `kind_prefix`, `authorization_id`, `after`, `before`, `cursor`, `limit` |
+| `GET` | `/v1/admin/diagnostics` | the raw Google view: last 100 events by type, `dropped_events`, `unknown_events`, compiled/live ConfigVersion, `CurrentSessionID`, `IsBugleDefault`, upstream commit |
+| — | `/v1/admin/enrollment-codes`, `/v1/admin/authorization-requests`, `/v1/admin/authorizations`, `/v1/admin/clients` | §9 |
+
+### 7.7 `unsupported_capability` reasons
+
+A closed vocabulary, in `details.reason`. Emitted **before** any operation row
+exists, so a refused action never leaves a record that looks like an attempt.
+
+| Reason | Meaning |
+|---|---|
+| `not_paired` | no Google Messages session |
+| `conversation_read_only` | `Conversation.ReadOnly` is set |
+| `conversation_deleted` | delete-for-me has been applied locally |
+| `not_my_message` | reacting to or deleting something with the wrong ownership |
+| `reply_not_supported` | `reply_to_message_id` on an SMS conversation; replies are RCS-only |
+| `rcs_not_available` | `force_rcs` on a conversation that is not RCS |
+| `media_pending` | the attachment's bytes are not downloaded yet |
+
+An `unsupported_capability` answer carries the object ID, the action, the
+capability's current value, and `details.reason`.
+
+---
