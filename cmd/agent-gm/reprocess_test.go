@@ -77,13 +77,23 @@ func TestAFailedReprocessLeavesTheKeySet(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
+	// A real account row that DID resume, so the sweep is actually offered:
+	// the task walks the account rows, and an ID that is not one of them is
+	// not swept at all.
+	const address = "failing@example.test"
+	id := store.AccountID(address)
+	if err := st.UpsertAccount(ctx, store.Account{
+		ID: id, GoogleAccount: address, State: store.StateConnected, SessionPresent: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := st.SetMeta(ctx, core.PendingReprocessKey, core.TaskReconcileParticipants); err != nil {
 		t.Fatal(err)
 	}
 	failing := sweeperFunc(func(context.Context, string, time.Time) error {
 		return context.DeadlineExceeded
 	})
-	task, ran, err := core.RunPendingReprocess(ctx, st, failing, []string{"acct_x"})
+	task, ran, err := core.RunPendingReprocess(ctx, st, failing, []string{id})
 	if err == nil {
 		t.Fatal("a failed sweep was reported as success")
 	}

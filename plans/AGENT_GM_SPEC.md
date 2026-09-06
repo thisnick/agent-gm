@@ -1404,7 +1404,20 @@ download or an open ticket is not evicted underneath itself.
 ### 4.3 Migrations
 
 - **Forward-only, numbered, never edited after they ship.** `PRAGMA
-  user_version` is the version. A database at a *higher* version than the
+  user_version` is the version.
+
+  > **"After they ship" means after a database has committed them**, not
+  > after the code was written or pushed. Each migration runs in one
+  > transaction with its `user_version` bump inside it, so a migration that
+  > fails rolls back completely and *no database anywhere* is at that
+  > version — the version number is the record of what a database actually
+  > applied, not of what a release contained. A migration that has never
+  > succeeded on any database has therefore not shipped, and fixing it in
+  > place is correct. Adding a later migration to repair it would be strictly
+  > worse: every database still at the earlier version would fail on the
+  > broken one and never reach the repair. Recorded because Slice 2 amended
+  > migration 0002 for exactly this reason, and without this sentence the
+  > clause and that commit contradict each other. A database at a *higher* version than the
   binary knows refuses to open, naming both numbers. There is no
   down-migration.
 - Each runs **inside one transaction**, on the writer goroutine, before any

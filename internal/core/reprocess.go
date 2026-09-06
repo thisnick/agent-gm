@@ -49,8 +49,15 @@ type Sweeper interface {
 // (section 6.6): a caller must not see a half-reconciled database and read an
 // empty `sender=me` page as an answer.
 //
-// The key is cleared only when every account was reconciled. A sweep that
-// failed -- a phone that is asleep, an account that would not connect --
+// **The key is cleared only when every account ROW was reconciled**, not
+// merely every account that resumed. `accountIDs` is the set with a live
+// client; every account in the store is relinked regardless, because a
+// relink is a join and needs no client, and `signed_out` is an ordinary
+// resting state whose history stays readable (section 4.7). Passing only the
+// resumed set once meant "resumed accounts=0" followed by "cleared the key",
+// with nothing rebuilt and no second attempt ever.
+//
+// A sweep that FAILS -- a phone asleep, an account that would not connect --
 // leaves the key set, so the next start tries again rather than declaring the
 // work done because it was attempted.
 func RunPendingReprocess(ctx context.Context, st *store.Store, sweep Sweeper, accountIDs []string) (task string, ran bool, err error) {
@@ -58,24 +65,56 @@ func RunPendingReprocess(ctx context.Context, st *store.Store, sweep Sweeper, ac
 	if err != nil || !ok || task == "" {
 		return "", false, err
 	}
+
+	// Every account ROW, not merely the accounts that resumed.
+	//
+	// This is the distinction R-17 turned on. `sup.List()` holds the
+	// accounts with a live client; an account whose session is not on disk
+	// does not resume, and `signed_out` is an ordinary resting state whose
+	// history stays readable (section 4.7) -- which is exactly the history
+	// whose contact links migration 0002 had to drop. Reconciling only the
+	// resumed set meant "resumed accounts=0" followed by "cleared the key",
+	// with nothing rebuilt and no second attempt ever.
+	rows, err := st.Accounts(ctx)
+	if err != nil {
+		return task, false, fmt.Errorf("listing accounts for %s: %w", task, err)
+	}
+	offered := map[string]bool{}
+	for _, id := range accountIDs {
+		offered[id] = true
+	}
+
 	switch task {
 	case TaskReconcileParticipants:
-		if sweep == nil {
-			return task, false, fmt.Errorf("%s is pending but no sweeper is wired", task)
-		}
-		for _, id := range accountIDs {
+		for _, row := range rows {
+			// The relink is a JOIN, so it runs for every account whether or
+			// not it holds a client. It is the whole of what a database can
+			// do for an account that cannot fetch: migration 0002 dropped
+			// links it could not resolve while `contacts` was still empty,
+			// and by now that table is populated for any account that ever
+			// backfilled.
+			if err := st.RelinkAccountContacts(ctx, row.ID); err != nil {
+				return task, false, fmt.Errorf("relinking %s's contacts: %w", row.ID, err)
+			}
+			if !offered[row.ID] {
+				// No client, so no fetch. Nothing further is possible now,
+				// and nothing further is needed: when this account is paired
+				// again, ordinary ingest links its participants through the
+				// same path (section 4.7's "re-pairing resumes the same
+				// rows"). Leaving the key set for it would make every start
+				// re-walk every OTHER account for ever on account of one the
+				// owner deliberately signed out.
+				continue
+			}
+			if sweep == nil {
+				return task, false, fmt.Errorf("%s is pending but no sweeper is wired", task)
+			}
 			// Since the epoch: the rows that need re-ingesting are exactly
 			// the ones the sweep would otherwise skip as old. The sweep
-			// re-fetches contacts as well as messages, so the links
-			// migration 0002 had to drop come back.
-			if err := sweep.Sweep(ctx, id, time.Time{}); err != nil {
-				return task, false, fmt.Errorf("reconciling %s: %w", id, err)
-			}
-			// And relink explicitly, because a participant whose contact was
-			// already in the database needs no fetch -- only the join that
-			// migration 0002 could not do while `contacts` was still empty.
-			if err := st.RelinkAccountContacts(ctx, id); err != nil {
-				return task, false, fmt.Errorf("relinking %s's contacts: %w", id, err)
+			// re-fetches contacts as well as messages, so a link that needs
+			// a contact Agent GM never held comes back too.
+			if err := sweep.Sweep(ctx, row.ID, time.Time{}); err != nil {
+				return task, false, fmt.Errorf("reconciling %s: %w", row.ID, err)
 			}
 		}
 	default:
@@ -86,6 +125,7 @@ func RunPendingReprocess(ctx context.Context, st *store.Store, sweep Sweeper, ac
 		return task, false, fmt.Errorf("server_meta.pending_reprocess names %q, "+
 			"which this build does not know how to run", task)
 	}
+
 	if err := st.SetMeta(ctx, PendingReprocessKey, ""); err != nil {
 		return task, false, fmt.Errorf("clearing %s: %w", PendingReprocessKey, err)
 	}

@@ -282,6 +282,8 @@ func buildServer(ctx context.Context, addrOverride string) (*built, int) {
 	// listener binds, for the same reason crash recovery does -- a caller
 	// must not see a half-reconciled database and read an empty sender=me
 	// page as an answer.
+	// The accounts that resumed, which is the set that can be SWEPT. Every
+	// account row is relinked regardless -- see core.RunPendingReprocess.
 	var live []string
 	for _, a := range sup.List() {
 		live = append(live, a.ID)
