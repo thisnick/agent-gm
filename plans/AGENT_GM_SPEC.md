@@ -2979,3 +2979,382 @@ re-add each connector, then revoke the stale authorizations and clients. There
 is no way to make old tokens keep working, and no attempt should be made.
 
 ---
+
+## 16. Phases and slices
+
+Four slices. Each is implemented, reviewed, and — where it touches the phone —
+live-gated by the coordinator before the next begins. `main` advances only
+when a slice is accepted by its reviewer **and** its live gate has passed.
+Tags: `slice-1`, `slice-2`, `slice-3`, `v1.0.0`.
+
+Every acceptance test below is a falsifiable assertion with a runnable
+evidence recipe. A slice is not accepted with any test unproven, and an
+unproven test is listed as `gap <sha>`, never quietly dropped.
+
+### Slice 1 — the spike
+
+**Goal:** prove Agent GM can pair, read and write against the real thing,
+before any of the surfaces exist.
+
+**Deliverables.** The Go module; `devbox.json` as shipped; `internal/gm` with
+the `Backend` interface, the `libgm` implementation and the fake;
+`internal/store` with migration `0001` covering `conversations`, `messages`,
+`participants` and `server_meta`; a `cmd/agent-gm spike` subcommand with
+`pair`, `list`, `send` and `watch`; `internal/gm/pin.go`; the
+`fixture-validation` CI job.
+
+**Explicitly not in this slice:** REST, MCP, OAuth, media, the CLI proper,
+idempotency, the audit log.
+
+**Acceptance tests.**
+
+1. `devbox run check` is green, and `go.mod`, `internal/gm/pin.go` and §3.6 all
+   name `be48a58`; the `pin-consistency` job fails if any one is edited alone.
+2. The `fixture-validation` job passes all eleven assertions of §13.4 against
+   a fresh clone of mautrix-gmessages at `be48a58`.
+3. Against the **fake**: pair, list 3 conversations, send a text, receive the
+   echo, and see `delivery_state` walk `queued → sent → delivered`. No network.
+4. Against the fake, every error in §3.5 maps to the code in §7.2, proven by a
+   table test that enumerates the list rather than sampling it.
+5. **Live gate (coordinator only).** `agent-gm spike pair --qr` renders a QR
+   in an 80×24 terminal; the owner scans it on the phone; the process reports
+   `Paired` with a phone ID and persists `session.enc` at mode `0600`.
+6. **Live gate.** `agent-gm spike list` returns the owner's real conversation
+   list, and the row for `+1<APPROVED_DIRECT_NUMBER>` is present with a `conv_` ID.
+7. **Live gate.** `agent-gm spike send <conv> "agent-gm slice 1 test"` to
+   **`+1<APPROVED_DIRECT_NUMBER>` and no other number** returns
+   `SendMessageResponse_SUCCESS`, and `spike watch` shows the remote echo
+   carrying the same `TmpID`, then at least one delivery-status update.
+8. **Live gate.** The owner replies from that phone; `spike watch` prints the
+   inbound message within 10 seconds, with the right text and sender.
+9. **Live gate.** Restart the process; `session.enc` is reloaded, `Connect`
+   succeeds without re-pairing, and `IsLoggedIn()` is true.
+10. `agent-gm spike diag` prints the compiled and live `ConfigVersion` side by
+    side and `is_default_sms_app`; the values are recorded in the slice report.
+
+### Slice 2 — store, REST, CLI, media
+
+**Deliverables.** The full schema and migrations; the ingest loop with backfill
+and live events; operations with idempotency and crash recovery; every `/v1`
+route of §7 including admin; the media ticket system of §10; the `agm` CLI of
+§11 with QR pairing; the audit log; rate limits and trusted-proxy resolution;
+`docs/api.md`, `docs/cli.md`, `docs/pairing.md`, `docs/operations.md`.
+
+Authentication in this slice is the **admin bootstrap only**
+(`POST /v1/auth/admin-session`); OAuth arrives in Slice 3. Scope checks are
+implemented and enforced now, so Slice 3 adds a token source and not a
+security model.
+
+**Acceptance tests.**
+
+1. A populated fake-backed database survives a restart with identical list
+   output, identical IDs and identical ordering, including across two messages
+   with the same millisecond timestamp.
+2. Backfill and live ingestion of the same 500 messages, interleaved in both
+   orders, produce exactly 500 rows with identical content hashes; a third
+   replay writes zero rows and does not change any `updated_at_ms`.
+3. `last_activity_ms` never moves backwards, proven by replaying an old
+   message after a new one.
+4. Every `MessageStatusType` value in the pinned proto maps to a
+   `delivery_state` in §4.4; a value absent from the mapping fails the test.
+5. A backward transition (`read → sent`) is refused, leaves the stored state
+   alone, writes `delivery_state_raw`, and emits
+   `message.status_out_of_order`.
+6. The same `client_request_id` with the same body returns the same operation
+   and calls the backend **once** (fake call counter); with a different body it
+   is `idempotency_conflict` and calls it **zero** times.
+7. Killing the process between the operation commit and the backend call, then
+   restarting, leaves the operation `unknown` with `crash_recovered`; feeding
+   the echo afterwards corrects it to `succeeded` with a `message_id` and sets
+   `corrected_at_ms`. **Nothing is resent.**
+8. `ErrPhoneNotResponding` yields HTTP 504 `phone_not_responding` **and an
+   operation in `pending`, not `failed`**; the echo settles it to `succeeded`;
+   with no echo it becomes `unknown` after `operations.pending_timeout`.
+9. `FAILURE_2` twice then `SUCCESS` succeeds after retries at `[3s, 8s]`
+   (asserted on a fake clock); `FAILURE_4` with `IsBugleDefault=false` is
+   `not_default_sms_app` and is **not** retried.
+10. `GetOrCreateConversation` status 3 retries once with `CreateRCSGroup=true`
+    and succeeds; a second status 3 is `google_error`; **status 4 is
+    `config_version_stale`** and the message names both ConfigVersions.
+11. Every `/v1` route rejects an unknown query parameter and an unknown body
+    field with `invalid_request` naming it, including `?_=1`; a route-by-route
+    test, not a sample.
+12. A `msg_` ID where a `conv_` is expected is `invalid_request` naming the
+    parameter and the expected prefix — **never `not_found`**. A raw Google ID
+    is the same.
+13. A cursor replayed with a changed filter is `invalid_request`; a tampered
+    cursor is `invalid_request`; pagination across ten equal timestamps
+    returns each row exactly once.
+14. The full upload path: reserve, `PUT` the exact bytes, send. A short body, a
+    long body, a wrong `sha256` and a contradicted content type are each
+    refused **and spend the reservation**. A second `PUT` with the same token
+    fails. The token presented at another upload's URL is refused **and not
+    spent**, proven by then redeeming it successfully at its own URL.
+15. A download ticket redeems up to 5 times and then fails; it re-checks the
+    issuing authorization's scope on each redemption, proven by revoking
+    between redemptions.
+16. `upload_url` and `download_url` are built from `AGENT_GM_PUBLIC_URL` even
+    when the request carries a hostile `Host` and `X-Forwarded-Host`.
+17. Erasure order: a purge collects paths inside the transaction, commits,
+    then unlinks; a fault injected between commit and unlink leaves an orphan
+    file and **no** orphan row.
+18. The exit-code matrix of §11.2: every code produced by a real `agm`
+    invocation against a fake-backed server.
+19. `--json` puts exactly one JSON value on stdout and everything else on
+    stderr, for every command, asserted by parsing stdout as JSON.
+20. `agm messages delete` and `agm conversations delete` print the exact effect
+    sentence of §7.6 and refuse without `y` or `--yes`; the string matches the
+    REST `effect` field byte for byte.
+21. Trusted-proxy resolution: with the CIDR list set, a forged
+    `X-Forwarded-For` from an untrusted peer is ignored; from a trusted peer
+    the **rightmost** non-trusted entry wins; an unparseable entry stops the
+    walk at the TCP peer; an invalid CIDR list refuses to start.
+22. Rate limits: exceeding each bucket of §12.3 is `rate_limited` with
+    `Retry-After`, and holding three scopes does not multiply the allowance.
+23. Sentinel secrets appear in no log line, no audit payload, and nowhere in
+    `agent-gm.sqlite3`, `-wal` or `-shm`, proven by `strings | grep`.
+24. `PRAGMA foreign_key_check` is empty after every migration; a database at a
+    higher `user_version` refuses to open, naming both numbers.
+25. `POST /v1/admin/backup` produces a file that opens standalone, and pruning
+    keeps exactly `backup.keep` and audits each removal.
+26. **Live gate.** `agm pair --qr` from a clean data directory, then
+    `agm conversations list`, then `agm messages send` one text to
+    `+1<APPROVED_DIRECT_NUMBER>` with `--wait --wait-for sent`, then `agm messages send`
+    with `--file` of a small JPEG to the same number, then the owner replies
+    and `agm messages list` shows it. Then `agm messages react` and
+    `agm messages unreact`. Then `agm messages delete` on Agent GM's own test
+    message, with the owner confirming the effect sentence first.
+27. **Live gate.** `agm conversations start +1<APPROVED_GROUP_NUMBER_1> +1<APPROVED_GROUP_NUMBER_2>
+    --name "agent-gm test"` creates a group; if it fails, the failure is
+    diagnosed against the §15.4 runbook rows (group-MMS setting,
+    `config_version_stale`) before anything else is changed.
+
+### Slice 3 — OAuth and MCP
+
+**Deliverables.** `internal/oauth` in full (§9); `internal/mcp` in full (§8);
+the instructions block; `devbox run conformance` and its baseline; the name
+lint; `docs/mcp.md`, `docs/oauth.md`.
+
+**Acceptance tests.**
+
+1. `issuer` equals `https://gm.agent-wx.app` **byte for byte** and `resource`
+   equals it plus `/mcp` with no trailing-slash drift, asserted as string
+   equality on both discovery documents.
+2. An unauthenticated `/mcp` request answers `401` with the exact
+   `WWW-Authenticate` of §9.2; a valid token carrying no messaging scope
+   answers `403 insufficient_scope` with the same challenge — the two are
+   distinguishable.
+3. DCR: `token_endpoint_auth_method` other than `none` is refused; a
+   client-chosen `client_id` is refused; 11 redirect URIs are refused; a
+   501-character URI is refused; `http://localhost:1/cb` is **accepted** and
+   `http://localhost.evil.example/cb`, `http://notlocalhost/cb`,
+   `http://local.host/cb`, `http://localhost@evil.example/cb` are each
+   refused; a registered `http://127.0.0.1/cb` matches
+   `http://127.0.0.1:53211/cb` but not `http://127.0.0.1:53211/cb2` and not
+   `http://127.0.0.2/cb`.
+4. Authorize: an unknown client and an unregistered redirect answer `4xx` and
+   **do not redirect**; every later failure redirects with `error`, `state`
+   and a byte-exact `iss`. Omitting `code_challenge_method` is
+   `invalid_request` (not defaulted to `plain`). A `resource` other than the
+   canonical one is `invalid_target`. `scope=admin` is `invalid_scope`.
+5. An invalid enrollment code re-renders the form with **one generic message,
+   byte-identical** for unknown, expired, revoked and consumed codes, creates
+   no pending request, and consumes nothing.
+6. The eleventh failed code attempt in 15 minutes is `429` with `Retry-After`,
+   per signed context **and** per source, and loading a fresh authorization
+   page does not reset the source bucket.
+7. `/oauth/requests/{id}` and `/status` answer `404` without the context
+   cookie; the request ID alone conveys no authority.
+8. A replayed authorization code is `invalid_grant` **and revokes the tokens
+   the first exchange produced**. A wrong PKCE verifier is `invalid_grant`
+   **and consumes the code**.
+9. Refresh rotates; reusing a spent refresh token revokes the family and the
+   authorization in one transaction, with its audit row; a widening `scope` is
+   `invalid_scope` and **does not spend** the presented token.
+10. `/oauth/revoke` always answers `200`, including for a token belonging to
+    nobody, and never confirms existence.
+11. Unauthenticated budgets: 30 invalid presented tokens in 15 minutes trips a
+    durable cooldown that survives a restart; a successful presentation does
+    not clear the counter; the token is looked up read-only before any write
+    transaction opens (proven by holding the writer busy and showing the
+    unknown-token path does not block).
+12. The enrollment code's plaintext appears nowhere in the database file, the
+    WAL, the shm, or a log; the stored hash equals SHA-256 of the canonical
+    form **computed outside the codebase**.
+13. `tools/list` under `messages:read` returns exactly the nine read tools and
+    **no** write or delete tool; under `messages:write` it adds exactly the
+    seven; under `messages:delete` exactly the two. `tools/call` on a
+    non-visible name is refused again at call time.
+14. Every tool has a description; **every argument has a description**; every
+    schema is `additionalProperties: false`; every write tool requires
+    `client_request_id`; every write tool's description ends with the
+    fresh-key sentence of §8.2. Asserted by fetching `tools/list` from a
+    running server and counting.
+15. A domain failure is a **result** with `isError: true` and
+    `structuredContent.error`, not a JSON-RPC error; an unknown tool name
+    **is** a JSON-RPC error. Both directions asserted.
+16. The `initialize` instructions block is byte-identical to the "First five
+    minutes" section of `docs/mcp.md` modulo markdown quoting.
+17. `Origin: https://evil.example` on `/mcp` is `403` before parsing; no
+    `Origin` is accepted; two `Authorization` headers are refused rather than
+    resolved.
+18. `get_attachment` returns inline image content under
+    `media.inline_mcp_image_max_bytes` and a resource link above it, **and the
+    download ticket either way**; the first content block is the text summary.
+19. `devbox run conformance` runs against a token minted through the **whole**
+    OAuth flow (not an admin token), passes its baseline in both directions,
+    and fails if the chosen spec revision runs zero scenarios.
+20. The name lint fails on `room`, `portal`, `provider`, `redact`, `outbox`, a
+    `mode` argument and a `room_` prefix in a served tool description or in
+    any markdown page, and its meta-test proves §1.3 and §18 history text is
+    still allowed.
+21. **Live gate.** A real connector — claude.ai and ChatGPT, each — completes
+    discovery, dynamic registration, the authorization screen with an
+    enrollment code, owner approval, and the token exchange; then calls
+    `list_conversations` and `get_message` against the owner's real account;
+    then `send_message` one text to `+1<APPROVED_DIRECT_NUMBER>`; then the owner revokes the
+    authorization and the next call is `401`.
+
+### Slice 4 — packaging
+
+**Deliverables.** The Dockerfile, `compose.example.yml`, the release workflow,
+the GHCR push, the npm wrapper, `docs/deploy.md`, `CHANGELOG.md`.
+
+**Acceptance tests.**
+
+1. The image builds for `linux/amd64` and `linux/arm64`, runs as `nonroot`,
+   and `agent-gm healthcheck` succeeds inside it with no shell and no `curl`.
+2. `docker compose -f compose.example.yml up` on a clean machine with only the
+   three required environment variables reaches `GET /healthz` = 200.
+3. `GET /v1/health` and MCP `serverInfo` report a `commit` that equals the
+   built commit and a `source_url` that resolves — the AGPL §13 obligation of
+   §1.4.
+4. `npm i -g @agent-gm/cli@<version>` on linux-x64, linux-arm64, darwin-x64
+   and darwin-arm64 installs a working `agm`; `agm version` matches the npm
+   version exactly.
+5. The wrapper verifies the downloaded binary against the `checksums.txt`
+   **pinned inside the npm tarball**; a tampered download fails install with a
+   message naming the file, and `AGENT_GM_CLI_SKIP_DOWNLOAD=1` skips cleanly.
+6. An unsupported platform fails `postinstall` with a message naming the
+   platform, rather than installing something that cannot run.
+7. Exit codes survive the npm shim: `agm --nonsense` exits `2` through npm as
+   it does natively; a `not_found` exits `5`.
+8. The GitHub release carries all six archives, `checksums.txt` and a valid
+   cosign signature; the GHCR digest is recorded in the release notes together
+   with the `libgm` pin.
+9. **Live gate.** The owner installs `@agent-gm/cli` on their Mac, runs
+   `agm auth login` against `https://gm.agent-wx.app`, `agm conversations
+   list`, and `agm messages send` one text to `+1<APPROVED_DIRECT_NUMBER>`.
+
+---
+
+## 17. The agent team
+
+| Slice | Implementer | Reviewer | Why |
+|---|---|---|---|
+| 1 spike | Opus | Opus | Reading a pinned library correctly; small and concrete |
+| 2 store, REST, CLI, media | Opus | Opus | Large but fully specified. Escalate to Fable if the crash-recovery or media-ticket work reports a contract conflict |
+| 3 OAuth and MCP | Opus | **Fable** | Security invariants that fail silently. The reviewer must be able to reason about the replay, rotation and audience rules |
+| 4 packaging | Opus | Opus | Mechanical, but the live gate is real |
+
+Roles are `.claude/agents/implementer.md` and `.claude/agents/reviewer.md`,
+both of which must be updated in Slice 1 to name `plans/AGENT_GM_SPEC.md`
+rather than the bootstrap's `plans/AGENT_MX_PLAN.md`.
+
+**Protocol.** The implementer commits small reviewable slices on a working
+branch and sends the reviewer a message with the commit SHA, what it covers,
+and how to run its tests. The reviewer syncs its own worktree to that SHA with
+`git fetch . <branch>` and `git reset --hard <sha>`, runs everything itself,
+and replies with findings. The implementer acts on findings directly. Both
+message the coordinator only for spec conflicts, blocked decisions, and slice
+completion.
+
+**Live sends are the coordinator's alone.** Neither the implementer nor the
+reviewer sends a message to a real phone number, ever, for any reason. An
+agent that believes it needs a live send says so and stops. The approved
+numbers of §13.3 exist so that when the coordinator does send, the target is
+never in question.
+
+**Standing prohibitions**, inherited and non-negotiable: never touch
+`/home/nick/code/agent-mx-trial`, port `8787`, `127.0.0.1:8008`,
+`/home/nick/code/openclaw-custom/.env`, or `openclaw-custom/matrix`. Never
+read the owner's `.env`, 1Password, or any credential store. Never kill a
+process by name pattern — use `pkill -x agent-gm` or a PID from `pgrep -x`,
+never `pkill -f`, which matches the calling shell. Work only through Devbox;
+add missing tools to `devbox.json` rather than installing on the host.
+
+---
+
+## 18. Decisions and open questions
+
+### 18.1 Decisions
+
+| # | Decision | Because |
+|---|---|---|
+| D1 | Import `libgm` directly; no bridge, no Matrix | The owner talks to nobody else on the server and wants no human UI. Everything Matrix bought — federation, other users, E2EE between clients — is cost with no benefit here |
+| D2 | AGPL-3.0-or-later, public repository | `libgm` is AGPL and no upstream exception covers Agent GM. §1.4 |
+| D3 | Pin `libgm` by commit `be48a58`, bump only as a deliberate slice | A stale `ConfigVersion` silently breaks conversation creation with an undocumented status. The pin is the single most load-bearing dependency fact in the project |
+| D4 | No outbox; sends are synchronous | `SendMessage` returns the phone's own answer within 60s. One system of record needs no reconciliation |
+| D5 | `ErrPhoneNotResponding` → operation `pending`, HTTP 504, never `failed` | Upstream says the server accepted it and the phone may still act. Calling it a failure invites a duplicate text to a real person |
+| D6 | Keep `account_key` in every derived ID despite one account | A re-pair of the same phone keeps every ID; a different phone can never collide. Costs nothing |
+| D7 | Idempotency key **required**, not optional, on every mutation | Retries are the normal case for an agent, and a duplicate SMS is not recoverable |
+| D8 | Session in an encrypted file, not in SQLite | It is written on a different cadence, must survive a database restore-from-snapshot, and must never be reachable by a query |
+| D9 | The data key is not rotatable | Rotation would mean re-encrypting the session and every attachment key atomically across a restart. Not worth it for one user; documented instead |
+| D10 | One `gm.Backend` interface with exactly two implementations | Testability, not extensibility. A second *production* implementation is forbidden by N3 |
+| D11 | OAuth 2.1 even for one user | claude.ai and ChatGPT connectors require it. Carried over wholesale from Agent MX, where it already worked |
+| D12 | `http://localhost` redirect URIs accepted, against RFC 8252 §8.3 | Widely used MCP clients register the name. Exact case-insensitive host match only |
+| D13 | Media by ticket and `curl`, never base64 through the model | An MCP client cannot attach a file, and a megabyte of base64 in a prompt is not acceptable |
+| D14 | Only Google's delete-for-me | It is the only delete `libgm` exposes. Every surface says so in the same words |
+| D15 | Typing is REST-only, no MCP tool | No lasting effect, no result an agent can act on |
+| D16 | Deployment integration (Compose service, tunnel config) stays in `openclaw-custom` | This repository must be usable by any host. It ships a Dockerfile, a generic compose example, and docs |
+| D17 | The npm package is a downloading wrapper, not a bundle | Six platform binaries in one tarball is 100 MB+ for a CLI. Checksums are pinned into the tarball so a compromised release page cannot re-target an old version |
+| D18 | The interface-layering rubric is reduced to one axis | With no Matrix and no second provider, axes A and B are meaningless. Axis C survives as: **every name means what it means in Google Messages** |
+
+**The single acceptance axis.** A reviewer scores each public surface 0, 1 or
+2, and a slice is not accepted below 2:
+
+> **Every noun and verb on the surface is a Google Messages term used with its
+> Google Messages meaning.** A *conversation* is a thread; a *contact* is
+> somebody in the phone's contacts; *RCS* and *SMS* mean what Google means by
+> them; *delete* means delete-for-me and the surface says so in the same words
+> everywhere; *sent*, *delivered* and *read* are the states Google reports and
+> nothing is claimed that Google did not say. No Matrix term survives, and no
+> term is invented where Google already has one. A reviewer that scores below
+> 2 names the exact route, tool or command that fails and the smallest change
+> that would fix it.
+
+### 18.2 Open questions for the owner
+
+These block or shape work and cannot be decided from the sources.
+
+| # | Question | Blocks | Why it matters |
+|---|---|---|---|
+| **OQ-1** | **QR pairing or Google-account pairing?** QR needs no cookies but ties the session to a scanned code; Google-account pairing needs `messages.google.com` cookies exported by hand, and **when those cookies expire the only recovery is a full re-pair** (§3.2). Which does the owner want as the primary path? | Slice 1 live gate | Determines which flow gets the polished UX and which is the fallback |
+| **OQ-2** | **Is the owner willing to give up Google Messages Web in a browser?** Agent GM occupies a paired-device slot; opening Messages Web may evict it and vice versa (§3.2). | Slice 1 | If not, Agent GM will be evicted unpredictably and the whole design needs a re-pair story that is currently manual |
+| **OQ-3** | **How much history?** `backfill.max_messages_per_conversation` defaults to 2000 and `backfill.horizon` to 365 days. Does the owner want everything the phone will give, or a bounded window? | Slice 2 | Changes backfill runtime from minutes to hours and the database from tens of MB to hundreds |
+| **OQ-4** | **Is a message-retention policy wanted at all?** Right now nothing is ever pruned. | Slice 2 | A years-old thread of media metadata is cheap, but the owner may prefer a cap |
+| **OQ-5** | **Who approves an OAuth authorization request, and how?** The design has the owner approving via `agm admin authorization-requests approve` on the server. Is a CLI-only approval acceptable, or does the owner want an approval page they can hit from a phone? | Slice 3 | Adding an owner-facing approval page contradicts N2 ("no human UI") and needs an explicit exception |
+| **OQ-6** | **Is `@agent-gm` available on npm, and does the owner want the CLI published publicly?** | Slice 4 | If the scope is taken, the package name changes and so does every doc. If publishing is unwanted, the wrapper is dead work |
+| **OQ-7** | **Should the GHCR image be public?** AGPL §13 is satisfied by serving the source URL, not by a public image, so this is a preference. | Slice 4 | A private image means the deployment needs a pull secret |
+| **OQ-8** | **Confirm the phone's *Group messaging* setting is MMS**, not "send an SMS reply to all recipients" (§11.4). This is a phone setting Agent GM can only report on. | Slice 2 test 27 | A phone set the other way cannot create a group at all, and the failure looks like a bug in Agent GM |
+| **OQ-9** | **What should happen when the phone stays unreachable for a long time?** Currently `pending` operations become `unknown` after 24 hours and nothing notifies anyone. Does the owner want an alert path, and if so, through what? | Slice 2 | There is no notification channel in this design, deliberately |
+| **OQ-10** | **`+1<APPROVED_GROUP_NUMBER_2>` — confirm this number is still approved for group tests**, and confirm whether the group created in Slice 2 test 27 should be deleted afterwards or kept as a standing test thread. | Slice 2 live gate | The coordinator must not guess about a real person's phone |
+
+### 18.3 What was dropped from Agent MX, and why
+
+Recorded so nobody re-derives it. These names may appear in this section as
+history; the name lint of §13.5 allows that and forbids them anywhere a live
+contract is stated.
+
+| Dropped | Reason |
+|---|---|
+| Rooms, portals, portal generations, stale-portal detection, spaces | No Matrix. Google conversations are the only container |
+| Invitations and `auto_accept` policy | Nothing invites anybody |
+| E2EE, cross-signing, key backup, room-key import, `decryption_pending` | No Matrix crypto. Google's transport crypto is `libgm`'s business |
+| Sync tokens and the two-database checkpoint | One event stream, one database |
+| Group-start choreography and `conversation_start_progress` | `GetOrCreateConversation` is one call |
+| The provider layer, `provider=none`, the base/provider capability split | One network, forever |
+| The outbox, its retry schedule, its deferral counter, its reconciliation | D4 |
+| `redact` vs `delete_remote_message`, and every delete `mode` | D14 |
+| `matrix_unavailable`, `/readyz` blockers, `/v1/admin/matrix/*`, `/v1/admin/sync/*` | Nothing Matrix to be unavailable |
+| Interface-layering axes A and B | D18 |
