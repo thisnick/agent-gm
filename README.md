@@ -12,7 +12,8 @@ the same core:
 - **MCP** — streamable HTTP at `/mcp`, OAuth 2.1, for claude.ai and ChatGPT
   connectors and for local agents.
 - **REST** — JSON under `/v1`, for scripts and for the CLI.
-- **CLI** — `agm`, published on npm as `@agent-gm/cli`.
+- **CLI** — `agm`, distributed as a GitHub release binary and, if the name is
+  available, an npm wrapper (spec §14.3, open question OQ-4).
 
 Status: **design phase**. No code yet.
 

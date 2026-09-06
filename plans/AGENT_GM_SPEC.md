@@ -3590,9 +3590,12 @@ Environment only, plus a runtime settings table. **There is no config file.**
 | `AGENT_GM_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
 | `AGENT_GM_LOG_FORMAT` | `json` | `json` \| `text` |
 | `AGENT_GM_UNSAFE_TRACE` | unset | `1` permits `libgm` trace logging. §12.2 |
-| `AGENT_GM_BACKEND` | `libgm` | `libgm` \| `fake`. `fake` refuses to start unless `AGENT_GM_ALLOW_FAKE=1` |
+| `AGENT_GM_BACKEND` | `libgm` | `libgm` \| `fake` |
+| `AGENT_GM_ALLOW_FAKE` | unset | `1` permits `AGENT_GM_BACKEND=fake`. Without it a `fake` backend refuses to start, so a production deployment cannot be talked into serving an empty in-memory phone |
+| `AGENT_GM_LIVE_NUMBERS` | unset | live-gate targets, `direct,group1,group2` (§13.3). Read only by `-tags live` tests; never committed |
 | `AGENT_GM_PAIRING_TIMEOUT` | `5m` | §3.2 |
-| `AGENT_GM_URL` / `AGENT_GM_ACCESS_TOKEN` / `AGENT_GM_REFRESH_TOKEN_FILE` / `AGENT_GM_CLIENT_ID` / `AGENT_GM_CREDENTIALS_FILE` | — | CLI side only |
+| `AGENT_GM_URL` / `AGENT_GM_ACCESS_TOKEN` / `AGENT_GM_REFRESH_TOKEN_FILE` / `AGENT_GM_CLIENT_ID` / `AGENT_GM_CREDENTIALS_FILE` | — | CLI side only (§11.5) |
+| `AGENT_GM_CLI_SKIP_DOWNLOAD` / `AGENT_GM_CLI_BINARY` | — | npm wrapper only (§14.3) |
 
 Runtime settings, mutable through `PATCH /v1/admin/settings`, each reporting
 its effective value, source (`default` \| `environment` \| `database`),
@@ -3606,6 +3609,8 @@ mutability and restart requirement:
 | `backfill.max_messages_per_conversation` | 2000 | 100–100000 |
 | `backfill.horizon` | 365d | 7d–3650d |
 | `backfill.include_archive` | true | — |
+| `ingest.sweep_interval` | 15m | 1m–6h |
+| `operations.send_deadline` | 300s | 60s–600s |
 | `operations.idempotency_ttl` | 30d | 1d–365d |
 | `operations.pending_timeout` | 24h | 1h–7d |
 | `operations.wait_timeout` | 60s | 5s–10m |
@@ -3643,7 +3648,13 @@ already succeeded. **Retention counts calls, not days** — an hourly cron with
 3. `AGENT_GM_DATA_KEY`.
 
 Without (3), (2) is unreadable and cached media is unreadable. Restore = put
-all three back. If only (1) and (3) survive, the server starts unpaired and
+all three back.
+
+**On the gaia pairing flow, a backup of `session.enc` is a backup of the
+owner's Google account credential** (§3.2, §12.1), not merely of a Messages
+session. Store it the way a credential is stored, and never in the same place
+as `AGENT_GM_DATA_KEY`. On the QR flow it holds a tachyon token scoped to
+Google Messages, which is a much smaller thing to lose. If only (1) and (3) survive, the server starts unpaired and
 the owner re-pairs; because `account_key` is derived from the phone (§4.1),
 re-pairing the same phone keeps every existing `conv_` and `msg_` ID.
 
@@ -3664,9 +3675,12 @@ reconnect.
 | `session envelope cannot be decrypted` at startup | `AGENT_GM_DATA_KEY` differs from the key that sealed `session.enc` | restore the original key. **There is no in-place rotation.** |
 | every write is `not_paired`, `session.state=bad_credentials` | tachyon token or cookies dead | `agm pair` again |
 | `session.state=unpaired`, `RevokePairData` in the audit log | the phone unpaired this device, or another device took the slot | `agm pair` again; see §3.2 |
-| new conversations fail with `config_version_stale` | the pinned `libgm` `ConfigVersion` is older than Google's | **bump the pin** (§3.6). This is the known status-4 failure and no amount of retrying fixes it |
+| starting a conversation fails and `agm health` shows `config_version_stale: true` | the pinned `libgm` `ConfigVersion` is older than Google's | **bump the pin** (§3.6). Retrying does not help. See D3 for the field observation this rule comes from |
+| starting a conversation fails with `google_undocumented_status` and the ConfigVersions match | Google returned a status the pinned proto has no name for | record `details.status` and the request, and report it upstream. Do not invent a meaning |
+| `session.state=logged_out` on a Google-account pairing | the Google cookies expired | `agm pair --google --refresh-cookies`. **A full re-pair is not needed** (§3.2) |
+| paired against the wrong Android phone | the account has several and the library picked the most recently seen | `agm pair --google --device-index 1` (§11.4) |
 | every send is `not_default_sms_app` | Google Messages is not the phone's default SMS app | change it on the phone; `agm health` reports `is_default_sms_app` |
-| group creation always fails but direct chats work | the phone's *Group messaging* is set to "Send an SMS reply to all recipients" | set it to MMS on the phone (§11.4). Agent GM can only report this; it fails at Google |
+| a group send fans out as separate SMS threads | the phone's *Group messaging* is set to "Send an SMS reply to all recipients" | set it to MMS on the phone (§11.4). Agent GM can only report what Google returns |
 | sends time out with `phone_not_responding` | the phone is asleep or offline | wait; the operations are `pending` and the echo will settle them. **Do not resend.** |
 | `dropped_events` climbing | ingest is slower than the event stream | a bug; capture `agm admin diagnostics` and file it |
 | every caller collapses to one source in the audit log | `AGENT_GM_TRUSTED_PROXY_CIDRS` does not cover the tunnel container | fix the CIDR; compare `client_source` in `/v1/health` against the address you came from |

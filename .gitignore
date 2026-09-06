@@ -3,3 +3,5 @@
 /.devbox/
 /data/
 *.env
+/testdata/live-numbers.local
+*.local

@@ -19,7 +19,7 @@ owes so an implementer does not have to invent a structure.
 | `mcp.md` | 3 | §8 — the tool catalogue with schemas and annotations, `isError` semantics, scope gating, and a **"First five minutes"** section that is byte-identical to the served `instructions` block (a test asserts it) |
 | `oauth.md` | 3 | §9 — discovery documents, DCR, the authorization screen, enrollment codes, owner approval, tokens, revocation, and the budgets on unauthenticated endpoints |
 | `deploy.md` | 4 | §14, §15 — the Dockerfile, the generic compose example, GHCR by digest, the npm wrapper, and what a host must supply |
-| `upstream-pin.md` | 1, then every bump | §3.6 — the pinned `libgm` commit, what each bump changed in the §3.1 surface, and the live gate that accepted it |
+| `upstream-pin.md` | every pin bump (spec §3.6) | §3.6 — the pinned `libgm` commit, what each bump changed in the §3.1 surface, and the live gate that accepted it |
 
 ## Two things to read before anything else
 
