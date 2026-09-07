@@ -12,9 +12,23 @@
 # A step that shells out to something with no script is a step nobody can
 # reproduce locally, and is rejected in review (section 13.6).
 #
-# **This workflow does not cut the tag.** The tag is the coordinator's act,
-# after review and after a live gate: no release is cut from a commit that has
-# not passed one (section 16).
+# **This workflow does not cut the tag**, and every guard below assumes it did
+# not. The tag is cut by `version.yml` when the "Version Packages" pull
+# request merges -- a reviewed merge to main, which is what section 16 asks of
+# the commit a release is cut from -- and `version.yml` then dispatches THIS
+# workflow against the tag's own ref, because a tag pushed with a workflow's
+# GITHUB_TOKEN starts nothing. The emergency path is a maintainer pushing
+# `vX.Y.Z` by hand, which starts the same job by the same route.
+#
+# Either way this job sees `github.ref = refs/tags/vX.Y.Z`, so the tag shape,
+# the ancestor-of-main check, the green-ci check, the digest and revision
+# checks and `release.sh`'s own `require_tag` all run against a real tag and
+# not against a synthesised input. `require_tag` additionally asserts the tag
+# equals `npm/package.json`'s version, which is the version authority (D39):
+# in the ordinary flow the tag is cut FROM the manifest and cannot disagree,
+# and on the emergency path a typed tag can.
+#
+# No release is cut from a commit that has not passed a live gate (section 16).
 name: release
 
 on:
@@ -133,6 +147,20 @@ jobs:
             echo "::error::'${GITHUB_REF_NAME}' is not vMAJOR.MINOR.PATCH with an optional" \
                  "prerelease. A tag that is not a version would cut a real, signed, public" \
                  "release that cannot be withdrawn from the sigstore transparency log." >&2
+            exit 1
+          fi
+
+          # The tag is a LABEL for the version in npm/package.json, which is
+          # the version authority (D39): the archives, both binaries, the
+          # image label and the npm package are all stamped from the
+          # manifest, so a tag that names a different version would put
+          # `v1.0.3` on a release page full of `1.0.2` binaries. release.sh's
+          # require_tag refuses this too; here it is refused before the build.
+          manifest="$(./scripts/release.sh version)"
+          if [ "${GITHUB_REF_NAME}" != "v${manifest}" ]; then
+            echo "::error::the tag is ${GITHUB_REF_NAME} but npm/package.json says the version" \
+                 "is ${manifest}. The manifest is the version authority: merge the Version" \
+                 "Packages pull request, or fix the tag -- do not fix the binaries." >&2
             exit 1
           fi
 

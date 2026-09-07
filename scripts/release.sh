@@ -19,10 +19,15 @@
 #                                  dist/*; refuses off a vX.Y.Z tag
 #   scripts/release.sh npm-publish publish the packed tarball to npm;
 #                                  refuses off a vX.Y.Z tag
+#   scripts/release.sh version     print the one version, and nothing else
 #
-# The version comes from the tag and from nowhere else. Off a tag the version
-# is `0.0.0-dev.<short>`, which is a valid semver prerelease, sorts below
-# every real release, and makes a dry run's artefacts unmistakable.
+# The version comes from `npm/package.json` and from nowhere else (D39).
+# changesets bumps that field in the "Version Packages" pull request, and
+# every artefact reads it from there: the archive names, the `-X main.version`
+# stamp in both binaries, `GET /v1/health`, the image's
+# `org.opencontainers.image.version` label and the npm package. The tag is a
+# LABEL for the version rather than its source, so a tag that disagrees with
+# the manifest is refused instead of believed.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -57,22 +62,21 @@ ref_type="${GITHUB_REF_TYPE:-branch}"
 digest_shape='^sha256:[0-9a-f]{64}$'
 
 semver_tag='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$'
+semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$'
+
+# The one version. Read with sed rather than with node, because the workflow
+# that cuts the tag asks this question before it has installed anything.
+version="$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' npm/package.json | head -1)"
+[ -n "$version" ] || die "npm/package.json declares no version, and it is the version authority (D39)"
+if [[ ! "$version" =~ $semver ]]; then
+  die "npm/package.json says the version is '$version', which is not MAJOR.MINOR.PATCH" \
+      "with an optional prerelease. Every artefact is stamped with it and npm would refuse" \
+      "it at the last step of a release instead of the first."
+fi
+tag="v$version"
 
 tagged=0
-case "$ref_type" in
-  tag)
-    if [[ "$ref_name" =~ $semver_tag ]]; then
-      version="${ref_name#v}"
-      tagged=1
-    else
-      # Not a refusal here -- `build` and `dry-run` are legitimate on any ref.
-      # require_tag is what refuses, so the refusal names the mode.
-      version="0.0.0-dev.$short"
-    fi
-    ;;
-  *) version="0.0.0-dev.$short" ;;
-esac
-tag="v$version"
+if [ "$ref_type" = tag ]; then tagged=1; fi
 
 # The two pins a release note has to record (sections 3.6 and 14.2). They are
 # read out of the tree rather than typed, so a release note cannot claim a pin
@@ -94,6 +98,17 @@ targets=(
   "agm:darwin:amd64"
   "agm:darwin:arm64"
 )
+
+# A test that only wants to read the version off a real artefact does not want
+# to wait for six cross compiles. The narrowing is refused on a tag, so a
+# release always builds the whole matrix of section 14.3 -- the one thing this
+# knob must never be able to do is publish five archives out of six.
+if [ -n "${AGENT_GM_RELEASE_TARGETS:-}" ]; then
+  [ "$tagged" = 0 ] || die "AGENT_GM_RELEASE_TARGETS narrows the build matrix and is refused" \
+      "on a tag: section 14.3 lists six archives and a release publishes all six"
+  IFS=' ' read -r -a targets <<<"$AGENT_GM_RELEASE_TARGETS"
+  note "matrix narrowed to ${targets[*]} by AGENT_GM_RELEASE_TARGETS"
+fi
 
 # --- build --------------------------------------------------------------------
 
@@ -223,12 +238,14 @@ do_npm_pack() {
   cp LICENSE "$stage/LICENSE"
   cp "$dist/checksums.txt" "$stage/checksums.txt"
 
-  node -e '
-    const fs = require("fs");
-    const p = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-    p.version = process.argv[2];
-    fs.writeFileSync(process.argv[1], JSON.stringify(p, null, 2) + "\n");
-  ' "$stage/package.json" "$version"
+  # No rewrite. The manifest is COMMITTED at the released version (D39), so
+  # what is packed is what is in the tree; the assertion is that the copy
+  # agrees, which is the whole of the "one version" claim at the one place the
+  # npm package is made.
+  local staged
+  staged="$(node -e 'process.stdout.write(require(process.argv[1]).version)' "$stage/package.json")"
+  [ "$staged" = "$version" ] || die "the staged package.json says $staged and the release is" \
+      "$version; npm/package.json is the version authority and nothing rewrites it"
 
   ( cd "$stage" && npm pack --pack-destination "$dist" >/dev/null )
   # Named, not globbed: `ls | head -1` sorts lexicographically, so a leftover
@@ -312,11 +329,21 @@ require_tag() {
   # the notes, the `-X main.version` stamp and the npm version, so it is the
   # one worth asserting directly; `vnonsense` never reaches this line with a
   # `$version` that passes.
-  if [[ ! "$ref_name" =~ $semver_tag ]] ||
-     [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; then
+  if [[ ! "$ref_name" =~ $semver_tag ]] || [[ ! "$version" =~ $semver ]]; then
     die "refusing to $1 from the tag '$ref_name': it is not vMAJOR.MINOR.PATCH" \
         "with an optional prerelease. A tag that is not a version cuts a real," \
         "signed, public release that cannot be withdrawn from the sigstore log."
+  fi
+  # The tag AGREES with the manifest, which is the version authority (D39).
+  # The artefacts are stamped from npm/package.json, so a tag that names a
+  # different version would put `v1.0.3` on a release page full of `1.0.2`
+  # binaries, and `npm publish` would then publish 1.0.2 under a 1.0.3
+  # release. In the ordinary flow the tag is cut BY the manifest and cannot
+  # disagree; this is the guard on the emergency path, where a human types it.
+  if [ "$ref_name" != "$tag" ]; then
+    die "refusing to $1 from the tag '$ref_name': npm/package.json says the version is" \
+        "$version, so the tag for it is $tag. The manifest is the version authority (D39):" \
+        "merge the Version Packages pull request, or fix the tag -- do not fix the binaries."
   fi
   [ "$tagged" = 1 ] || die "refusing to $1 from $ref_type/$ref_name"
 }
@@ -401,6 +428,16 @@ require_digest() {
 do_notes() {
   local digest="${AGENT_GM_IMAGE_DIGEST:-unknown}"
   local image="${AGENT_GM_IMAGE:-ghcr.io/thisnick/agent-gm}"
+  # A prerelease is tagged `vX.Y.Z-rc.N` and NOTHING else: `latest` and `vX.Y`
+  # are the tags a `docker pull` with no tag lands on, and a release candidate
+  # is not what anyone asking for either of those means (D39). The npm side of
+  # the same rule is the `next` dist-tag in do_npm_publish.
+  local base="${version%%-*}"
+  local minor="${base%.*}"
+  local tagline="Tags \`$tag\`, \`v$minor\` and \`latest\` point at that digest today."
+  case "$version" in
+    *-*) tagline="Tag \`$tag\` points at that digest, and nothing else does. This is a **prerelease**: it is not tagged \`latest\` or \`v$minor\`, and \`@agent-gm/cli\` publishes it under the \`next\` dist-tag." ;;
+  esac
   cat <<EOF
 ## agent-gm $tag
 
@@ -412,7 +449,7 @@ Deployments pin by **digest**, not by tag:
 
     $image@$digest
 
-Tags \`$tag\`, \`v${version%.*}\` and \`latest\` point at that digest today.
+$tagline
 They are labels; the digest is the evidence.
 
 ### Pins
@@ -492,12 +529,20 @@ do_npm_publish() {
   if [ "$(printf '%s\n11.5.1\n' "$npmv" | sort -V | head -1)" != "11.5.1" ]; then
     die "npm $npmv cannot do trusted publishing; need npm >= 11.5.1 (the workflow installs it)"
   fi
-  npm publish --access public --provenance "$tarball" \
+  # The dist-tag. `latest` is what a bare `npm i @agent-gm/cli` resolves to,
+  # so a prerelease must NOT take it: `changeset pre enter rc` exists to hand
+  # a release candidate to somebody who asked for one, and npm's way of asking
+  # is `@next`. Passed explicitly in both cases, because npm's default is
+  # `latest` and a default is not a decision (D39).
+  local dist_tag=latest
+  case "$version" in *-*) dist_tag=next ;; esac
+  npm publish --access public --provenance --tag "$dist_tag" "$tarball" \
     || die "npm publish failed; trusted publishing must be enabled on npm for this repository and workflow (docs/operations.md)"
-  note "published @agent-gm/cli@$version"
+  note "published @agent-gm/cli@$version under the '$dist_tag' dist-tag"
 }
 
 case "${1:-build}" in
+  version)     printf '%s\n' "$version" ;;
   build)       do_build ;;
   verify)      do_verify ;;
   npm-pack)    do_npm_pack ;;
@@ -507,5 +552,5 @@ case "${1:-build}" in
   notes)       do_notes ;;
   publish)     do_publish ;;
   npm-publish) do_npm_publish ;;
-  *) die "unknown mode '$1'; use build, verify, npm-pack, npm-check, dry-run, sign, notes, publish or npm-publish" ;;
+  *) die "unknown mode '$1'; use version, build, verify, npm-pack, npm-check, dry-run, sign, notes, publish or npm-publish" ;;
 esac

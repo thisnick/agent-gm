@@ -245,7 +245,19 @@ func TestTheDocsAndTheNotesAgreeOnTheCosignIdentity(t *testing.T) {
 func TestOnlyASemverTagPublishes(t *testing.T) {
 	sh := repoFile(t, "scripts/release.sh")
 	req := regexp.MustCompile(`(?s)require_tag\(\) \{.*?\n\}`).FindString(sh)
-	if !strings.Contains(req, "[0-9]") {
+	// The two patterns are named constants now (one spelling of a tag, one of
+	// a version, R-12), so the question is whether require_tag matches
+	// AGAINST them -- not whether it spells `[0-9]` out itself.
+	if !strings.Contains(req, "$semver_tag") || !strings.Contains(req, "$semver") {
 		t.Error("require_tag accepts any tag beginning with `v`; `vnonsense` would cut a release")
+	}
+	for _, pattern := range []string{"semver_tag='", "semver='"} {
+		i := strings.Index(sh, pattern)
+		if i < 0 {
+			t.Fatalf("scripts/release.sh declares no %s pattern", pattern)
+		}
+		if !strings.Contains(sh[i:i+120], "[0-9]") {
+			t.Errorf("the %s pattern matches something other than digits", pattern)
+		}
 	}
 }

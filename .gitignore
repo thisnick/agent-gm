@@ -9,3 +9,4 @@
 /.claude/worktrees/
 /npm/vendor/
 /npm/checksums.txt
+node_modules/

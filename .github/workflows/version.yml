@@ -1,0 +1,182 @@
+# Agent GM versioning -- decision D39, spec sections 14.3 and 16.
+#
+# One version for everything Agent GM ships -- the container image, the
+# `agent-gm` server, the `agm` command line and `@agent-gm/cli` -- and one
+# place it comes from: the `version` field of `npm/package.json`. This
+# workflow is what moves that field and what turns a move into a release.
+#
+# Two jobs, and on any given push to main at most one of them does anything:
+#
+#   version-packages  there are changesets in `.changeset/`, so it opens or
+#                     updates the single "Version Packages" pull request that
+#                     bumps npm/package.json and prepends the entries to
+#                     CHANGELOG.md. It publishes nothing.
+#   tag               npm/package.json's version CHANGED in this push, which
+#                     only the merge of that pull request does, so it cuts and
+#                     pushes the annotated tag for it.
+#
+# Merging the Version Packages pull request is therefore the act that cuts a
+# release, and it is a reviewed merge to main like any other -- which is what
+# section 16 asks of the commit a release is cut from.
+name: version
+
+on:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+# Never two of these at once: both jobs read and write the state of main, and
+# a second run overtaking the first would open a duplicate pull request or cut
+# a tag from a commit the first was already cutting.
+concurrency:
+  group: version-main
+  cancel-in-progress: false
+
+jobs:
+  # The changesets action, with the repository's own GITHUB_TOKEN and no
+  # publish command: it versions and opens a pull request, and that is all. It
+  # needs "Allow GitHub Actions to create and approve pull requests" enabled
+  # for the repository (docs/operations.md).
+  #
+  # `version:` is this repository's own script rather than the action's
+  # default `changeset version`, because `changeset version` writes the new
+  # entry above the preamble in a shape CHANGELOG.md has never used;
+  # `scripts/changelog-format.mjs` files it under [Unreleased] in the house
+  # format. The pull request therefore arrives ready to merge rather than
+  # ready to hand-edit, and a hand-edit is the manual step this flow exists to
+  # remove.
+  version-packages:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # --ignore-scripts: the workspace member is `npm/`, whose postinstall
+      # downloads a release binary and verifies it against a checksums.txt
+      # that only exists inside a published tarball. Nothing here needs the
+      # `agm` binary; the install is for `@changesets/cli` alone.
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - uses: changesets/action@v1
+        with:
+          version: npm run version-packages
+          title: "Version Packages"
+          commit: "version packages"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # The tag. It runs on every push to main and does nothing unless
+  # npm/package.json's version moved, which is `scripts/cut-tag.sh`'s
+  # judgement and not this file's.
+  #
+  # **Why it dispatches instead of relying on the push.** A tag pushed with
+  # the workflow's GITHUB_TOKEN does not start other workflows -- that is
+  # GitHub's rule against recursive automation, and it is not negotiable. So
+  # the tag alone would build no image and cut no release. The two workflows
+  # that a human's `git push origin v1.2.3` would have started are therefore
+  # started explicitly, with `workflow_dispatch` **against the tag's own ref**:
+  #
+  #   - `ci.yml` for the image, because release.yml waits for the GHCR image
+  #     whose revision label is this commit;
+  #   - `release.yml` for the release itself.
+  #
+  # Dispatching against the tag ref, rather than restructuring release.yml to
+  # run on this push, is the choice that keeps every guard release.yml already
+  # has EXACTLY as it is: the job still sees `github.ref = refs/tags/vX.Y.Z`,
+  # `GITHUB_REF_TYPE=tag` and `GITHUB_REF_NAME=vX.Y.Z`, so the semver check,
+  # the ancestor-of-main check, the green-ci check, the digest and revision
+  # checks and `release.sh`'s own `require_tag` all run against the tag and
+  # not against a synthesised input. The emergency path -- a maintainer
+  # pushing the tag by hand -- reaches the identical job by the identical
+  # route. A `workflow_call` would have run in main's context and forced every
+  # one of those guards to be rewritten around an input, which is how a guard
+  # quietly stops applying.
+  tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the tag
+      actions: write # dispatch ci and release against it
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Is this push a release? `cut-tag.sh` answers, and refuses a version
+      # that is not strict semver or a tag that already exists. It needs bash
+      # and git and nothing else, so it is run directly rather than through
+      # devbox -- it is the same script `devbox run cut-tag` runs.
+      - id: cut
+        env:
+          AGENT_GM_TAG_CHECK_REMOTE: "1"
+        run: |
+          set -euo pipefail
+          before="${{ github.event.before }}"
+          previous=""
+          if [ -n "$before" ] && [ "$before" != "0000000000000000000000000000000000000000" ] \
+             && git cat-file -e "${before}^{commit}" 2>/dev/null; then
+            previous="$(git show "${before}:npm/package.json" \
+              | sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+          fi
+          ./scripts/cut-tag.sh "$previous" | tee -a "$GITHUB_OUTPUT"
+
+      # A release is cut from a commit whose ci went green (section 14.3), and
+      # release.yml refuses one that did not. That check is asked of a commit
+      # whose ci run is still in progress here, seconds after the merge, so it
+      # is waited for HERE rather than failed there: a release that is refused
+      # because it was asked for too early is a release nobody can cut without
+      # knowing to re-run a job.
+      - if: steps.cut.outputs.release == '1'
+        name: Wait for this commit's ci to go green
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 90); do
+            runs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${GITHUB_SHA}&per_page=100" \
+              --jq '[.workflow_runs[] | select(.name == "ci" and .event == "push")]')"
+            green="$(printf '%s' "$runs" | jq '[.[] | select(.conclusion == "success")] | length')"
+            failed="$(printf '%s' "$runs" | jq '[.[] | select(.conclusion != null and .conclusion != "success")] | length')"
+            if [ "$green" -ge 1 ]; then echo "ci is green for ${GITHUB_SHA}"; exit 0; fi
+            if [ "$failed" -ge 1 ]; then
+              echo "::error::ci concluded '$(printf '%s' "$runs" | jq -r '.[0].conclusion')' for ${GITHUB_SHA}." \
+                   "No release is cut from a commit that has not passed (section 14.3)." >&2
+              exit 1
+            fi
+            echo "waiting for ci on ${GITHUB_SHA} (attempt $i)"
+            sleep 20
+          done
+          echo "::error::ci for ${GITHUB_SHA} had not concluded after 30 minutes." >&2
+          exit 1
+
+      # The tag itself, annotated, from the workflow's own identity. Pushed
+      # last, because everything above can refuse and a pushed tag cannot be
+      # unpushed.
+      - if: steps.cut.outputs.release == '1'
+        name: Cut v${{ steps.cut.outputs.version }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.cut.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${VERSION}" -m "agent-gm v${VERSION}"
+          git push origin "refs/tags/v${VERSION}"
+          echo "pushed v${VERSION}"
+
+          # The two workflows the push could not start. ci first: release.yml
+          # waits up to twenty minutes for the image, and the image is built
+          # by ci.
+          gh workflow run ci.yml --ref "v${VERSION}"
+          gh workflow run release.yml --ref "v${VERSION}"
+          echo "dispatched ci and release against v${VERSION}"

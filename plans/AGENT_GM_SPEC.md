@@ -4686,6 +4686,36 @@ checksums.txt.sig        (cosign keyless, GitHub OIDC)
 - The npm package is AGPL-3.0-or-later and says so, because it distributes
   AGPL binaries (§1.4).
 
+#### The one version (D39)
+
+`npm/package.json`'s `version` field is the version of everything Agent GM
+ships: the container image, the `agent-gm` server, the `agm` command line and
+`@agent-gm/cli`. `agm version`, `agent-gm version`, `GET /v1/health`, the
+image's `org.opencontainers.image.version` label, the six archive names and
+the npm package all carry that string, and `scripts/release.sh` stamps them
+from it. Nothing rewrites the manifest at pack time: it is committed at the
+released version.
+
+The field is moved by **changesets** and by nothing else. A pull request that
+changes anything but documentation carries a changeset under `.changeset/`;
+`ci.yml` refuses one that does not, unless it is labelled `no-release`. On a
+push to `main`, `version.yml` opens or updates a single **Version Packages**
+pull request that bumps the manifest and files the entries under
+`[Unreleased]` in `CHANGELOG.md`. Merging that pull request cuts the release:
+`version.yml` waits for that commit's `ci` to go green, pushes the annotated
+tag `vX.Y.Z`, and dispatches `ci.yml` and `release.yml` against the tag's ref
+— a tag pushed with a workflow's `GITHUB_TOKEN` starts no workflow of its own,
+and dispatching against the tag ref is what keeps every guard in `release.yml`
+running against a real tag.
+
+A tag is a **label** for the version, not its source. `release.yml` and
+`scripts/release.sh` both refuse a tag that is not `npm/package.json`'s
+version, which is what makes a hand-pushed tag — the emergency path — safe.
+
+In changesets prerelease mode (`changeset pre enter rc`) the version is
+`X.Y.Z-rc.N`; the image is tagged `vX.Y.Z-rc.N` and **not** `latest` or
+`vX.Y`, and npm publishes under the `next` dist-tag and **not** `latest`.
+
 Releases are cut by tagging; the `release` workflow builds the matrix, signs
 the checksums, creates the GitHub release, pushes the GHCR image, and
 publishes to npm with an OIDC-authenticated token. **No release is cut from a
@@ -5518,6 +5548,7 @@ add missing tools to `devbox.json` rather than installing on the host.
 | **D36** | **The MCP protocol layer is the official Go SDK, `github.com/modelcontextprotocol/go-sdk`, pinned at `v1.7.0`.** The hand-written JSON-RPC, session and dispatch code is deleted. **Owner decision, 2026-09-06: "I'd rather not reinvent the wheel."** What the SDK now decides, what stays ours, and what it forced, are in §8.1, §8.2, §9.2 and the note below | A protocol we wrote ourselves is a protocol we have to keep correct against a spec that moves, with the connectors as the only test. The reference implementation is the one the clients are written against, and every place it disagreed with us is a place a connector would have disagreed with us later |
 | **D37** | **Live gate 29 is satisfied by Codex CLI through the public URL.** The owner ruled on 2026-09-07 that claude.ai and ChatGPT connectors are not required for v1: "if codex can access through funnel then we are good to go". Codex CLI completed the full OAuth flow (DCR, PKCE, enrollment screen, CLI approval), listed and read conversations, sent a text that arrived on the fleet phone, and was refused after revocation — first against a host binary (Slice 3), then through the Cloudflare Tunnel against the deployed container on the Slice 3 and Slice 3b images. Adding claude.ai or ChatGPT later is a two-minute owner action (add the connector, paste an enrollment code) and needs no code | The connector gate exists to prove a real third-party client can bind to the public URL end to end; Codex is such a client and the deployment is the one those clients will keep talking to. The Matrix + mautrix-gmessages stack was removed from the owner's Compose file the same day |
 | **D38** | **The idempotency key is no longer required anywhere.** The server always mints the operation ID and returns it. The `client_request_id` body field is **removed** from every REST route and every MCP tool schema, description and the instructions block; a body carrying it is now an unknown field and therefore `invalid_request` (§7.1). The `Idempotency-Key` **header stays, and stays optional**, with today's semantics when present: replay on the same key and body, `idempotency_conflict` on the same key with a different body, and the cross-account refusal of §6.3. A missing key is a new operation, and two keyless calls are two operations and two messages. The CLI sends no key on an ordinary command; `--idempotency-key` remains as an explicit automation flag that sets the header. Migration 0007 makes `operations.idempotency_key` nullable and its uniqueness a partial index. **Owner decision, 2026-09-07** | D7 assumed the caller could produce a stable key across a retry. An AI agent cannot: it regenerates its arguments, so its "same call twice" is two different keys, and the key was friction on every call while protecting nothing. What an agent needs instead is an instruction it can follow — **if a result is lost, look before sending again** — and an operation ID to look with, which it now always gets. A script that retries on a timeout genuinely can hold a key across the retry, so the header stays for exactly that caller. Removing the header too would have removed real protection from the one caller who could use it |
+| **D39** | **Versions are managed with changesets, and `npm/package.json` is the one version authority.** Its `version` field is the version of the container image, of `agent-gm`, of `agm` and of `@agent-gm/cli`; `release.sh` stamps every artefact from it and rewrites nothing at pack time. A pull request that changes anything but documentation carries a changeset (`no-release` is the labelled exception); the changesets action opens one **Version Packages** pull request per release, and merging it is what cuts the release. `version.yml` then pushes the annotated tag and **dispatches** `ci.yml` and `release.yml` against the tag ref, because a tag pushed with a workflow `GITHUB_TOKEN` triggers nothing. A tag that disagrees with the manifest is refused by both `release.yml` and `release.sh`. In prerelease mode the image takes only `vX.Y.Z-rc.N` and npm only the `next` dist-tag. **Owner decision, 2026-09-07** | Four artefacts carried four versions from three sources — the tag stamped the binaries, the manifest said `0.0.0-dev` until a pack-time rewrite, and the changelog was typed by hand — so "what is deployed" had no single answer and a release needed three manual edits that a tired maintainer could get out of step. One field, moved by one tool, makes the release a merge rather than a procedure, and makes the changelog a by-product of the pull request that earned the entry. Dispatching the tag ref rather than restructuring `release.yml` around a workflow input was chosen deliberately: every existing guard (semver shape, ancestor-of-main, green `ci`, digest resolution, revision label, OIDC publish) keeps running against a real tag, unmodified, and the hand-pushed emergency path reaches the identical job by the identical route |
 
 #### Field observation behind D3 — the ConfigVersion, and status 4
 

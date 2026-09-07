@@ -521,26 +521,37 @@ without a clone.
 
 ## Releases
 
-Releases are cut by **tagging**, and by nothing else. `scripts/release.sh` is
-the whole mechanism, and `devbox run release-dry-run` runs on every push to
-main so the release path cannot rot between releases.
+**There is one version, and it lives in `npm/package.json`.** The container
+image, the `agent-gm` server, the `agm` command line and `@agent-gm/cli` all
+carry it; `agm version`, `agent-gm version`, `GET /v1/health`, the image's
+`org.opencontainers.image.version` label, the archive names and the npm
+package are the same string, and a test builds all of them and compares
+(`internal/release/one_version_test.go`). The tag is a *label* for that
+version, not its source: `vX.Y.Z` must equal what the manifest says, and both
+`release.yml` and `scripts/release.sh` refuse it when it does not.
+
+That field is moved by **changesets** and by nothing else (decision D39).
 
 | Command | What it does |
 |---|---|
+| `devbox run changeset` | write a changeset: pick patch/minor/major and one sentence. Commit it with your change |
 | `devbox run build-matrix` | cross-compiles the six archives into `dist/`, writes `checksums.txt`, and verifies each: the ones this machine can execute are executed, the darwin ones are checked for architecture and for loading only libraries macOS ships |
 | `devbox run release-dry-run` | the above, plus `npm pack` and a real install of the tarball, asserting the exit codes survive the shim. Publishes nothing |
-| `devbox run release` | build, cosign-sign `checksums.txt`, pack, and create the GitHub release. **Refuses off a `vX.Y.Z` tag** |
+| `devbox run release` | build, cosign-sign `checksums.txt`, pack, and create the GitHub release. **Refuses off a `vX.Y.Z` tag**, and off a tag that is not this manifest's version |
 
 A release note records the **GHCR digest** and both dependency pins, read out
 of the tree rather than typed, because a deployment pins by digest and a
 reader has to be able to tell which upstream a binary was built against
 without cloning anything.
 
-Four things are refused before anything permanent happens:
+Five things are refused before anything permanent happens:
 
 - a tag that is not `vMAJOR.MINOR.PATCH` — `vtest` would otherwise build,
   sign with a real keyless certificate and create a public release before npm
   rejected the version, and a sigstore entry cannot be withdrawn;
+- a tag that is not `npm/package.json`'s version — the binaries are stamped
+  from the manifest, so such a tag would put `v1.0.3` on a release page full
+  of `1.0.2` binaries;
 - a tagged commit that is not an ancestor of `main`, or whose `ci` run is not
   green;
 - an image digest that is absent, is not `sha256:<64 hex>`, or does not
@@ -552,33 +563,80 @@ Four things are refused before anything permanent happens:
 
 **No release is cut from a commit that has not passed a live gate.**
 
-### Cutting one
+### Cutting a release
+
+Four steps, three of which are ordinary review:
+
+1. **Add a changeset to your pull request.** `devbox run changeset`, pick the
+   bump, write the sentence that will appear in `CHANGELOG.md`, commit the
+   file it wrote under `.changeset/`. CI refuses a pull request that changes
+   what is shipped and carries no changeset, unless it is labelled
+   `no-release`; a documentation-only pull request needs none.
+2. **Merge it.** On the push to main, `version.yml` opens or updates a single
+   **Version Packages** pull request that bumps `npm/package.json` and files
+   the entries under `[Unreleased]` in `CHANGELOG.md`. It publishes nothing.
+   More merges update the same pull request.
+3. **Merge the Version Packages pull request** when you want the release.
+   That is the act that cuts it, and it is a reviewed merge to main like any
+   other — which is what §16 asks of the commit a release is cut from.
+4. **Watch it.** `version.yml` sees the version move, waits for that commit's
+   `ci` to go green, creates and pushes the annotated tag `vX.Y.Z`, and then
+   *dispatches* `ci.yml` and `release.yml` against the tag's ref.
+
+The dispatch is not decoration. **A tag pushed with a workflow's
+`GITHUB_TOKEN` does not start other workflows** — GitHub's rule against
+recursive automation — so the tag alone would build no image and cut no
+release. Dispatching against the tag's own ref means both workflows see
+`github.ref = refs/tags/vX.Y.Z` and every guard runs exactly as it does when a
+human pushes a tag, rather than being rewritten around a workflow input.
+
+Afterwards, record the digest the release notes name in `CHANGELOG.md`, and
+deploy that digest.
+
+### The emergency path
+
+Pushing a tag by hand still works and still cuts a release:
 
 ```bash
-# 1. On main, with ci green for the exact commit you are about to tag.
-#    Update CHANGELOG.md: a new heading for the version, the GHCR digest
-#    once you have it, and both pins.
-devbox run check
-devbox run release-dry-run          # builds everything, publishes nothing
-
-# 2. Tag the reviewed commit and push the tag. This is the whole release.
 git tag -a v1.2.3 -m "agent-gm v1.2.3"
 git push origin v1.2.3
 ```
 
-Pushing the tag starts `.github/workflows/release.yml`, which asserts the tag
-is `vMAJOR.MINOR.PATCH`, that the commit is an ancestor of `main` and that a
-`ci` push run for that exact commit went green; waits for the GHCR image whose
-`org.opencontainers.image.revision` label **is** that commit; then builds,
-signs `checksums.txt` with cosign, creates the GitHub release with generated
-notes, and publishes `@agent-gm/cli`. Nothing is published by hand.
+It carries every guard above, including the new one: `v1.2.3` must be what
+`npm/package.json` says, so the manual path cannot release a version the
+binaries were not stamped with. Use it when the automation is broken, not to
+skip the changeset — the changelog entry comes from the changeset, and a
+release cut around it has an empty entry.
 
-The version comes from the tag and from nowhere else, so off a tag a build is
-`0.0.0-dev.<short>` — a valid semver prerelease that sorts below every release
-and makes a dry run's artefacts unmistakable.
+### Release candidates
 
-Afterwards, record the digest the release notes name in `CHANGELOG.md`, and
-deploy that digest.
+Changesets has a prerelease mode. `rc` is the tag this project uses:
+
+```bash
+devbox run -- npx changeset pre enter rc   # once, on main
+devbox run changeset                       # as usual, per change
+# merge; the Version Packages pull request now bumps to 1.2.3-rc.0, -rc.1, …
+devbox run -- npx changeset pre exit       # when the candidate becomes the release
+```
+
+While in pre mode every release is `X.Y.Z-rc.N`, and two defaults are
+deliberately overridden:
+
+- the image is tagged `vX.Y.Z-rc.N` **and nothing else** — not `latest`, not
+  `vX.Y`. Those are where a pull with no tag and a pull by minor series land,
+  and neither of those callers asked for a candidate;
+- npm publishes under the **`next`** dist-tag, never `latest`, so
+  `npm i @agent-gm/cli` still installs the release.
+
+`npx changeset pre exit` followed by the usual merge cuts `X.Y.Z` itself.
+
+### Repository settings this depends on
+
+- **Allow GitHub Actions to create and approve pull requests** must be on, or
+  the Version Packages pull request cannot be opened.
+- Nothing else: `version.yml` uses the repository's own `GITHUB_TOKEN`, with
+  `contents: write` to push the tag and `actions: write` to dispatch. There is
+  no personal access token anywhere in this flow.
 
 ### npm trusted publishing
 

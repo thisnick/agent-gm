@@ -1,0 +1,17 @@
+{
+  "name": "agent-gm-repo",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Not a published package. This manifest exists so that changesets has a workspace root; the published package is npm/ (@agent-gm/cli), and its version is the version of everything Agent GM ships (D39).",
+  "license": "AGPL-3.0-or-later",
+  "workspaces": [
+    "npm"
+  ],
+  "scripts": {
+    "changeset": "changeset",
+    "version-packages": "changeset version && node scripts/changelog-format.mjs"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.29.7"
+  }
+}

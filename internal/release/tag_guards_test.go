@@ -82,8 +82,15 @@ func TestReleaseScriptRefusesATagThatIsNotAVersion(t *testing.T) {
 // right reason rather than refusing everything. A real version gets PAST the
 // tag check -- and then dies on the next guard, which is the digest, not on
 // the tag.
+//
+// "A real version" is now exactly one string: `v` plus what npm/package.json
+// says, because D39 made the manifest the version authority and a tag that
+// disagrees with it is refused between the shape check and the digest check
+// (`cut_tag_test.go` covers that refusal). Before D39 this listed five
+// well-shaped tags; the shapes themselves are still asserted, against the
+// pattern, in `prerelease_test.go`.
 func TestReleaseScriptAcceptsARealVersionAndThenAsksForTheDigest(t *testing.T) {
-	for _, tag := range []string{"v1.0.0", "v0.1.2", "v10.20.30", "v1.0.0-rc.1", "v1.0.0-alpha1"} {
+	for _, tag := range []string{"v" + manifestVersion(t)} {
 		t.Run(tag, func(t *testing.T) {
 			code, out := runRelease(t, []string{
 				"GITHUB_REF_TYPE=tag",
@@ -120,7 +127,7 @@ func TestPublishRefusesADigestThatIsAbsentOrMalformed(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			env := []string{"GITHUB_REF_TYPE=tag", "GITHUB_REF_NAME=v1.0.0"}
+			env := []string{"GITHUB_REF_TYPE=tag", "GITHUB_REF_NAME=v" + manifestVersion(t)}
 			if tc.digest != "" {
 				env = append(env, tc.digest)
 			}
@@ -147,7 +154,7 @@ func TestPublishRefusesADigestThatIsAbsentOrMalformed(t *testing.T) {
 func TestPublishAsksAWellShapedDigestToResolve(t *testing.T) {
 	code, out := runRelease(t, []string{
 		"GITHUB_REF_TYPE=tag",
-		"GITHUB_REF_NAME=v1.0.0",
+		"GITHUB_REF_NAME=v" + manifestVersion(t),
 		"AGENT_GM_IMAGE_DIGEST=sha256:" + strings.Repeat("0", 64),
 	}, "publish")
 	if code == 0 {
@@ -194,14 +201,15 @@ func TestNpmPublishRefusesATarballFromAnotherVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	version := manifestVersion(t)
 	code, out := runRelease(t, []string{
 		"GITHUB_REF_TYPE=tag",
-		"GITHUB_REF_NAME=v1.0.0",
+		"GITHUB_REF_NAME=v" + version,
 	}, "npm-publish")
 	if code == 0 {
-		t.Fatalf("npm-publish accepted a 0.0.0-dev tarball while releasing 1.0.0:\n%s", out)
+		t.Fatalf("npm-publish accepted a 0.0.0-dev tarball while releasing %s:\n%s", version, out)
 	}
-	if !strings.Contains(out, "0.0.0-dev.deadbee") || !strings.Contains(out, "1.0.0") {
+	if !strings.Contains(out, "0.0.0-dev.deadbee") || !strings.Contains(out, version) {
 		t.Errorf("the refusal does not name both versions:\n%s", out)
 	}
 }

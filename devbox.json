@@ -76,6 +76,20 @@
       "no-deployment-host": [
         "./scripts/no-deployment-host.sh"
       ],
+      "changeset": [
+        "npm install --ignore-scripts --no-audit --no-fund --loglevel=error",
+        "npx --no-install changeset"
+      ],
+      "changeset-version": [
+        "npm install --ignore-scripts --no-audit --no-fund --loglevel=error",
+        "npm run version-packages"
+      ],
+      "changeset-check": [
+        "./scripts/changeset-check.sh"
+      ],
+      "cut-tag": [
+        "./scripts/cut-tag.sh"
+      ],
       "pin-consistency": [
         "./scripts/pin-consistency.sh"
       ],

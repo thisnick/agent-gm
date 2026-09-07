@@ -11,8 +11,9 @@
 #                            assertions of slice-3 acceptance tests 26 and 28
 #
 # Tags (section 14.2). On a push to `main`: `sha-<short>` and `main`. On a
-# `vX.Y.Z` tag: `vX.Y.Z`, `vX.Y` and `latest`. Anywhere else: `sha-<short>`,
-# and `push` refuses, because a tag that moves is a tag nobody can pin.
+# `vX.Y.Z` tag: `vX.Y.Z`, `vX.Y` and `latest` -- on a `vX.Y.Z-rc.N` tag,
+# `vX.Y.Z-rc.N` alone. Anywhere else: `sha-<short>`, and `push` refuses,
+# because a tag that moves is a tag nobody can pin.
 #
 # **Deployments pin by digest, not by tag.** The digest is printed at the end
 # of a push for exactly that reason.
@@ -45,20 +46,36 @@ short="$(printf '%s' "$commit" | cut -c1-7)"
 ref_name="${GITHUB_REF_NAME:-$(git rev-parse --abbrev-ref HEAD)}"
 ref_type="${GITHUB_REF_TYPE:-branch}"
 
-version="dev"
+# The version is npm/package.json's and nobody else's (D39). It is the same
+# question `scripts/release.sh version` answers, asked the same way, so the
+# `org.opencontainers.image.version` label on the image, the archives on the
+# release page and `@agent-gm/cli` cannot disagree. The label is the VERSION;
+# `org.opencontainers.image.revision` is what tells two builds of the same
+# version apart, and that is the label the release guard reads.
+version="$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' npm/package.json | head -1)"
+[ -n "$version" ] || die "npm/package.json declares no version, and it is the version authority (D39)"
+
 tags=()
 case "$ref_type:$ref_name" in
   tag:v*)
-    version="${ref_name#v}"
-    minor="${version%.*}"
-    tags=("$ref_name" "v$minor" "latest")
+    # The tag is a label FOR the version, so it has to be the label for THIS
+    # version: an image tagged v1.0.3 whose binary answers `1.0.2` is a lie
+    # that survives every later check.
+    [ "$ref_name" = "v$version" ] || die "refusing to build $ref_name: npm/package.json says" \
+        "the version is $version, so the tag for it is v$version"
+    case "$version" in
+      # A prerelease is tagged vX.Y.Z-rc.N and NOTHING else. `latest` and
+      # `vX.Y` are where a pull with no tag and a pull by minor land, and
+      # neither of those callers asked for a release candidate. `${version%.*}`
+      # on `1.0.2-rc.0` is also `1.0.2-rc`, which is not a minor series at all.
+      *-*) tags=("$ref_name") ;;
+      *)   tags=("$ref_name" "v${version%.*}" "latest") ;;
+    esac
     ;;
   *:main)
-    version="0.0.0-main.$short"
     tags=("sha-$short" "main")
     ;;
   *)
-    version="0.0.0-dev.$short"
     tags=("sha-$short")
     ;;
 esac
