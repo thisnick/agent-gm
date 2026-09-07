@@ -91,17 +91,27 @@ func TestNoJSONFieldIsABareTime(t *testing.T) {
 	}
 }
 
-// isTime reports whether an expression is time.Time or *time.Time.
+// isTime reports whether an expression is a time.Time in any wrapper a struct
+// field can put one in: a pointer, a slice or array, or a map key or value.
+//
+// The unwrapping is the whole point. A guard that recognised only the bare
+// form would have passed W-1 -- every field there was a *time.Time -- while
+// looking like protection, which is worse than no guard at all. The same
+// reasoning covers the containers: nothing in this tree serves a
+// []time.Time today, and a guard exists for the case nobody thought of.
 func isTime(e ast.Expr) bool {
-	if star, ok := e.(*ast.StarExpr); ok {
-		return isTime(star.X)
+	switch t := e.(type) {
+	case *ast.StarExpr:
+		return isTime(t.X)
+	case *ast.ArrayType:
+		return isTime(t.Elt)
+	case *ast.MapType:
+		return isTime(t.Key) || isTime(t.Value)
+	case *ast.SelectorExpr:
+		pkg, ok := t.X.(*ast.Ident)
+		return ok && pkg.Name == "time" && t.Sel.Name == "Time"
 	}
-	sel, ok := e.(*ast.SelectorExpr)
-	if !ok {
-		return false
-	}
-	pkg, ok := sel.X.(*ast.Ident)
-	return ok && pkg.Name == "time" && sel.Sel.Name == "Time"
+	return false
 }
 
 func repoRoot(t *testing.T) string {
