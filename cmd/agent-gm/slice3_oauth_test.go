@@ -21,7 +21,7 @@ import (
 // drives `buildServer`'s own handler, so a rule that `internal/oauth` obeys
 // but `serve` never mounts fails here rather than in production.
 
-// Test 1. `issuer` equals https://gm.agent-wx.app BYTE FOR BYTE and
+// Test 1. `issuer` equals https://gm.example.test BYTE FOR BYTE and
 // `resource` equals it plus /mcp with no trailing-slash drift, asserted as
 // STRING EQUALITY on both discovery documents.
 //
@@ -360,7 +360,7 @@ func TestSlice3Test4Authorize(t *testing.T) {
 		}, "invalid_request"},
 		{"a resource other than the canonical one", authorizeParams{
 			ClientID: clientID, RedirectURI: redirect, State: "s", Challenge: challenge,
-			Resource: "https://gm.agent-wx.app/mcp/",
+			Resource: "https://gm.example.test/mcp/",
 		}, "invalid_target"},
 		{"an unknown scope", authorizeParams{
 			ClientID: clientID, RedirectURI: redirect, State: "s", Challenge: challenge,

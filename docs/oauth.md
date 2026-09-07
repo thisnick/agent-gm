@@ -67,8 +67,8 @@ can stay `'self'` and no page needs a nonce or `unsafe-inline`.
 
 ```json
 {
-  "resource": "https://gm.agent-wx.app/mcp",
-  "authorization_servers": ["https://gm.agent-wx.app"],
+  "resource": "https://gm.example.test/mcp",
+  "authorization_servers": ["https://gm.example.test"],
   "scopes_supported": ["messages:read", "messages:write", "messages:delete"],
   "bearer_methods_supported": ["header"],
   "resource_documentation": "https://github.com/thisnick/agent-gm"
@@ -89,11 +89,11 @@ cross-origin.
 
 ```json
 {
-  "issuer": "https://gm.agent-wx.app",
-  "authorization_endpoint": "https://gm.agent-wx.app/oauth/authorize",
-  "token_endpoint": "https://gm.agent-wx.app/oauth/token",
-  "registration_endpoint": "https://gm.agent-wx.app/oauth/register",
-  "revocation_endpoint": "https://gm.agent-wx.app/oauth/revoke",
+  "issuer": "https://gm.example.test",
+  "authorization_endpoint": "https://gm.example.test/oauth/authorize",
+  "token_endpoint": "https://gm.example.test/oauth/token",
+  "registration_endpoint": "https://gm.example.test/oauth/register",
+  "revocation_endpoint": "https://gm.example.test/oauth/revoke",
   "response_types_supported": ["code"],
   "grant_types_supported": ["authorization_code", "refresh_token"],
   "token_endpoint_auth_methods_supported": ["none"],
@@ -112,10 +112,11 @@ and two URLs that parse the same are not the same bytes.
 The `401` challenge on `/mcp`:
 
 ```http
-WWW-Authenticate: Bearer
-  resource_metadata="https://gm.agent-wx.app/.well-known/oauth-protected-resource/mcp",
-  scope="messages:read messages:write"
+WWW-Authenticate: Bearer resource_metadata="https://gm.example.test/.well-known/oauth-protected-resource/mcp", scope="messages:read messages:write"
 ```
+
+One line, printed unwrapped because it is sent unwrapped — HTTP line folding is
+obsolete and a folded copy is a header no server sends.
 
 There is no `realm` and no `error` parameter here. `/mcp` is served by the MCP
 Go SDK's bearer middleware and this is the format that middleware emits; the
@@ -212,7 +213,7 @@ callback carrying `error`, `state` and the RFC 9207 `iss`:
 |---|---|
 | `response_type` is not `code` | `unsupported_response_type` |
 | missing `state`, missing or non-`S256` PKCE, malformed challenge | `invalid_request` |
-| `resource` is not `https://gm.agent-wx.app/mcp` | `invalid_target` |
+| `resource` is not `https://gm.example.test/mcp` | `invalid_target` |
 | unknown or empty scope, or `admin` requested | `invalid_scope` |
 
 ### The screen
@@ -412,7 +413,7 @@ or an audit payload.
 | `oauth.authorization_request_ttl` | 15m | 1m–1h |
 | `oauth.enrollment_default_ttl` | 15m | 1m–24h |
 
-Access tokens are bound to `https://gm.agent-wx.app/mcp`, and the binding is
+Access tokens are bound to `https://gm.example.test/mcp`, and the binding is
 inside the hash. **If `AGENT_GM_PUBLIC_URL` ever changes, every token minted
 under the previous origin is refused with `401 invalid_token` on both `/mcp`
 and `/v1`, and every registered client is orphaned** — there is no separate
@@ -506,10 +507,26 @@ specific set; **`admin` is refused there** and is issued only by
 `agm auth login --admin`, which exchanges `AGENT_GM_ADMIN_SECRET` over
 `--secret-stdin` or a TTY prompt.
 
-Each profile is bound to an exact server issuer and resource, and records the
-`client_id` its tokens belong to. Changing `--server` selects credentials for
-that server; it never forwards one profile's token to a new origin. See
-[cli.md](cli.md) §Credentials.
+`agm auth login --server <url>` names the profile it creates after the
+server's **host** — a login to `https://gm.example.test` creates the profile
+`gm.example.test` — and records it as the active profile, so nothing
+afterwards needs `--server`. `--profile <name>` overrides the name. There is
+no profile called `default` and no built-in hostname: a command with no
+`--server`, no `AGENT_GM_URL` and no active profile fails saying what to type.
+
+The profile records the access token's expiry and the `client_id` its tokens
+belong to, and it **refreshes itself**: within 60 seconds of expiry, or on the
+first `invalid_token`, `agm` exchanges the refresh token at `/oauth/token`
+with `grant_type=refresh_token` and its `client_id`, and stores the rotation.
+An admin session refreshes at `POST /v1/auth/refresh` instead; the two paths
+do not cross. A token past its recorded
+expiry is never presented. Exit `3` means a refresh was attempted and refused.
+
+Each profile is bound to an exact server issuer and resource. `agm auth login` is the only command that
+may name a server this machine has no profile for; on every other command a
+`--server` that matches no stored profile is refused as `invalid_request`,
+naming `agm auth login --server`. One profile's token is never forwarded to
+another origin. See [cli.md](cli.md) §Credentials and profiles.
 
 A whole login, on one terminal:
 
@@ -519,13 +536,17 @@ $ agm admin enrollment-codes create "claude.ai" --expires-in 30m
 code: A1B2-C3D4-E5F6-G7H8      # printed once, never again
 
 # the client
-$ agm auth login --server https://gm.agent-wx.app --no-browser
+$ agm auth login --server https://gm.example.test --no-browser
 Open this URL to authorize:
-https://gm.agent-wx.app/oauth/authorize?...
+https://gm.example.test/oauth/authorize?...
 
 # paste the code into the screen, then, with the admin session
 $ agm admin authorization-requests list --status pending
 $ agm admin authorization-requests approve authreq_…
+
+# the profile is named for the host and is now the active one
+$ agm profiles list
+* gm.example.test                  https://gm.example.test
 ```
 
 ## Audit

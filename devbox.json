@@ -48,7 +48,8 @@
         "golangci-lint run ./...",
         "CGO_ENABLED=1 go test ./... -race -count=1",
         "./scripts/lint-names.sh",
-        "./scripts/no-real-numbers.sh"
+        "./scripts/no-real-numbers.sh",
+        "./scripts/no-deployment-host.sh"
       ],
       "tidy": [
         "GOFLAGS= go mod tidy"
@@ -67,6 +68,9 @@
       ],
       "no-real-numbers": [
         "./scripts/no-real-numbers.sh"
+      ],
+      "no-deployment-host": [
+        "./scripts/no-deployment-host.sh"
       ],
       "pin-consistency": [
         "./scripts/pin-consistency.sh"

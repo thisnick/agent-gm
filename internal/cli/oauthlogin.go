@@ -130,11 +130,21 @@ func (r *runner) oauthLogin(inv *invocation) error {
 	}
 
 	granted := strings.Fields(tokens.Scope)
+	// `expires_in` is a duration; the profile records an INSTANT, because
+	// that is what the proactive refresh of section 11.5 compares the clock
+	// against on a later invocation. A response without one records nothing
+	// and falls back to refreshing on refusal.
+	expiresAt := ""
+	if tokens.ExpiresIn > 0 {
+		expiresAt = r.env.Now().UTC().
+			Add(time.Duration(tokens.ExpiresIn) * time.Second).Format(time.RFC3339)
+	}
 	if err := r.store.SaveProfile(pending, r.cred.Profile, Profile{
 		Server:       r.cred.Server,
 		AccessToken:  tokens.AccessToken,
 		RefreshToken: tokens.RefreshToken,
 		Scopes:       granted,
+		ExpiresAt:    expiresAt,
 		Issuer:       meta.Issuer,
 		Resource:     meta.Resource,
 		ClientID:     clientID,
@@ -307,16 +317,23 @@ type tokenResponse struct {
 }
 
 func (r *runner) exchangeCode(meta discovery, clientID, redirectURI, code, verifier string) (tokenResponse, error) {
-	var out tokenResponse
-	form := url.Values{
+	return r.postTokenForm(meta.TokenEndpoint, url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {code},
 		"client_id":     {clientID},
 		"redirect_uri":  {redirectURI},
 		"code_verifier": {verifier},
 		"resource":      {meta.Resource},
-	}
-	req, err := http.NewRequestWithContext(r.ctx, http.MethodPost, meta.TokenEndpoint,
+	})
+}
+
+// postTokenForm posts one form-encoded grant to `/oauth/token` and reads the
+// token response. Both grants this client uses go through it -- the
+// authorization code at login and the refresh token afterwards -- so the two
+// cannot come to disagree about how an OAuth error is read.
+func (r *runner) postTokenForm(endpoint string, form url.Values) (tokenResponse, error) {
+	var out tokenResponse
+	req, err := http.NewRequestWithContext(r.ctx, http.MethodPost, endpoint,
 		strings.NewReader(form.Encode()))
 	if err != nil {
 		return out, &LocalError{Msg: "the token request could not be built", Err: err}
@@ -324,7 +341,7 @@ func (r *runner) exchangeCode(meta discovery, clientID, redirectURI, code, verif
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := r.client.httpClient().Do(req)
 	if err != nil {
-		return out, &TransportError{Op: "POST " + meta.TokenEndpoint, Err: err}
+		return out, &TransportError{Op: "POST " + endpoint, Err: err}
 	}
 	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))

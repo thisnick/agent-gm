@@ -184,9 +184,10 @@ func TestAuthLoginStoresTheProfileAt0600(t *testing.T) {
 	if err := json.Unmarshal(raw, &stored); err != nil {
 		t.Fatal(err)
 	}
-	profile, ok := stored.Profiles[cli.DefaultProfile]
+	name := hostOf(t, s.URL)
+	profile, ok := stored.Profiles[name]
 	if !ok {
-		t.Fatalf("no default profile was written: %s", raw)
+		t.Fatalf("no profile named %q was written: %s", name, raw)
 	}
 	if profile.Server != s.URL {
 		t.Errorf("the profile is bound to %q, not to the server it logged in to", profile.Server)
@@ -205,15 +206,24 @@ func TestAuthLoginStoresTheProfileAt0600(t *testing.T) {
 	}
 }
 
-// A profile is bound to an exact server: --server naming another origin never
-// forwards this profile's token to it (spec section 11.5).
+// A profile is bound to an exact server, and since the owner's 2026-09-06
+// decision that binding is enforced BEFORE the request rather than by
+// omitting the token: `--server` naming a server this machine holds no
+// profile for is refused as `invalid_request` (exit 2), naming
+// `agm auth login --server`.
+//
+// The old behaviour -- send the request anyway, with no Authorization header
+// -- is worse in the one case that matters: it reaches an origin the owner
+// never logged in to, and reports whatever that origin says.
 func TestAProfileIsNotForwardedToAnotherServer(t *testing.T) {
 	s := newStub(t)
 	dir := t.TempDir()
 	credentials := filepath.Join(dir, "credentials.json")
-	write := cli.Credentials{Version: 1, Profiles: map[string]cli.Profile{
-		cli.DefaultProfile: {Server: "https://elsewhere.example.test", AccessToken: "agm_at_elsewhere"},
-	}}
+	write := cli.Credentials{Version: 1, ActiveProfile: "elsewhere.example.test",
+		Profiles: map[string]cli.Profile{
+			"elsewhere.example.test": {
+				Server: "https://elsewhere.example.test", AccessToken: "agm_at_elsewhere"},
+		}}
 	raw, err := json.Marshal(write)
 	if err != nil {
 		t.Fatal(err)
@@ -227,13 +237,16 @@ func TestAProfileIsNotForwardedToAnotherServer(t *testing.T) {
 		"AGENT_GM_ACCESS_TOKEN":     "",
 		"AGENT_GM_URL":              "",
 	}, "", "health", "--server", s.URL)
-	if got.code != 0 {
-		t.Fatalf("exited %d\nstderr: %s", got.code, got.stderr)
+	if got.code != 2 {
+		t.Fatalf("exited %d, want 2\nstderr: %s", got.code, got.stderr)
 	}
 	for _, r := range s.seen() {
 		if strings.Contains(r.Authorization, "agm_at_elsewhere") {
 			t.Fatalf("the profile's token for another origin was sent to %s", s.URL)
 		}
+	}
+	if n := len(s.seen()); n != 0 {
+		t.Fatalf("%d requests reached a server no profile is stored for", n)
 	}
 }
 
@@ -243,9 +256,10 @@ func TestTheEnvironmentAccessTokenWinsOverTheProfile(t *testing.T) {
 	s := newStub(t)
 	dir := t.TempDir()
 	credentials := filepath.Join(dir, "credentials.json")
-	raw, err := json.Marshal(cli.Credentials{Version: 1, Profiles: map[string]cli.Profile{
-		cli.DefaultProfile: {Server: s.URL, AccessToken: "agm_at_profile"},
-	}})
+	raw, err := json.Marshal(cli.Credentials{Version: 1, ActiveProfile: hostOf(t, s.URL),
+		Profiles: map[string]cli.Profile{
+			hostOf(t, s.URL): {Server: s.URL, AccessToken: "agm_at_profile"},
+		}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,11 +281,14 @@ func TestTheEnvironmentAccessTokenWinsOverTheProfile(t *testing.T) {
 }
 
 // No server anywhere is a local configuration failure: exit 9, decided before
-// anything is sent.
+// anything is sent. TestNoServerAnywhereFailsWithoutReachingABuiltInHost in
+// profiles_test.go is the other half: there is no compiled-in hostname to
+// reach instead.
 func TestNoServerConfiguredIsNine(t *testing.T) {
 	s := newStub(t)
 	got := runCLI(t, s, map[string]string{
 		"AGENT_GM_URL":              "",
+		"AGENT_GM_ACCESS_TOKEN":     "",
 		"AGENT_GM_CREDENTIALS_FILE": filepath.Join(t.TempDir(), "credentials.json"),
 	}, "", "health")
 	if got.code != 9 {

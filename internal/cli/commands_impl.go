@@ -476,11 +476,15 @@ func (r *runner) authLogin(inv *invocation) error {
 		return err
 	}
 
+	// The field is `access_token_expires_at`, which is what the route
+	// actually answers (internal/api's sessionDTO). Decoding `expires_at`
+	// left every admin profile with no recorded expiry, which is precisely
+	// the value the proactive refresh of section 11.5 reads.
 	var session struct {
 		AccessToken     string   `json:"access_token"`
 		RefreshToken    string   `json:"refresh_token"`
 		Scopes          []string `json:"scopes"`
-		ExpiresAt       string   `json:"expires_at"`
+		ExpiresAt       string   `json:"access_token_expires_at"`
 		AuthorizationID string   `json:"authorization_id"`
 	}
 	if err := json.Unmarshal(resp.Data, &session); err != nil || session.AccessToken == "" {

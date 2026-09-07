@@ -16,8 +16,11 @@ there is to say about `agm pair` happens on the phone.
 Available on every command.
 
 ```text
---server <url>          Override the configured server.
---profile <name>        Select a saved server and authorization profile.
+--server <url>          Select a server this machine has a profile for. On any
+                        command except `agm auth login` it must match a stored
+                        profile's server; there is no built-in hostname to fall
+                        back on.
+--profile <name>        Select a saved profile for this one invocation.
 --json                  Emit one stable JSON value on stdout.
 --output <format>       table (default) | json | jsonl
 --timeout <duration>    Bound the request, and any operation wait.
@@ -315,10 +318,21 @@ stderr, so it does not disturb `--json`.
 ### Auth
 
 ```text
-agm auth login [--admin] [--server <url>] [--scopes ...] [--no-browser] [--secret-stdin]
+agm auth login [--admin] [--server <url>] [--profile <name>] [--scopes ...]
+               [--no-browser] [--secret-stdin]
 agm auth logout
 agm auth whoami
+
+agm profiles list
+agm profiles use <name>
+agm profiles remove <name>
 ```
+
+`agm auth login` is the only command that may name a server this machine has
+no profile for — it is where a profile comes from. It stores the profile under
+the server's host (or under `--profile <name>` if you give one) and makes it
+active, so nothing afterwards needs `--server`. See
+[Credentials and profiles](#credentials-and-profiles).
 
 `agm auth login --admin` exchanges `AGENT_GM_ADMIN_SECRET` for a session over
 `--secret-stdin` or a TTY prompt — **never `argv`**. `--scopes` narrows the
@@ -440,7 +454,7 @@ Note what those sentences do **not** say. Deleting a message does not unsend
 it. Only `agm accounts remove` deletes anything Agent GM stored, and even then
 audit rows survive.
 
-## Credentials
+## Credentials and profiles
 
 Tokens are stored per server in
 `$XDG_STATE_HOME/agent-gm/credentials.json` — in practice
@@ -448,18 +462,85 @@ Tokens are stored per server in
 directory, written atomically under a `credentials.lock` advisory lock.
 Override the path with `--credentials-file` or `AGENT_GM_CREDENTIALS_FILE`.
 
-Precedence:
+**A profile is a server you have logged in to.** `agm auth login --server <url>`
+creates one, names it after the server's **host**, and records it as the
+active profile:
+
+```console
+$ agm auth login --server https://gm.example.test
+Logged in to https://gm.example.test
+Scopes: messages:read messages:write
+
+$ agm profiles list
+* gm.example.test                  https://gm.example.test
+```
+
+After that, **every command needs no `--server`**: it uses the active profile.
+
+```text
+agm profiles list             # every stored profile; `*` marks the active one
+agm profiles use <name>       # make one the active profile
+agm profiles remove <name>    # forget one locally
+```
+
+Pass `--profile <name>` (or set `AGENT_GM_PROFILE`) to use a different profile
+for **one invocation**, without changing which one is active. `agm profiles`
+drives no route, so it answers even when the server is down.
+
+There is **no profile called `default`** and **no compiled-in hostname**. A
+credentials file left over from an older build that carries a profile named
+`default` is migrated the first time this build reads it: the profile is
+renamed to its server's host and becomes the active one, and every other field
+is preserved. A file with no `active_profile` and exactly one profile treats
+that one as active.
+
+`agm profiles remove` never leaves `active_profile` naming a profile that is
+gone: with one profile left, that one becomes active; otherwise no profile is
+active and the next bare command says so rather than guessing.
+
+`agm auth logout` revokes at the *server* and forgets the profile.
+`agm profiles remove` only forgets it locally.
+
+### Which server, with what
 
 | Source | Used for |
 |---|---|
-| `--server`, else `AGENT_GM_URL`, else the profile's server | Which server a command talks to |
+| `--server`, else `AGENT_GM_URL`, else the **active profile's** server | Which server a command talks to |
 | `AGENT_GM_ACCESS_TOKEN` | One access token, used as given. Not refreshable |
 | `AGENT_GM_REFRESH_TOKEN_FILE` plus `AGENT_GM_CLIENT_ID` | Automation. Every invocation exchanges the token and rewrites the file with the rotated value, atomically, at mode `0600` |
 | The stored profile | The ordinary case, written by `agm auth login` |
 
-Each profile is bound to an exact server issuer and resource. Changing
-`--server` selects the credentials for *that* server; it never forwards one
-profile's token to a new origin.
+If none of the three resolves a server, the command fails with exit `9` and
+says what to type. It never reaches a built-in host, because there is not one.
+
+Each profile is bound to an exact server, issuer and resource, and the binding
+is enforced **before** the request: on any command except `agm auth login`, a
+`--server` naming a server no profile holds is refused as `invalid_request`
+(exit `2`), naming `agm auth login --server`. One profile's token is never
+forwarded to another origin. `agm auth login` is the exception, because it is
+where a profile comes from.
+
+### Refreshing
+
+A stored profile **refreshes itself**. The profile records the access token's
+`expires_at`, and `agm` exchanges the refresh token when the token is within
+**60 seconds** of that instant, or on the first `invalid_token` from the
+server, whichever comes first. **A token past its recorded expiry is never
+presented.** The rotation is written back to the profile atomically, at mode
+`0600`, and the command carries on; a mutation that was refused before it was
+applied is retried with the **same** `Idempotency-Key`, so it stays one
+logical request.
+
+An admin session refreshes at `POST /v1/auth/refresh`; an OAuth profile
+refreshes at `/oauth/token` with `grant_type=refresh_token` and the
+`client_id` the profile records. **The two paths do not cross** — a token
+presented at the other endpoint is unknown or `invalid_grant`. A profile
+written by an older build that records no expiry is covered by the on-refusal
+path.
+
+Exit `3` therefore means **a refresh was attempted and refused** — a revoked
+or expired refresh token, or a profile that holds none — and not merely an
+expired access token. Log in again.
 
 **Write-back safety**, which is the part worth knowing before an automated run:
 

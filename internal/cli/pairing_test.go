@@ -15,7 +15,7 @@ import (
 // missing-binary error. It explains what it needs and offers the two ways
 // forward, in the stated order, best first.
 func TestNoChromeMessageOffersBothWaysInOrder(t *testing.T) {
-	msg := cli.NoChromeMessage("https://gm.agent-wx.app")
+	msg := cli.NoChromeMessage("https://gm.example.test")
 
 	if strings.Contains(strings.ToLower(msg), "no such file") ||
 		strings.Contains(strings.ToLower(msg), "executable file not found") {
@@ -25,7 +25,7 @@ func TestNoChromeMessageOffersBothWaysInOrder(t *testing.T) {
 		"could not find Chrome or Chromium",
 		"seven session cookies",
 		"httpOnly",
-		"agm pair --server https://gm.agent-wx.app",
+		"agm pair --server https://gm.example.test",
 		"agm pair --paste",
 		"agm pair --paste-file",
 		"AGENT_GM_CHROME",

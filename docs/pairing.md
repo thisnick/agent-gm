@@ -234,7 +234,7 @@ If Agent GM runs somewhere with no desktop, run `agm pair` on a machine that
 has one and point it at the server:
 
 ```console
-$ agm pair --server https://gm.agent-wx.app
+$ agm pair --server https://gm.example.test
 ```
 
 Chrome runs on your laptop; the CLI sends **only the seven cookies** to the
@@ -251,6 +251,31 @@ That is why session files are mode `0600` in a `0700` directory, why every
 one of the seven cookies is redacted by name from every log and audit
 payload, and why a backup of `sessions/` is handled as a credential backup
 (see [operations.md](operations.md)).
+
+## What your phone calls this device
+
+In the Messages app, under **Device pairing**, the paired-devices list shows
+one entry per connected device. Agent GM appears there as **`Agent GM 1.0`** —
+the name and the major.minor version of the build that paired.
+
+The name is sent once, inside the pairing request, and Google keeps what it
+was told. There is no later message that renames a device, which has two
+consequences worth knowing before you go looking for a setting:
+
+- **An account paired before this existed keeps its old label.** Earlier
+  builds sent the underlying library's own name, `libgm`, so an account paired
+  by one of them still says `libgm` on your phone. Nothing is wrong with it
+  and it goes on working. It changes only when that account is **re-paired**
+  (`agm pair`), which is not worth doing for the label alone.
+- **The version in the label does not track upgrades.** It is the version that
+  paired, frozen. That is also why only major.minor is sent: a patch number on
+  a label that outlives the build it names would be a claim that stopped being
+  true at the next deploy.
+
+If you have paired more than once — a re-pair, or a second Google account —
+each entry is its own row, and the `dest_reg_uuid` that `agm pair` printed is
+what tells them apart with certainty. The label is for reading; the UUID is
+for identifying.
 
 ## Several Android devices on one Google account
 

@@ -52,6 +52,12 @@ func TestCLIDocNamesNoCommandThatDoesNotExist(t *testing.T) {
 	for _, local := range []string{"completion", "version", "pair"} {
 		known[local] = true
 	}
+	// `agm profiles` reads and writes the local credentials file and drives
+	// no route either (spec section 11.5, the owner's 2026-09-06 profiles
+	// decision), so the inventory does not carry it.
+	for _, local := range []string{"profiles list", "profiles use", "profiles remove"} {
+		known[local] = true
+	}
 
 	// Two shapes name a command on the page: a heading, and a synopsis line
 	// in a fenced block. Both are parsed, because the plant used a heading

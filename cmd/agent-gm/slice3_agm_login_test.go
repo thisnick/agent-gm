@@ -132,7 +132,8 @@ func TestSlice3AgmAuthLoginRunsTheWholeOAuthFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stored struct {
-		Profiles map[string]struct {
+		ActiveProfile string `json:"active_profile"`
+		Profiles      map[string]struct {
 			Server       string   `json:"server"`
 			AccessToken  string   `json:"access_token"`
 			RefreshToken string   `json:"refresh_token"`
@@ -145,9 +146,16 @@ func TestSlice3AgmAuthLoginRunsTheWholeOAuthFlow(t *testing.T) {
 	if err := json.Unmarshal(raw, &stored); err != nil {
 		t.Fatal(err)
 	}
-	profile, ok := stored.Profiles["default"]
+	// The profile is named for the server's HOST and is the active one
+	// (the owner's 2026-09-06 decision, spec section 11.5). There is no
+	// profile called "default" any more.
+	name := mustHost(t, h.http.URL)
+	profile, ok := stored.Profiles[name]
 	if !ok {
-		t.Fatalf("no default profile was written: %s", raw)
+		t.Fatalf("no profile named %q was written: %s", name, raw)
+	}
+	if stored.ActiveProfile != name {
+		t.Errorf("active_profile is %q, want %q", stored.ActiveProfile, name)
 	}
 	if profile.AccessToken == "" || profile.RefreshToken == "" {
 		t.Error("the profile carries no tokens")

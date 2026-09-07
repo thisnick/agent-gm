@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
+	"github.com/thisnick/agent-gm/internal/apierr"
 	"github.com/thisnick/agent-gm/internal/config"
 )
 
@@ -24,9 +26,20 @@ const (
 	credentialsFileMode os.FileMode = 0o600
 	// credentialsDirMode is 0700.
 	credentialsDirMode os.FileMode = 0o700
-	// DefaultProfile is the profile name used when --profile is not given.
-	DefaultProfile = "default"
+	// LegacyDefaultProfile is the name every profile used to be given, back
+	// when there was one unnamed profile per machine. There is no such thing
+	// now: a profile is named for the server it belongs to, and a file
+	// carrying this name is migrated on read (see migrate).
+	LegacyDefaultProfile = "default"
 )
+
+// noServerMessage is the ONE sentence the CLI has for "I do not know which
+// server to talk to". There is deliberately no built-in hostname anywhere in
+// this package -- not as a fallback, not in an example, not in this message:
+// a CLI that silently reaches a compiled-in deployment is a CLI that can send
+// one owner's request to another owner's server.
+const noServerMessage = "no server is configured: log in with `agm auth login --server <url>`, " +
+	"or pass --server or set AGENT_GM_URL for a server you have already logged in to"
 
 // Profile is one server's stored authorization. It is bound to an exact
 // server: changing --server selects the credentials for THAT server and
@@ -48,13 +61,89 @@ type Profile struct {
 }
 
 // Credentials is the whole file.
+//
+// ActiveProfile is which profile a command with no `--profile` uses. It is
+// recorded by `agm auth login` and changed by `agm profiles use`; there is no
+// implicit "default" profile to fall back on, because a fallback that picks a
+// profile for you is a fallback that eventually picks the wrong server.
 type Credentials struct {
-	Version  int                `json:"version"`
-	Profiles map[string]Profile `json:"profiles"`
+	Version       int                `json:"version"`
+	ActiveProfile string             `json:"active_profile,omitempty"`
+	Profiles      map[string]Profile `json:"profiles"`
 }
 
-// CredentialsVersion is the on-disk format version.
+// CredentialsVersion is the on-disk format version. It stays at 1:
+// `active_profile` is an added field and the profile rename happens on read,
+// so a file written by an older build is read by this one without a version
+// bump, and a file written by this one is still read by an older build (which
+// simply ignores the field it does not know).
 const CredentialsVersion = 1
+
+// ProfileNameForServer is the name `agm auth login` gives a profile when
+// `--profile` is not passed: the server's host, so that `agm profiles list`
+// reads as the list of servers this machine can talk to.
+func ProfileNameForServer(server string) (string, error) {
+	trimmed := strings.TrimRight(strings.TrimSpace(server), "/")
+	if trimmed == "" {
+		return "", &LocalError{Msg: noServerMessage}
+	}
+	u, err := url.Parse(trimmed)
+	if err != nil || u.Host == "" {
+		return "", &apierr.Error{Code: apierr.CodeInvalidRequest, Message: fmt.Sprintf(
+			"%q is not a server URL: it needs a scheme and a host, as in "+
+				"`agm auth login --server https://gm.example.test`", server)}
+	}
+	return u.Host, nil
+}
+
+// migrate brings a loaded file forward, idempotently.
+//
+// Two rules, both of which have to hold on every read rather than once at
+// some upgrade moment, because the file is shared with older builds and with
+// an operator's editor:
+//
+//   - a profile literally named "default" is renamed to its server's host and
+//     becomes the active profile. That name meant "the one profile", and the
+//     one profile is exactly what no longer exists;
+//   - a file with no active_profile and exactly one profile treats that one
+//     as active. Anything else would make a working single-server install
+//     stop working on upgrade.
+//
+// Every other field is preserved untouched.
+func migrate(c Credentials) Credentials {
+	legacy, ok := c.Profiles[LegacyDefaultProfile]
+	if ok {
+		name, err := ProfileNameForServer(legacy.Server)
+		switch {
+		case err != nil || name == LegacyDefaultProfile:
+			// A "default" profile that names no usable server cannot be
+			// renamed. It is left alone rather than dropped: it is the
+			// operator's file, and losing a token to a migration is worse
+			// than carrying an odd name.
+		default:
+			existing, taken := c.Profiles[name]
+			if !taken {
+				c.Profiles[name] = legacy
+				delete(c.Profiles, LegacyDefaultProfile)
+			} else if strings.TrimRight(existing.Server, "/") == strings.TrimRight(legacy.Server, "/") {
+				// Already migrated once; the named profile is authoritative.
+				delete(c.Profiles, LegacyDefaultProfile)
+			}
+			if c.ActiveProfile == "" || c.ActiveProfile == LegacyDefaultProfile {
+				c.ActiveProfile = name
+			}
+		}
+	}
+	if _, live := c.Profiles[c.ActiveProfile]; c.ActiveProfile != "" && !live {
+		c.ActiveProfile = ""
+	}
+	if c.ActiveProfile == "" && len(c.Profiles) == 1 {
+		for only := range c.Profiles {
+			c.ActiveProfile = only
+		}
+	}
+	return c
+}
 
 // Store is the credentials file and the directory it lives in.
 type Store struct{ Path string }
@@ -102,7 +191,7 @@ func (s *Store) Load() (Credentials, error) {
 	if onDisk.Version == 0 {
 		onDisk.Version = CredentialsVersion
 	}
-	return onDisk, nil
+	return migrate(onDisk), nil
 }
 
 // Begin proves the destination writable and takes the advisory lock, WITHOUT
@@ -241,8 +330,28 @@ func (p *PendingWrite) release() {
 }
 
 // SaveProfile stores one profile under the write-back safety rule: the caller
-// must already hold a PendingWrite proving the destination writable.
+// must already hold a PendingWrite proving the destination writable. The
+// profile it stores becomes the active one, because storing a credential the
+// next command would not use is not what anyone typing `agm auth login`
+// means.
 func (s *Store) SaveProfile(w *PendingWrite, name string, p Profile) error {
+	c, err := s.Load()
+	if err != nil {
+		return err
+	}
+	if c.Profiles == nil {
+		c.Profiles = map[string]Profile{}
+	}
+	c.Profiles[name] = p
+	c.ActiveProfile = name
+	return s.commit(w, c)
+}
+
+// UpdateProfile rewrites one profile in place, WITHOUT changing which
+// profile is active. It is what a token rotation uses: refreshing the
+// credential of a profile selected for one invocation with `--profile` must
+// not silently make that profile the machine's active one.
+func (s *Store) UpdateProfile(w *PendingWrite, name string, p Profile) error {
 	c, err := s.Load()
 	if err != nil {
 		return err
@@ -254,17 +363,69 @@ func (s *Store) SaveProfile(w *PendingWrite, name string, p Profile) error {
 	return s.commit(w, c)
 }
 
-// DeleteProfile removes one profile.
+// DeleteProfile removes one profile. It never leaves `active_profile` naming
+// a profile that is no longer there: removing the active one leaves the
+// remaining profile active when exactly one remains, and otherwise leaves no
+// active profile at all, so the next command says so rather than guessing.
 func (s *Store) DeleteProfile(w *PendingWrite, name string) error {
 	c, err := s.Load()
 	if err != nil {
 		return err
 	}
 	delete(c.Profiles, name)
+	if c.ActiveProfile == name {
+		c.ActiveProfile = ""
+		if len(c.Profiles) == 1 {
+			for only := range c.Profiles {
+				c.ActiveProfile = only
+			}
+		}
+	}
 	return s.commit(w, c)
 }
 
+// SetActiveProfile is `agm profiles use`. A name that is not stored is
+// refused: it is exactly the typo that would otherwise leave the machine
+// pointed at nothing.
+func (s *Store) SetActiveProfile(w *PendingWrite, name string) error {
+	c, err := s.Load()
+	if err != nil {
+		return err
+	}
+	if _, ok := c.Profiles[name]; !ok {
+		return unknownProfileErr(c, name)
+	}
+	c.ActiveProfile = name
+	return s.commit(w, c)
+}
+
+// unknownProfileErr names what is actually stored, because a profile name is
+// a host and a host is easy to mistype.
+func unknownProfileErr(c Credentials, name string) error {
+	msg := fmt.Sprintf("there is no profile named %q", name)
+	if known := profileNames(c); len(known) > 0 {
+		msg += "; this machine has " + strings.Join(known, ", ")
+	} else {
+		msg += "; this machine has none. Log in with `agm auth login --server <url>`"
+	}
+	return &apierr.Error{Code: apierr.CodeInvalidRequest, Message: msg}
+}
+
+func profileNames(c Credentials) []string {
+	names := make([]string, 0, len(c.Profiles))
+	for n := range c.Profiles {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
 func (s *Store) commit(w *PendingWrite, c Credentials) error {
+	// migrate on the way out as well as on the way in, so the invariants it
+	// enforces -- no profile named "default", never an active_profile naming
+	// a profile that is not there, and a lone profile is the active one --
+	// hold for whatever reads the file next, including an older build.
+	c = migrate(c)
 	c.Version = CredentialsVersion
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
@@ -306,39 +467,83 @@ type Credential struct {
 	Refreshable bool
 }
 
-// ResolveCredential applies the precedence table of spec section 11.5, in
-// order.
+// ResolveCredential applies the precedence of spec section 11.5, in order.
 //
-// The server comes from --server, else AGENT_GM_URL, else the profile's
-// server. The credential comes from AGENT_GM_ACCESS_TOKEN, else the refresh
-// token file, else the stored profile. A profile is bound to an exact server:
-// when --server names a different one, the profile for THAT server is used
-// and no token is forwarded to a new origin.
-func ResolveCredential(store *Store, getenv func(string) string, serverFlag, profileFlag string) (Credential, error) {
-	name := profileFlag
-	if name == "" {
-		name = getenv("AGENT_GM_PROFILE")
-	}
-	if name == "" {
-		name = DefaultProfile
-	}
-
+// The server comes from `--server`, else `AGENT_GM_URL`, else the ACTIVE
+// profile, and from nowhere else. There is no built-in hostname: when none of
+// the three resolves, the command fails naming what to type.
+//
+// The profile comes from `--profile`, else `AGENT_GM_PROFILE`, else
+// `active_profile` in the credentials file. There is no implicit "default".
+//
+// The credential comes from AGENT_GM_ACCESS_TOKEN, else the refresh token
+// file, else the stored profile.
+//
+// A profile is bound to an exact server, and on a command that is not
+// `agm auth login` a `--server` naming a server no profile holds is REFUSED
+// rather than attempted: the alternative is a request sent to an origin this
+// machine has no credential for, which fails later and less clearly, or --
+// worse -- succeeds against the wrong server. `creating` is true only for
+// `agm auth login`, which is where a profile comes from and therefore the one
+// command allowed to name a server it has never seen.
+func ResolveCredential(store *Store, getenv func(string) string, serverFlag, profileFlag string, creating bool) (Credential, error) {
 	creds, err := store.Load()
 	if err != nil {
 		return Credential{}, err
 	}
-	profile, hasProfile := creds.Profiles[name]
 
-	server := serverFlag
+	requested := profileFlag
+	if requested == "" {
+		requested = getenv("AGENT_GM_PROFILE")
+	}
+
+	var (
+		name       string
+		profile    Profile
+		hasProfile bool
+	)
+	if requested != "" {
+		name = requested
+		profile, hasProfile = creds.Profiles[requested]
+		if !hasProfile && !creating {
+			return Credential{}, unknownProfileErr(creds, requested)
+		}
+	} else if creds.ActiveProfile != "" {
+		name = creds.ActiveProfile
+		profile, hasProfile = creds.Profiles[name]
+	}
+
+	server := strings.TrimRight(strings.TrimSpace(serverFlag), "/")
 	if server == "" {
-		server = getenv("AGENT_GM_URL")
+		server = strings.TrimRight(strings.TrimSpace(getenv("AGENT_GM_URL")), "/")
 	}
+	explicitServer := server != ""
 	if server == "" && hasProfile {
-		server = profile.Server
+		server = strings.TrimRight(profile.Server, "/")
 	}
-	server = strings.TrimRight(server, "/")
 
 	c := Credential{Server: server, Profile: name, Source: SourceNone}
+
+	// `agm auth login` names its own profile: --profile, else the server's
+	// host. It is the only command that may reach a server no profile holds.
+	if creating {
+		if server == "" {
+			return c, &LocalError{Msg: noServerMessage}
+		}
+		if requested == "" {
+			derived, err := ProfileNameForServer(server)
+			if err != nil {
+				return c, err
+			}
+			name = derived
+		}
+		c.Profile = name
+		if tok := getenv("AGENT_GM_ACCESS_TOKEN"); tok != "" {
+			c.Token = tok
+			c.Source = SourceEnvAccessToken
+		}
+		return c, nil
+	}
 
 	if tok := getenv("AGENT_GM_ACCESS_TOKEN"); tok != "" {
 		c.Token = tok
@@ -362,34 +567,40 @@ func ResolveCredential(store *Store, getenv func(string) string, serverFlag, pro
 		return c, nil
 	}
 
-	if hasProfile {
-		// The binding is to an exact server. A --server that names another
-		// origin selects that origin's profile, or none at all.
-		if server != "" && strings.TrimRight(profile.Server, "/") != server {
-			if other, otherName, ok := profileForServer(creds, server); ok {
-				c.Token = other.AccessToken
-				c.Profile = otherName
-				c.Source = SourceProfile
-				c.Refreshable = other.RefreshToken != ""
-				return c, nil
-			}
-			return c, nil
-		}
-		c.Token = profile.AccessToken
+	// From here the credential can only be a stored profile.
+	use := func(p Profile, n string) Credential {
+		c.Token = p.AccessToken
+		c.Profile = n
 		c.Source = SourceProfile
-		c.Refreshable = profile.RefreshToken != ""
+		c.Refreshable = p.RefreshToken != ""
+		return c
+	}
+
+	if !explicitServer {
+		if hasProfile {
+			return use(profile, name), nil
+		}
 		return c, nil
 	}
 
-	if server != "" {
-		if other, otherName, ok := profileForServer(creds, server); ok {
-			c.Token = other.AccessToken
-			c.Profile = otherName
-			c.Source = SourceProfile
-			c.Refreshable = other.RefreshToken != ""
-		}
+	if hasProfile && strings.TrimRight(profile.Server, "/") == server {
+		return use(profile, name), nil
 	}
-	return c, nil
+	if other, otherName, ok := profileForServer(creds, server); ok {
+		return use(other, otherName), nil
+	}
+	return c, &apierr.Error{Code: apierr.CodeInvalidRequest, Message: fmt.Sprintf(
+		"this machine holds no profile for the server %s, and a profile's token is never "+
+			"forwarded to a server it was not issued for. Log in to it with "+
+			"`agm auth login --server %s`%s", server, server, storedProfilesSuffix(creds))}
+}
+
+func storedProfilesSuffix(c Credentials) string {
+	known := profileNames(c)
+	if len(known) == 0 {
+		return ""
+	}
+	return "; this machine has " + strings.Join(known, ", ")
 }
 
 func profileForServer(creds Credentials, server string) (Profile, string, bool) {

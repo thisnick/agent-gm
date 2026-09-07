@@ -103,9 +103,14 @@ func isExecutable(path string) bool {
 
 // NoChromeMessage is what `agm pair` prints when it cannot find Chrome. The
 // two ways forward are in the order spec section 11.4 states, best first.
+//
+// An unknown server prints a placeholder and NOT a hostname. There is no
+// built-in deployment host anywhere in this package: a message that names one
+// is a message that invites an owner to paste their Google cookies at
+// somebody else's server.
 func NoChromeMessage(publicURL string) string {
 	if publicURL == "" {
-		publicURL = "https://gm.agent-wx.app"
+		publicURL = "<your-agent-gm-url>"
 	}
 	return `Agent GM could not find Chrome or Chromium on this machine.
 

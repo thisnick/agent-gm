@@ -39,7 +39,7 @@ import (
 // URL this server hands out is built from AGENT_GM_PUBLIC_URL and never from
 // the request's Host (spec sections 10.3, 12.3), so the issuer can be a name
 // that resolves nowhere while the tests dial 127.0.0.1.
-const oauthTestIssuer = "https://gm.agent-wx.app"
+const oauthTestIssuer = "https://gm.example.test"
 
 const oauthTestAdminSecret = "a-test-admin-secret-well-over-the-43-character-minimum-0123456789"
 
@@ -71,10 +71,15 @@ func newOAuthHarness(t *testing.T) *oauthHarness {
 
 func newOAuthHarnessIn(t *testing.T, dir string) *oauthHarness {
 	t.Helper()
+	return newOAuthHarnessInWithSecret(t, dir, oauthTestAdminSecret)
+}
+
+func newOAuthHarnessInWithSecret(t *testing.T, dir, secret string) *oauthHarness {
+	t.Helper()
 	t.Setenv("AGENT_GM_DATA_DIR", dir)
 	t.Setenv("AGENT_GM_DATA_KEY",
 		"0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20")
-	t.Setenv("AGENT_GM_ADMIN_SECRET", oauthTestAdminSecret)
+	t.Setenv("AGENT_GM_ADMIN_SECRET", secret)
 	t.Setenv("AGENT_GM_PUBLIC_URL", oauthTestIssuer)
 	t.Setenv("AGENT_GM_BACKEND", "fake")
 	t.Setenv("AGENT_GM_ALLOW_FAKE", "1")
@@ -557,4 +562,22 @@ func (b bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	clone := r.Clone(r.Context())
 	clone.Header.Set("Authorization", "Bearer "+b.token)
 	return b.next.RoundTrip(clone)
+}
+
+// restart closes this server and builds a new one over the SAME data
+// directory, which is what a container restart is: the process goes, the
+// volume stays. Anything that does not survive it was never durable.
+func (h *oauthHarness) restart(t *testing.T) *oauthHarness {
+	t.Helper()
+	return h.restartWithSecret(t, oauthTestAdminSecret)
+}
+
+// restartWithSecret is the same restart with a different
+// AGENT_GM_ADMIN_SECRET, which is section 12.1's "changing it revokes every
+// previous admin bootstrap authorization on next start".
+func (h *oauthHarness) restartWithSecret(t *testing.T, secret string) *oauthHarness {
+	t.Helper()
+	h.http.Close()
+	h.b.Close()
+	return newOAuthHarnessInWithSecret(t, h.dir, secret)
 }

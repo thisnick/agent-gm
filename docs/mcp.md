@@ -188,10 +188,12 @@ authorization flow on a `403` would loop for ever, and one that gave up on a
 `401` would never authorize at all. Both carry the same challenge:
 
 ```http
-WWW-Authenticate: Bearer
-  resource_metadata="https://gm.example.test/.well-known/oauth-protected-resource/mcp",
-  scope="messages:read messages:write"
+WWW-Authenticate: Bearer resource_metadata="https://gm.example.test/.well-known/oauth-protected-resource/mcp", scope="messages:read messages:write"
 ```
+
+That is one line. It is printed unwrapped because it is sent unwrapped: HTTP
+line folding is obsolete, and a reader who copied a folded version would have a
+header no server sends.
 
 There is no `realm` parameter and no `error` parameter. That is the exact
 string the SDK's bearer middleware emits, and the SDK owns the format here. The

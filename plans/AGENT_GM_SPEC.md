@@ -2092,7 +2092,8 @@ that is not terminal.
 
 ## 7. REST API
 
-Base: `https://gm.agent-wx.app/v1`. JSON in, JSON out. Every route requires a
+Base: `<AGENT_GM_PUBLIC_URL>/v1`, where `<AGENT_GM_PUBLIC_URL>` is the configured public
+URL (§15.1). JSON in, JSON out. Every route requires a
 bearer token except `/healthz`, `/oauth/*` and `/.well-known/*`.
 ### 7.1 Envelopes
 
@@ -2189,7 +2190,7 @@ something to search for. Every other raw Google value is `admin`-only (§4.1).
 
 `401` and `403` carry `WWW-Authenticate` with `realm="agent-gm"`, an `error`
 parameter, `resource_metadata` pointing at
-`https://gm.agent-wx.app/.well-known/oauth-protected-resource/mcp`, and, for a
+`<AGENT_GM_PUBLIC_URL>/.well-known/oauth-protected-resource/mcp`, and, for a
 scope refusal, the `scope` the route requires.
 
 ### 7.3 Choosing an account
@@ -2537,7 +2538,7 @@ conversation exists, is readable, and will be writable again after
 
 ### 8.1 Transport
 
-Streamable HTTP at `https://gm.agent-wx.app/mcp`, served by the official MCP
+Streamable HTTP at `<AGENT_GM_PUBLIC_URL>/mcp`, served by the official MCP
 Go SDK's `StreamableHTTPHandler` (**D36**). Protocol revision `2026-07-28`,
 with `2025-11-25` accepted for compatibility; the SDK also answers the two
 revisions older than those, and that is the SDK's business rather than this
@@ -2555,7 +2556,8 @@ The checks, in this order. The first two run **before the transport parses
 anything**; the rest are the SDK's, and run after authentication because the
 SDK owns the parse.
 
-- `Origin`, when present, must equal `https://gm.agent-wx.app`; a foreign one
+- `Origin`, when present, must equal the configured `AGENT_GM_PUBLIC_URL`
+  on scheme, host and port; a foreign one
   is `403`. A non-browser client sending no `Origin` is supported. **This one
   is ours**, not the SDK's: the SDK's cross-origin protection is opt-in behind
   a debug parameter, is deprecated in favour of external middleware, and
@@ -2963,8 +2965,8 @@ envelope.
 
 ```json
 {
-  "resource": "https://gm.agent-wx.app/mcp",
-  "authorization_servers": ["https://gm.agent-wx.app"],
+  "resource": "<AGENT_GM_PUBLIC_URL>/mcp",
+  "authorization_servers": ["<AGENT_GM_PUBLIC_URL>"],
   "scopes_supported": ["messages:read", "messages:write", "messages:delete"],
   "bearer_methods_supported": ["header"],
   "resource_documentation": "https://github.com/thisnick/agent-gm"
@@ -2975,11 +2977,11 @@ envelope.
 
 ```json
 {
-  "issuer": "https://gm.agent-wx.app",
-  "authorization_endpoint": "https://gm.agent-wx.app/oauth/authorize",
-  "token_endpoint": "https://gm.agent-wx.app/oauth/token",
-  "registration_endpoint": "https://gm.agent-wx.app/oauth/register",
-  "revocation_endpoint": "https://gm.agent-wx.app/oauth/revoke",
+  "issuer": "<AGENT_GM_PUBLIC_URL>",
+  "authorization_endpoint": "<AGENT_GM_PUBLIC_URL>/oauth/authorize",
+  "token_endpoint": "<AGENT_GM_PUBLIC_URL>/oauth/token",
+  "registration_endpoint": "<AGENT_GM_PUBLIC_URL>/oauth/register",
+  "revocation_endpoint": "<AGENT_GM_PUBLIC_URL>/oauth/revoke",
   "response_types_supported": ["code"],
   "grant_types_supported": ["authorization_code", "refresh_token"],
   "token_endpoint_auth_methods_supported": ["none"],
@@ -3002,7 +3004,7 @@ The `401` challenge from `/mcp`, which the `403 insufficient_scope` carries
 too because it says the same thing to the same reader:
 
 ```http
-WWW-Authenticate: Bearer resource_metadata="https://gm.agent-wx.app/.well-known/oauth-protected-resource/mcp", scope="messages:read messages:write"
+WWW-Authenticate: Bearer resource_metadata="<AGENT_GM_PUBLIC_URL>/.well-known/oauth-protected-resource/mcp", scope="messages:read messages:write"
 ```
 
 **There is no `realm`.** The format is the SDK's, byte for byte — a test runs
@@ -3083,7 +3085,7 @@ callback carrying `error`, `state`, and the RFC 9207 `iss`:
 |---|---|
 | `response_type` is not `code` | `unsupported_response_type` |
 | missing `state`, missing or non-`S256` PKCE, malformed challenge | `invalid_request` |
-| `resource` is not `https://gm.agent-wx.app/mcp` | `invalid_target` |
+| `resource` is not `<AGENT_GM_PUBLIC_URL>/mcp` | `invalid_target` |
 | unknown or empty scope, or `admin` requested | `invalid_scope` |
 
 The page sets `agm_oauth_context`, a signed cookie with `Path=/oauth`,
@@ -3208,7 +3210,7 @@ or an audit payload.
 | `oauth.authorization_request_ttl` | 15m | 1m–1h |
 | `oauth.enrollment_default_ttl` | 15m | 1m–24h |
 
-Access tokens are bound to `https://gm.agent-wx.app/mcp`. **If
+Access tokens are bound to `<AGENT_GM_PUBLIC_URL>/mcp`. **If
 `AGENT_GM_PUBLIC_URL` ever changes, every token minted under the previous
 origin is refused with `401 invalid_token` on both `/mcp` and `/v1`, and every
 registered client is orphaned.** See §15.6.
@@ -3225,6 +3227,24 @@ settings (`admin.access_token_ttl`, `admin.refresh_token_idle_ttl`,
 The credential that outranks everything else does not get a longer life than
 the ones it outranks. Admin refresh tokens rotate on every use and reuse of a
 spent one revokes the session, exactly as for OAuth (§9.6).
+
+**An admin session outlives the process.** It is a row in `authorizations`
+with rows in `tokens`, like every other credential (§4), so restarting the
+server does not end one and a redeploy does not log the operator out. The one
+thing that does end it is §12.1's rule: a start under a **different**
+`AGENT_GM_ADMIN_SECRET` revokes every admin bootstrap authorization minted
+under the old one, and **only** those — an OAuth grant is untouched, because
+only the admin path derives from the secret.
+
+> Recorded because the asymmetry reads as a fault. When the production
+> container restarted during Slice 3b, the operator's admin session was
+> refused while a connector's OAuth token kept working, which looks exactly
+> like admin sessions being process-bound and is not: it means the deployment
+> came up with a different secret. A deployment that generates its secret
+> rather than fixing it logs its operator out on every restart. The audit row
+> is `auth.admin_authorization_revoked` with reason `admin_secret_changed`,
+> and `agm` names this cause when it reports a refused token, because the
+> alternative is an hour spent looking at the wrong thing.
 
 **An admin refresh may never widen.** `POST /v1/auth/refresh` accepts an
 optional `scopes` that may only narrow further, relative to **the scopes the
@@ -3329,10 +3349,10 @@ ticket**:
   "width": 1024, "height": 768, "download_state": "available",
   "inline": false,
   "resource_uri": "agm://attachments/att_9f3c...",
-  "download_url": "https://gm.agent-wx.app/v1/attachments/att_9f3c.../content",
+  "download_url": "<AGENT_GM_PUBLIC_URL>/v1/attachments/att_9f3c.../content",
   "token": "agm_dt_…", "token_audience": "download:att_9f3c...",
   "expires_at": "2026-09-06T10:11:07.000Z", "max_redemptions": 5,
-  "curl": "curl --fail -H 'Authorization: Bearer agm_dt_…' -o 'IMG_0421.jpg' 'https://gm.agent-wx.app/v1/attachments/att_9f3c.../content'" }
+  "curl": "curl --fail -H 'Authorization: Bearer agm_dt_…' -o 'IMG_0421.jpg' '<AGENT_GM_PUBLIC_URL>/v1/attachments/att_9f3c.../content'" }
 ```
 
 `GET /v1/attachments/{id}/content` accepts either a `messages:read` access
@@ -3364,14 +3384,14 @@ computed, `sha256` is `null`, `sha256_available` is `false`, and
 
 ```json
 { "upload_id": "upl_01k4...",
-  "upload_url": "https://gm.agent-wx.app/v1/uploads/upl_01k4.../content",
+  "upload_url": "<AGENT_GM_PUBLIC_URL>/v1/uploads/upl_01k4.../content",
   "method": "PUT",
   "token": "agm_ut_…", "token_audience": "upload:upl_01k4...",
   "expires_at": "2026-09-06T12:11:07.000Z",
   "limits": { "max_bytes": 104857600, "size_bytes": 184320,
               "mime_type": "image/jpeg", "sha256": "…",
               "expires_in_seconds": 7200 },
-  "curl": "curl --fail -X PUT -H 'Authorization: Bearer agm_ut_…' -H 'Content-Type: image/jpeg' --data-binary @FILE 'https://gm.agent-wx.app/v1/uploads/upl_01k4.../content'" }
+  "curl": "curl --fail -X PUT -H 'Authorization: Bearer agm_ut_…' -H 'Content-Type: image/jpeg' --data-binary @FILE '<AGENT_GM_PUBLIC_URL>/v1/uploads/upl_01k4.../content'" }
 ```
 
 2. **`PUT {upload_url}`** with `Authorization: Bearer <token>` streams the
@@ -3471,8 +3491,13 @@ directly, so anything the CLI can do an agent can do too, and vice versa.
 ### 11.1 Global flags
 
 ```text
---server <url>        Override the configured server.
---profile <name>      Select a saved server and authorization profile.
+--server <url>        Select a stored profile by its server. It does not
+                      override anything and it cannot introduce a new server:
+                      on any command but `agm auth login` a URL no profile
+                      holds is refused (§11.5).
+--profile <name>      Select a stored profile by name, for THIS invocation
+                      only. It does not change which profile is active.
+--credentials-file    Where profiles are read and written (§11.5).
 --json                Emit one stable JSON value on stdout.
 --output <format>     table (default) | json | jsonl. It is a FORMAT on every
                       command, without exception -- `agm attachments download`
@@ -3510,7 +3535,7 @@ code, and the mapping is exhaustive — §16 Slice 2 test 18 enumerates it:
 | §7.2 code | exit |
 |---|---|
 | `invalid_request`, `idempotency_conflict`, `payload_too_large`, `media_unsupported_type` | `2` |
-| `invalid_token` | `3` |
+| `invalid_token` | `3`, **after a refresh was attempted and refused** — see below |
 | `insufficient_scope` | `4` |
 | `not_found` | `5` |
 | `unsupported_capability`, including `not_signed_in` — an **account**-level condition, which is why the gloss above names the account | `6` |
@@ -3524,6 +3549,19 @@ was reused with a different body. A command that times out waiting returns `7`,
 prints the operation ID, and leaves it available to `agm operations wait`.
 `phone_not_responding` is exit `7`, **not** `8`, and the message says the
 operation is pending and must not be resent.
+
+**Exit `3` is narrower than "the server said `invalid_token`."** An access
+token that has merely expired is not a reason to send the operator anywhere:
+the CLI holds a refresh token for it and §11.5 makes it use one. So exit `3`
+means a refresh was **tried and refused** — a revoked or expired refresh
+token, or a server that refused the rotation — or that there was no refresh
+token to try. Reporting it for an expired access token, without attempting the
+refresh sitting next to it, is how an operator is told to log in again while
+holding a credential that would have worked.
+
+An unwritable credentials destination is exit `9` and the token is **unspent**
+(§11.5): a local storage failure must never cost the credential it failed to
+store.
 
 ### 11.3 Commands
 
@@ -3577,10 +3615,14 @@ agm operations list [--account] [--kind|--status|--terminal|--after|--before|--a
 agm operations show <op-id>
 agm operations wait <op-id> [--for sent|delivered|read|terminal] [--timeout 60s]
 
-agm auth login [--admin] [--server <url>] [--scopes ...] [--no-browser]
-               [--secret-stdin]
+agm auth login [--admin] [--server <url>] [--profile <name>] [--scopes ...]
+               [--no-browser] [--secret-stdin]
 agm auth logout
 agm auth whoami
+
+agm profiles list                  # every stored profile; the active one marked
+agm profiles use <name>            # make one the active profile
+agm profiles remove <name>         # forget one locally
 
 agm admin settings list
 agm admin settings get <key>
@@ -3801,7 +3843,7 @@ Two ways forward, best first:
   1. Run this same command from a machine that has Chrome, pointing at this
      server -- only the cookies travel, over TLS:
 
-         agm pair --server https://gm.agent-wx.app
+         agm pair --server https://gm.example.test
 
   2. Paste them yourself. In a browser already signed in to
      messages.google.com, open devtools -> Network, right-click any request
@@ -3829,7 +3871,7 @@ missing ones and the domain each comes from (§3.2), because a paste scoped to
 #### Headless servers
 
 ```console
-$ agm pair --server https://gm.agent-wx.app
+$ agm pair --server https://gm.example.test
 ```
 
 Chrome runs on the owner's laptop; the CLI POSTs **only the seven cookies** to
@@ -3907,16 +3949,47 @@ Precedence:
 
 | Source | Use |
 |---|---|
-| `--server`, else `AGENT_GM_URL`, else the profile's server | which server a command talks to |
+| `--server`, else `AGENT_GM_URL`, else the **active** profile's server | which server a command talks to. None of the three resolving is **exit 9** naming `agm auth login --server <url>`: there is no built-in hostname to fall back to |
 | `AGENT_GM_ACCESS_TOKEN` | one access token, used as given, not refreshable |
 | `AGENT_GM_REFRESH_TOKEN_FILE` + `AGENT_GM_CLIENT_ID` | automation. Every invocation exchanges the token and rewrites the file with the rotated value, atomically, at mode `0600` |
-| the stored profile | the ordinary case, written by `agm auth login` |
+| the stored profile | the ordinary case, written by `agm auth login`. **Refreshed exactly like the refresh-file path** — see below |
+
+**A stored profile refreshes itself.** The profile holds a refresh token and
+an expiry, and both are used:
+
+- The CLI refreshes **proactively** when the access token is within 60 seconds
+  of its recorded expiry, and **on the first `401 invalid_token`** otherwise,
+  whichever comes first. **An access token is never presented past its known
+  expiry**: a command that can already see the token is dead does not spend a
+  round trip proving it.
+- The rotated value is written back atomically under the rule below, and only
+  then is any remaining failure reported.
+- An admin session refreshes at `POST /v1/auth/refresh` and an OAuth profile at
+  `/oauth/token`. The two paths do not cross (§9.6).
+- A profile with no refresh token, or no recorded expiry, or one whose expiry
+  is unreadable — an older build wrote it, or it was hand-edited — falls back
+  to the on-`401` path rather than refusing to run or refreshing on every
+  invocation.
+- The expiry the CLI records is the server's **`access_token_expires_at`**.
+  Naming the field is not pedantry: a build that decoded `expires_at` instead
+  recorded no expiry at all on any admin profile, so the proactive half of
+  this rule silently did nothing and only the `401` path ever fired.
+
+> This is stated because it was absent, and the absence cost an hour. The
+> stored profile was the one credential source the CLI did **not** refresh; an
+> admin session, whose access TTL is 15 minutes, was therefore refused about
+> a quarter of an hour after it was minted, with a good refresh token sitting
+> unused in the same file. The refusal arrived shortly after an unrelated
+> restart and was read as the restart having ended the session, which it had
+> not: §9.6's sessions are durable and outlive the process. A credential path
+> that is refreshed in three places out of four is not a precedence table, it
+> is a trap.
 
 **Write-back safety.** The destination is proved writable *before* the token is
 spent — the temporary file that the write later renames into place is created
 first. An unwritable directory is **exit 9 while the token is still good**. A
-token the server has already refused is **exit 3** (log in again), never
-retried.
+token the server has refused **after a refresh was attempted** is **exit 3**
+(log in again), never retried.
 
 `agm auth login` performs the same OAuth flow as any other MCP client:
 discovery, dynamic registration, a loopback callback on `127.0.0.1`, PKCE
@@ -3928,8 +4001,33 @@ carrying no `iss` at all**, because the server's metadata advertises
 refused there and is issued only by `agm auth login --admin`, which exchanges
 `AGENT_GM_ADMIN_SECRET` over `--secret-stdin` or a TTY prompt.
 
-Each profile is bound to an exact server issuer and resource. Changing
-`--server` selects credentials for that server; it never forwards one
+**Profiles are explicit and named for their server; there is no "default".**
+`agm auth login --server <url>` creates a profile whose name is the server's
+**host** (`gm.example.test`), or whatever `--profile` says, and records it as
+`active_profile` in `credentials.json`. Every later command uses the active
+profile and needs no `--server`. `agm profiles list|use|remove` manage them —
+`list` marks the active one, and `remove` never leaves `active_profile` naming
+a profile that is gone. `--profile <name>` and `AGENT_GM_PROFILE` select one
+for a single invocation without changing which is active.
+
+`--server` on a command **other than** `agm auth login` must name a server a
+stored profile already holds. One that does not is `invalid_request` naming
+`agm auth login --server`, because the alternative is a command that appears
+to work while presenting one server's token to another.
+
+A `credentials.json` carrying a profile literally named `default` is migrated
+on read: it is renamed to its server's host and becomes the active profile,
+idempotently and preserving every other field. A file with no `active_profile`
+and exactly one profile treats that one as active.
+
+> There is no built-in server anywhere in the CLI. A hostname compiled in is a
+> default that is right for one deployment and silently wrong for every other,
+> and it is how a command ends up talking to somebody else's server without
+> saying so. With nothing configured, `agm` fails and names
+> `agm auth login --server`.
+
+Each profile is bound to an exact server issuer and resource. Selecting a
+different profile selects credentials for that server; it never forwards one
 profile's token to a new origin.
 
 ---
@@ -4564,7 +4662,7 @@ Environment only, plus a runtime settings table. **There is no config file.**
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `AGENT_GM_PUBLIC_URL` | *(required)* | `https://gm.agent-wx.app`. Issuer, canonical resource, and the base of every URL handed out. Never derived from `Host` |
+| `AGENT_GM_PUBLIC_URL` | *(required, no default)* | The public origin. Issuer, canonical resource, and the base of every URL handed out. Never derived from `Host`, and **never defaulted**: a built-in hostname is a value that is right for one deployment and silently wrong for every other. The owner's deployment sets `https://gm.agent-wx.app`; §9.2's documents and §8.1's `Origin` check are stated against whatever this is configured to |
 | `AGENT_GM_LISTEN_ADDR` | `0.0.0.0:8080` | bind address |
 | `AGENT_GM_DATA_DIR` | `/data` | holds `agent-gm.sqlite3`, `sessions/` (one file per account, §3.3), `media-cache/`, `backups/` |
 | `AGENT_GM_ADMIN_SECRET` | *(required)* | owner bootstrap credential, ≥43 chars |
@@ -5093,7 +5191,8 @@ this slice's gate, not in this one.
 
 **Acceptance tests.**
 
-1. `issuer` equals `https://gm.agent-wx.app` **byte for byte** and `resource`
+1. `issuer` equals the configured `AGENT_GM_PUBLIC_URL` **byte for byte**
+   and `resource`
    equals it plus `/mcp` with no trailing-slash drift, asserted as string
    equality on both discovery documents.
 2. An unauthenticated `/mcp` request answers `401` with the exact
@@ -5290,6 +5389,25 @@ completion.
 it. An implementer never adds an account to the owner's deployment; the
 two-account tests of §16 run against two **fakes**, which is what §13.1's
 one-fake-per-account rule exists to make possible.
+
+**No agent enumerates processes, ever.** An agent that starts a server
+captures its PID at launch — `cmd & pid=$!` — signals only that variable, and
+signals nothing whose PID it did not capture itself. `pgrep`, `pkill` and
+`killall` are forbidden in **every** form, including `pkill -x` and `pgrep -x`:
+a name is not an identity. The production container shares the host PID
+namespace, so a `serve` process an agent did not start is the owner's
+deployment, and `pgrep -x agent-gm` returns it alongside the agent's own.
+
+> Recorded because it happened. In Slice 3b a documentation agent started a
+> throwaway server, then cleaned up by killing every PID `pgrep -x agent-gm`
+> returned — which included the production container's process. Docker's
+> restart policy brought it back within seconds and nothing was lost, but the
+> rule it followed said "no name **patterns**", and `pgrep -x` is not a
+> pattern. The rule is now about enumeration, not about patterns.
+
+**No agent binds ports 8080, 8081, 8090 or 8787.** They belong to the owner's
+running services. An agent that needs a listener picks one nobody has claimed
+and says which in its report.
 
 **Live sends are the coordinator's alone.** Neither the implementer nor the
 reviewer sends a message to a real phone number, ever, for any reason. An

@@ -81,7 +81,10 @@ func (e *Env) normalise() {
 
 // runner is one invocation.
 type runner struct {
-	env    *Env
+	env *Env
+	// cmd is the command being run. connect needs it: `agm auth login` is
+	// the one command allowed to name a server no profile holds (11.5).
+	cmd    *command
 	g      globals
 	out    *Output
 	client *Client
@@ -120,7 +123,25 @@ func Run(env Env) int {
 			_, _ = fmt.Fprintln(stderr, "agm: the same idempotency key was presented with a different "+
 				"body. Fix the invocation; never retry it unchanged.")
 		case apierr.CodeInvalidToken:
-			_, _ = fmt.Fprintln(stderr, "agm: log in again with `agm auth login`.")
+			// Both causes, because this command cannot tell which credential
+			// it was using and a guess sends an operator to the wrong fix.
+			//
+			// The second sentence is here because of a real hour lost to it:
+			// after a container restart the operator's admin session was
+			// refused while a connector's OAuth token kept working, which
+			// reads like a server fault and is not one. A restart alone does
+			// NOT end an admin session -- the session lives in SQLite and
+			// outlives the process -- but a restart that comes up with a
+			// different AGENT_GM_ADMIN_SECRET revokes every admin session
+			// minted under the old one (section 12.1), and only those, which
+			// is exactly why the OAuth token survived. A deployment whose
+			// secret is generated rather than fixed does this on every
+			// restart.
+			_, _ = fmt.Fprintln(stderr, "agm: log in again -- `agm auth login`, "+
+				"or `agm auth login --admin` if this profile is an admin session.")
+			_, _ = fmt.Fprintln(stderr, "agm: an admin session is also refused if the server's "+
+				"AGENT_GM_ADMIN_SECRET changed since it was minted; a restart alone does not end "+
+				"one. Check `agm admin audit list --kind auth.admin_authorization_revoked`.")
 		}
 	}
 	return code
@@ -164,6 +185,7 @@ func dispatch(env *Env) error {
 
 	r := &runner{
 		env: env,
+		cmd: cmd,
 		g:   g,
 		ctx: context.Background(),
 		out: &Output{
@@ -202,13 +224,13 @@ func dispatch(env *Env) error {
 func (r *runner) connect() error {
 	r.store = NewStore(CredentialsPath(r.g.credentialsFile, r.env.Getenv))
 
-	cred, err := ResolveCredential(r.store, r.env.Getenv, r.g.server, r.g.profile)
+	cred, err := ResolveCredential(r.store, r.env.Getenv, r.g.server, r.g.profile,
+		r.cmd != nil && r.cmd.createsProfile)
 	if err != nil {
 		return err
 	}
 	if cred.Server == "" {
-		return &LocalError{Msg: "no server is configured: pass --server, set AGENT_GM_URL, " +
-			"or log in with `agm auth login` so a profile records one"}
+		return &LocalError{Msg: noServerMessage}
 	}
 	r.cred = cred
 	r.out.profile = cred.Profile
@@ -230,6 +252,14 @@ func (r *runner) connect() error {
 
 	if cred.Source == SourceRefreshFile {
 		return r.exchangeRefreshToken()
+	}
+	if cred.Source == SourceProfile {
+		// A stored profile refreshes itself, proactively and on refusal
+		// (internal/cli/refresh.go). Before this, only the automation path
+		// above ever refreshed, so an admin session was dead fifteen minutes
+		// after it was minted and said so as if the server were at fault.
+		r.client.OnInvalidToken = r.refreshProfile
+		return r.refreshProfileIfExpiring()
 	}
 	return nil
 }

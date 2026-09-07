@@ -57,7 +57,13 @@ number into this public repository** — use `<APPROVED_DIRECT_NUMBER>`,
 in the operator's private notes. `devbox run no-real-numbers` must pass. Never read `.env`, 1Password, or any
 credential store. Never touch `/home/nick/code/agent-mx-trial`, port `8787`,
 `127.0.0.1:8008`, `/home/nick/code/openclaw-custom/.env`, or
-`openclaw-custom/matrix`. Never `pkill -f`; use `pkill -x` or a PID.
+`openclaw-custom/matrix`. **Never enumerate processes**: capture the PID of
+anything you start (`cmd & pid=$!`), signal only that variable, and signal
+nothing whose PID you did not capture. `pgrep`, `pkill` and `killall` are
+forbidden in every form, `-x` included — a name is not an identity, and the
+production container shares the host PID namespace, so a `serve` you did not
+start is the owner's deployment. (Slice 3b: an agent cleaned up with `pgrep -x
+agent-gm` and killed production.) Never bind ports 8080, 8081, 8090 or 8787.
 
 Report format: verdict (accept, accept with required fixes, reject), then
 findings `<Letter>-<n>` ordered by severity, each with the spec clause, the

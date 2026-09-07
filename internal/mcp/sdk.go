@@ -518,8 +518,19 @@ func (s *session) attachmentContent(structured map[string]any) []sdk.Content {
 // The protocol revisions this server speaks (spec section 8.1).
 //
 // Negotiation is the SDK's from decision D36 onwards: these constants say what
-// the SDK is expected to agree to, and a test drives a real `initialize` to
-// prove it still does, rather than a switch here deciding it.
+// the SDK is expected to agree to, and a test drives a real handshake to prove
+// it still does, rather than a switch here deciding it.
+//
+// **There are two handshakes, and they answer differently.** `initialize` is
+// deprecated in `2026-07-28`, so the SDK will not negotiate that revision over
+// it: `initialize` is CAPPED at `2025-11-25`
+// (`negotiateMutuallySupportedVersion`, mcp/shared.go:67). Asking it for
+// `2026-07-28` is answered `2025-11-25`; asking it for a revision at or below
+// the cap is answered with that revision, as ordinary negotiation. That is the
+// SDK being right rather than this server being wrong. `2026-07-28` is reached
+// only through **`server/discover`** (SEP-2575), which is what a reference
+// client sends. Both are asserted, each against the handshake that really
+// produces it.
 //
 // `2026-07-28` is available only because the transport is stateless: the SDK
 // refuses every revision from it onwards on a stateful transport
@@ -529,10 +540,11 @@ func (s *session) attachmentContent(structured map[string]any) []sdk.Content {
 // SDK's job and refusing them would be this package overriding the reference
 // implementation for no gain.
 const (
-	// ProtocolVersion is what `initialize` negotiates to when the client asks
-	// for it, asks for something newer, or asks for nothing.
+	// ProtocolVersion is what `server/discover` negotiates to. It is NOT what
+	// `initialize` answers; see above.
 	ProtocolVersion = "2026-07-28"
-	// ProtocolVersionCompat is section 8.1's named compatibility revision.
+	// ProtocolVersionCompat is section 8.1's named compatibility revision,
+	// and it is also the ceiling of the `initialize` handshake.
 	ProtocolVersionCompat = "2025-11-25"
 )
 
