@@ -80,6 +80,9 @@ type Backend struct {
 	unknown    atomic.Uint64
 
 	calls map[string]int
+	// blockers park calls to a named method so that a test can hold a known
+	// number of requests in flight. See BlockOn.
+	blockers map[string]*Blocker
 
 	// outgoing messages still walking the delivery ladder
 	pending []*pendingSend
@@ -161,6 +164,13 @@ func (b *Backend) CallCount(method string) int {
 
 func (b *Backend) note(method string) error {
 	b.calls[method]++
+	if bl := b.blockers[method]; bl != nil {
+		// Park the call outside the lock: the point of a blocker is to hold
+		// several calls at once, and holding b.mu would serialise them.
+		b.mu.Unlock()
+		bl.park()
+		b.mu.Lock()
+	}
 	if len(b.nextErrors) > 0 {
 		err := b.nextErrors[0]
 		b.nextErrors = b.nextErrors[1:]
@@ -169,6 +179,52 @@ func (b *Backend) note(method string) error {
 		}
 	}
 	return nil
+}
+
+// --- blocking ----------------------------------------------------------------
+//
+// A Blocker parks every call to one backend method until it is released. It
+// exists so that a test can hold a known number of requests IN FLIGHT at
+// once, which is the only way to assert a concurrency budget without timing:
+// a test that slept and hoped would pass on a fast machine and fail on a
+// loaded one, and a budget is exactly the thing that must not be asserted by
+// hope.
+
+// Blocker holds calls to one method.
+type Blocker struct {
+	arrived chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (bl *Blocker) park() {
+	bl.arrived <- struct{}{}
+	<-bl.release
+}
+
+// WaitFor blocks until n calls are parked. It has no timeout: the test's own
+// deadline is the timeout, and a bounded wait here would turn "the budget is
+// broken" into "the budget is flaky".
+func (bl *Blocker) WaitFor(n int) {
+	for range n {
+		<-bl.arrived
+	}
+}
+
+// Release lets every parked call, and every later one, through.
+func (bl *Blocker) Release() { bl.once.Do(func() { close(bl.release) }) }
+
+// BlockOn parks every call to the named method until the returned Blocker is
+// released. The method name is the one CallCount uses.
+func (b *Backend) BlockOn(method string) *Blocker {
+	bl := &Blocker{arrived: make(chan struct{}, 64), release: make(chan struct{})}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.blockers == nil {
+		b.blockers = map[string]*Blocker{}
+	}
+	b.blockers[method] = bl
+	return bl
 }
 
 // --- scripting --------------------------------------------------------------

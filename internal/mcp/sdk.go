@@ -3,13 +3,11 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"sync"
 
-	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/thisnick/agent-gm/internal/apierr"
@@ -220,31 +218,9 @@ func scopeGate(auth *authz.Authorization) sdk.Middleware {
 					}, nil
 				}
 			}
-			res, err := next(ctx, method, req)
-			if method == "resources/read" {
-				err = downgradeResourceNotFound(err)
-			}
-			return res, err
+			return next(ctx, method, req)
 		}
 	}
-}
-
-// downgradeResourceNotFound rewrites the SDK's own -32602 resource-not-found
-// to -32002.
-//
-// The SDK answers a URI it has no handler for from `Server.readResource`
-// itself, before ours runs, so setting the code in our handler alone would
-// leave the "unknown scheme" case on the code that kills the session. See
-// CodeResourceNotFound for why -32602 is not survivable here.
-func downgradeResourceNotFound(err error) error {
-	var jerr *jsonrpc.Error
-	if !errors.As(err, &jerr) {
-		return err
-	}
-	if jerr.Code != jsonrpc.CodeInvalidParams || jerr.Message != "Resource not found" {
-		return err
-	}
-	return &jsonrpc.Error{Code: CodeResourceNotFound, Message: jerr.Message, Data: jerr.Data}
 }
 
 // stampBuild puts the AGPL section 13 facts of section 1.4 into a handshake
@@ -395,39 +371,12 @@ func scopeRefusal(scope authz.Scope) *apierr.Error {
 // client rejects it on schema before the client's own code runs. The model
 // learns nothing either way; the only difference is whether the CLIENT gets a
 // readable refusal or a parse error.
-// CodeResourceNotFound is what a `resources/read` failure answers.
-//
-// It is -32002, the code the MCP specification carried at 2025-06-18 and
-// 2025-11-25, and NOT the SDK's own `mcp.ResourceNotFoundError`, which since
-// v1.7.0 returns -32602 per SEP-2164. This is the one place the SDK is not
-// taken as the authority, and the reason is that the SDK's own client cannot
-// survive its own server's answer:
-//
-//   - `mcp/streamable.go:1054` (`extractErrorStatus`) maps -32602 to HTTP 400
-//     for every protocol from 2026-07-28 onwards -- the revision section 8.1
-//     runs on;
-//   - `mcp/streamable.go:2544` (`checkResponse`) treats any non-2xx that is
-//     not 404 and not transient as a connection failure, so the official
-//     client TEARS DOWN THE SESSION on it. Driven: the first
-//     `resources/read` of a missing attachment returns the error and the
-//     next call fails `client is closing`.
-//
-// -32002 is in none of `extractErrorStatus`'s cases, so it is delivered as an
-// ordinary JSON-RPC error with HTTP 200 and the session survives. This is the
-// same failure mode the Slice 3 review's R-1 found one layer up: a refusal
-// the client cannot read is worse than a refusal the model cannot read.
-const CodeResourceNotFound = -32002
-
-// resourceNotFound is -32002 with the URI in `data`, which is the shape the
-// SDK's own ResourceNotFoundError uses.
-func resourceNotFound(uri string) error {
-	return &jsonrpc.Error{
-		Code:    CodeResourceNotFound,
-		Message: "Resource not found",
-		Data:    json.RawMessage(fmt.Sprintf(`{"uri":%q}`, uri)),
-	}
-}
-
+// A `resources/read` failure is the SDK's own `ResourceNotFoundError`, which
+// is -32602 since v1.7.0 per SEP-2164 (it was -32002 before). The SDK is the
+// authority for protocol codes, and the reason it can be here is that this
+// server does not adopt the SDK's SEP-2575 HTTP status mapping: -32602 would
+// otherwise be delivered as HTTP 400, which the SDK's own client treats as a
+// connection failure. See envelopeWriter.finish in handler.go.
 func (h *Handler) resourceHandler() sdk.ResourceHandler {
 	return func(ctx context.Context, req *sdk.ReadResourceRequest) (*sdk.ReadResourceResult, error) {
 		s, err := h.sessionFor(ctx, req.Extra)
@@ -440,17 +389,17 @@ func (h *Handler) resourceHandler() sdk.ResourceHandler {
 		// resource does not exist, and saying so is also the answer that
 		// leaks least.
 		if s.auth == nil || !s.auth.Scopes.Has(authz.ScopeMessagesRead) {
-			return nil, resourceNotFound(uri)
+			return nil, sdk.ResourceNotFoundError(uri)
 		}
 		id, ok := strings.CutPrefix(uri, AttachmentURIPrefix)
 		if !ok || id == "" {
-			return nil, resourceNotFound(uri)
+			return nil, sdk.ResourceNotFoundError(uri)
 		}
 
 		body, contentType, e := s.attachmentBytes(id)
 		if e != nil {
 			if e.Code == apierr.CodeNotFound {
-				return nil, resourceNotFound(uri)
+				return nil, sdk.ResourceNotFoundError(uri)
 			}
 			return nil, fmt.Errorf("the resource could not be read: %s", e.Code)
 		}

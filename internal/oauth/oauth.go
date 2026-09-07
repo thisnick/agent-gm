@@ -100,6 +100,14 @@ func New(cfg Config) (*Server, error) {
 	s := &Server{cfg: cfg, st: cfg.Authz.Store(), mux: map[string]map[string]http.HandlerFunc{}}
 	s.route(http.MethodGet, "/.well-known/oauth-protected-resource", s.protectedResource)
 	s.route(http.MethodGet, "/.well-known/oauth-protected-resource/mcp", s.protectedResource)
+	// OPTIONS, because RFC 9728 section 3.1 makes this document public
+	// discovery data and the SDK's handler answers the CORS preflight for it.
+	// A browser-based MCP client cannot read the document without one, and a
+	// 405 here would make the whole authorization flow unreachable from a
+	// page. Only these two paths: nothing else on this server is meant to be
+	// read cross-origin.
+	s.route(http.MethodOptions, "/.well-known/oauth-protected-resource", s.protectedResource)
+	s.route(http.MethodOptions, "/.well-known/oauth-protected-resource/mcp", s.protectedResource)
 	s.route(http.MethodGet, "/.well-known/oauth-authorization-server", s.authorizationServer)
 	s.route(http.MethodPost, "/oauth/register", s.register)
 	s.route(http.MethodGet, "/oauth/authorize", s.authorizeGet)

@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/modelcontextprotocol/go-sdk/auth"
+	"github.com/modelcontextprotocol/go-sdk/oauthex"
+
 	"github.com/thisnick/agent-gm/internal/authz"
 )
 
@@ -31,13 +34,16 @@ var ScopesSupported = []string{
 // same URL section 1.4's AGPL obligation puts in `GET /v1/health`.
 const SourceURL = "https://github.com/thisnick/agent-gm"
 
-type protectedResourceDoc struct {
-	Resource               string   `json:"resource"`
-	AuthorizationServers   []string `json:"authorization_servers"`
-	ScopesSupported        []string `json:"scopes_supported"`
-	BearerMethodsSupported []string `json:"bearer_methods_supported"`
-	ResourceDocumentation  string   `json:"resource_documentation"`
-}
+// ProtectedResourceMetadata is the RFC 9728 document as the official MCP Go
+// SDK's own type (decision D36).
+//
+// It is the SDK's type rather than one of ours because this document is read
+// by clients, not by us: an MCP client fetches it to discover where to
+// authorize, and `oauthex.ProtectedResourceMetadata` is what the reference
+// implementation both writes and parses. Our values are unchanged and still
+// byte-exact -- `resource` is AGENT_GM_PUBLIC_URL plus `/mcp` and nothing
+// else -- and section 16 Slice 3 test 1 still asserts them as strings.
+type protectedResourceDoc = oauthex.ProtectedResourceMetadata
 
 type authorizationServerDoc struct {
 	Issuer                                     string   `json:"issuer"`
@@ -57,7 +63,13 @@ type authorizationServerDoc struct {
 // test can assert its fields without going through HTTP and the MCP layer can
 // point at the same strings.
 func (s *Server) ProtectedResourceDocument() any {
-	return protectedResourceDoc{
+	return s.protectedResourceMetadata()
+}
+
+// protectedResourceMetadata is the same document as the SDK's typed value, so
+// that the handler and the accessor cannot drift.
+func (s *Server) protectedResourceMetadata() *oauthex.ProtectedResourceMetadata {
+	return &oauthex.ProtectedResourceMetadata{
 		Resource:               s.Resource(),
 		AuthorizationServers:   []string{s.Issuer()},
 		ScopesSupported:        ScopesSupported,
@@ -73,22 +85,31 @@ func (s *Server) ProtectedResourceDocument() any {
 // 9.3).
 func (s *Server) AuthorizationServerDocument() any {
 	return authorizationServerDoc{
-		Issuer:                            s.Issuer(),
-		AuthorizationEndpoint:             s.Issuer() + "/oauth/authorize",
-		TokenEndpoint:                     s.Issuer() + "/oauth/token",
-		RegistrationEndpoint:              s.Issuer() + "/oauth/register",
-		RevocationEndpoint:                s.Issuer() + "/oauth/revoke",
-		ResponseTypesSupported:            []string{"code"},
-		GrantTypesSupported:               []string{"authorization_code", "refresh_token"},
-		TokenEndpointAuthMethodsSupported: []string{"none"},
-		CodeChallengeMethodsSupported:     []string{"S256"},
-		ScopesSupported:                   ScopesSupported,
+		Issuer:                                     s.Issuer(),
+		AuthorizationEndpoint:                      s.Issuer() + "/oauth/authorize",
+		TokenEndpoint:                              s.Issuer() + "/oauth/token",
+		RegistrationEndpoint:                       s.Issuer() + "/oauth/register",
+		RevocationEndpoint:                         s.Issuer() + "/oauth/revoke",
+		ResponseTypesSupported:                     []string{"code"},
+		GrantTypesSupported:                        []string{"authorization_code", "refresh_token"},
+		TokenEndpointAuthMethodsSupported:          []string{"none"},
+		CodeChallengeMethodsSupported:              []string{"S256"},
+		ScopesSupported:                            ScopesSupported,
 		AuthorizationResponseISSParameterSupported: true,
 	}
 }
 
-func (s *Server) protectedResource(w http.ResponseWriter, _ *http.Request) {
-	s.writeJSON(w, http.StatusOK, s.ProtectedResourceDocument())
+// protectedResource serves the RFC 9728 document through the SDK's own
+// handler (decision D36).
+//
+// The SDK's handler adds the CORS headers RFC 9728 section 3.1 asks for --
+// this document is public discovery data and a browser-based client has to be
+// able to read it cross-origin. Section 9.9's headers are set first and
+// survive, because the SDK's handler sets only `Content-Type` and the three
+// `Access-Control-*` values.
+func (s *Server) protectedResource(w http.ResponseWriter, r *http.Request) {
+	setSecurityHeaders(w)
+	auth.ProtectedResourceMetadataHandler(s.protectedResourceMetadata()).ServeHTTP(w, r)
 }
 
 func (s *Server) authorizationServer(w http.ResponseWriter, _ *http.Request) {
