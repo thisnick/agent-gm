@@ -12,16 +12,16 @@ the **pins** — `go.mau.fi/mautrix-gmessages` (libgm) and
 `github.com/modelcontextprotocol/go-sdk`. Deployments pin by digest, not by
 tag: a tag is a label and a digest is evidence.
 
-## 1.0.1 — 2026-09-07
-
-- Releases publish `@agent-gm/cli` through npm trusted publishing (OIDC);
-  the one-time `NPM_TOKEN` used for 1.0.0 is gone. No runtime change.
-
 ## [Unreleased]
 
 Nothing yet.
 
-## [1.0.0] — unreleased
+## [1.0.1] — 2026-09-07
+
+- Releases publish `@agent-gm/cli` through npm trusted publishing (OIDC);
+  the one-time `NPM_TOKEN` used for 1.0.0 is gone. No runtime change.
+
+## [1.0.0] — 2026-09-07
 
 The first release. Everything below is new, so this entry describes what
 Agent GM *is* rather than what changed.
@@ -103,5 +103,6 @@ Agent GM *is* rather than what changed.
   gate was satisfied through the public URL with Codex CLI. Adding either
   later needs no code.
 
-[Unreleased]: https://github.com/thisnick/agent-gm/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/thisnick/agent-gm/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/thisnick/agent-gm/releases/tag/v1.0.1
 [1.0.0]: https://github.com/thisnick/agent-gm/releases/tag/v1.0.0
