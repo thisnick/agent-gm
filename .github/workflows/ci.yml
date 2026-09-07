@@ -227,3 +227,26 @@ jobs:
           # otherwise classify as documentation.
           git diff --no-renames --name-only "${base}...${head}" \
             | ./scripts/changeset-check.sh
+
+  # The version step, run the way `changesets/action` runs it, and asserted on
+  # the file the action opens next. It is its own job because it is the one
+  # test here that needs `@changesets/cli` installed: `devbox run check` does
+  # not install node modules, so the test skips there and runs for real here.
+  #
+  # It exists because the first live run of `version.yml` failed at exactly
+  # this seam (run 34167397882): `npm run version-packages` succeeded, both
+  # changelogs read correctly, and the action then opened
+  # `npm/CHANGELOG.md` -- which the formatter had deleted -- and got ENOENT.
+  # Every test passed, because they all asked what the files said and none
+  # asked whether the next step's file was still there.
+  version-packages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jetify-com/devbox-install-action@v0.13.0
+        with:
+          enable-cache: "true"
+      # --ignore-scripts: the workspace member's postinstall downloads a
+      # release binary. Nothing here needs it.
+      - run: devbox run -- npm ci --ignore-scripts --no-audit --no-fund
+      - run: devbox run -- go test ./internal/release/ -count=1 -v -run 'TestTheVersionStep|TestTheFormatterIsANoOpWhenTheEntryIsAlreadyFiled'

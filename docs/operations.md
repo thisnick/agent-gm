@@ -578,7 +578,11 @@ Four steps, three of which are ordinary review:
 2. **Merge it.** On the push to main, `version.yml` opens or updates a single
    **Version Packages** pull request that bumps `npm/package.json` and files
    the entries under `[Unreleased]` in `CHANGELOG.md`. It publishes nothing.
-   More merges update the same pull request.
+   More merges update the same pull request. That pull request also carries
+   `npm/CHANGELOG.md` — the package's own changelog, written by changesets and
+   read by the action to compose the pull request body. `CHANGELOG.md` is the
+   one to read; both carry the same versions, because there is only one
+   version.
 3. **Merge the Version Packages pull request** when you want the release.
    That is the act that cuts it, and it is a reviewed merge to main like any
    other — which is what §16 asks of the commit a release is cut from.

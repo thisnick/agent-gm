@@ -18,16 +18,27 @@
 // The changelog this project keeps is the one at the root, and it has kept one
 // shape since 1.0.0: `## [1.0.2] — 2026-09-08`, bullets, no bump-size
 // subheadings, `[Unreleased]` on top and a link reference at the bottom. So
-// this moves the entry there and DELETES `npm/CHANGELOG.md`: two changelogs in
-// one repository is two answers to one question, and the wrapper package is
-// not separately versioned -- there is one version and one history (D39).
+// this COPIES the entry there, and leaves `npm/CHANGELOG.md` exactly where
+// changesets put it.
+//
+// It used to delete it -- two changelogs in one repository being two answers
+// to one question -- and that broke the first real run of `version.yml` on
+// main: `changesets/action` reads the changed package's own `CHANGELOG.md` to
+// compose the body of the Version Packages pull request, and got `ENOENT`
+// (run 34167397882). The two files are not two answers. `CHANGELOG.md` is the
+// project's history in the house format and is what a reader is pointed at;
+// `npm/CHANGELOG.md` is the package's own file, written and read by the tool,
+// carrying the same versions because there is only one version (D39).
 //
 // The alternative is hand-editing the Version Packages pull request after
 // every bump, which is the manual step this whole flow exists to remove.
 //
-// It is idempotent: with no `npm/CHANGELOG.md` there is nothing to do, and it
-// says so and exits 0. The date is today in UTC, or AGENT_GM_CHANGELOG_DATE,
-// which is what the tests set.
+// It is idempotent in both directions: with no `npm/CHANGELOG.md` there is
+// nothing to do, and with the newest entry already filed at the root there is
+// nothing to do either -- `npm/CHANGELOG.md` now survives from one release to
+// the next, so seeing an already-filed version is ordinary rather than wrong.
+// The date is today in UTC, or AGENT_GM_CHANGELOG_DATE, which is what the
+// tests set.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -60,9 +71,14 @@ const next = /^## /m.exec(rest);
 const end = next ? start + raw[0].length + next.index : written.length;
 const block = written.slice(start, end);
 
+// Already filed. This is the ordinary shape of a second run -- `npm/CHANGELOG.md`
+// is kept, so its newest heading stays the newest heading until the next
+// version -- and filing it twice would leave two entries for one version in
+// the file people read to find out what changed. Both files are left as they
+// are.
 if (src.includes(`## [${version}]`)) {
-  console.error(`changelog-format: CHANGELOG.md already has an entry for ${version}`);
-  process.exit(1);
+  console.log(`changelog-format: CHANGELOG.md already has the entry for ${version}; nothing to do`);
+  process.exit(0);
 }
 
 // The bullets, without the bump-size subheadings. The size is already visible
@@ -141,9 +157,8 @@ out = out.replace(
 
 fs.writeFileSync(file, out);
 
-// One changelog. `npm/CHANGELOG.md` is where changesets puts the entry and
-// nowhere anybody reads it from: leaving it behind would commit a second,
-// divergent history of the same versions into the same pull request.
-fs.rmSync(from);
+// `npm/CHANGELOG.md` is deliberately NOT removed: `changesets/action` reads it
+// to build the pull request body, and `npm/package.json`'s `files` list does
+// not carry it, so it is never published.
 
 console.log(`changelog-format: ${version} filed under [Unreleased] as of ${today}`);

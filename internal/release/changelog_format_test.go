@@ -3,11 +3,14 @@ package release_test
 // The changelog the Version Packages pull request arrives with.
 //
 // `changeset version` writes its entry into `npm/CHANGELOG.md`, in its own
-// shape, under a heading of its own. This repository keeps ONE changelog, at
-// the root, in one shape it has kept since 1.0.0. `scripts/changelog-format.mjs`
-// is what reconciles those, and it runs unattended inside the action that opens
-// the pull request -- so if it is wrong, the wrongness is committed by a bot
-// and reviewed by whoever is in a hurry to cut a release.
+// shape, under a heading of its own. The changelog this repository points a
+// reader at is the one at the root, in one shape it has kept since 1.0.0;
+// `npm/CHANGELOG.md` stays where changesets put it, because
+// `changesets/action` reads it to compose the Version Packages pull request.
+// `scripts/changelog-format.mjs` is what reconciles those, and it runs
+// unattended inside the action that opens the pull request -- so if it is
+// wrong, the wrongness is committed by a bot and reviewed by whoever is in a
+// hurry to cut a release.
 //
 // These run it against a fixture rather than against the real CHANGELOG.md,
 // with the date pinned, so the assertions are about the transformation and not
@@ -77,10 +80,14 @@ func runFormat(t *testing.T, root, written string) (int, string, string) {
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	// The source is consumed: one repository, one changelog.
+	// The source SURVIVES. `changesets/action` reads the package's own
+	// changelog to compose the Version Packages pull request body, and
+	// removing it failed the first real run of version.yml
+	// (`version_step_test.go` runs that sequence end to end).
 	if code == 0 && written != "" {
-		if _, err := os.Stat(from); !os.IsNotExist(err) {
-			t.Errorf("%s survived; two changelogs would be committed for one version", from)
+		if _, err := os.Stat(from); err != nil {
+			t.Errorf("%s was removed; changesets/action reads it to build the pull request "+
+				"body and would fail with ENOENT: %v", from, err)
 		}
 	}
 	return code, string(out), string(produced)
@@ -229,18 +236,26 @@ func TestTheFormatterIsANoOpWithNothingToFile(t *testing.T) {
 	}
 }
 
-// And it refuses rather than duplicating: an entry for a version the changelog
-// already has means something has gone wrong upstream, and appending a second
-// one would leave two entries for one version in a file people read to find
-// out what changed.
-func TestTheFormatterRefusesToFileAVersionTwice(t *testing.T) {
+// An entry the root changelog already has is left alone, and the run is a
+// success rather than a failure. `npm/CHANGELOG.md` is kept now, so its newest
+// heading stays the newest heading until the next version bump: a version that
+// is already filed is the ordinary shape of a second run, and refusing it
+// would fail the action for the ordinary case. What must not happen is a
+// second entry for one version in the file people read.
+func TestTheFormatterFilesAVersionOnlyOnce(t *testing.T) {
 	written := strings.Replace(fixtureWritten, "## 1.0.2", "## 1.0.1", 1)
 	code, log, got := runFormat(t, fixtureChangelog, written)
-	if code == 0 {
-		t.Fatalf("it filed 1.0.1 twice:\n%s", got)
+	if code != 0 {
+		t.Fatalf("an already-filed version failed the run:\n%s", log)
 	}
-	if !strings.Contains(log, "already has an entry") {
-		t.Errorf("the refusal does not say why:\n%s", log)
+	if strings.Count(got, "## [1.0.1]") != 1 {
+		t.Fatalf("1.0.1 was filed twice:\n%s", got)
+	}
+	if got != fixtureChangelog {
+		t.Errorf("CHANGELOG.md was edited for a version it already carries:\n%s", got)
+	}
+	if !strings.Contains(log, "already has the entry") {
+		t.Errorf("the run does not say why it did nothing:\n%s", log)
 	}
 }
 
