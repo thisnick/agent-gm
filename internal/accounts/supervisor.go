@@ -333,6 +333,17 @@ func (s *Supervisor) PairAs(ctx context.Context, expectedID string, backend gm.B
 		"resumed":      resumed,
 	})
 
+	// A re-pair replaces this account's client, and the previous one may
+	// still have a goroutine draining ITS events. That goroutine reads
+	// a.Backend, so swapping the field under it is a data race -- and
+	// leaving it running would be worse than the race: Start below is a
+	// no-op on an account that is already running, so the new client would
+	// never be connected and the old one would go on being drained. Stopping
+	// first makes the swap happen with no reader and lets Start bring the
+	// new client up.
+	if prev, err := s.Get(id); err == nil {
+		s.Stop(prev)
+	}
 	a := s.register(id, address, backend)
 	if err := a.PersistSession(ctx); err != nil {
 		return nil, err
