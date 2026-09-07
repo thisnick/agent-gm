@@ -181,11 +181,17 @@ jobs:
           set -euo pipefail
           image=ghcr.io/thisnick/agent-gm
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          # Wait for the image whose revision label IS this commit, not merely
+          # for the tag to exist: a stale image from an earlier attempt of the
+          # same tag would otherwise be picked up (it was, on 2026-09-07).
           for i in $(seq 1 60); do
             digest="$(docker buildx imagetools inspect "$image:${GITHUB_REF_NAME}" \
               --format '{{println .Manifest.Digest}}' 2>/dev/null | head -1 || true)"
-            [ -n "$digest" ] && break
-            echo "waiting for $image:${GITHUB_REF_NAME} to appear (attempt $i)"
+            rev="$(docker buildx imagetools inspect "$image:${GITHUB_REF_NAME}" \
+              --format '{{range $k,$v := .Image}}{{index $v.Config.Labels "org.opencontainers.image.revision"}}{{"\n"}}{{end}}' 2>/dev/null | head -1 || true)"
+            if [ -n "$digest" ] && [ "$rev" = "$GITHUB_SHA" ]; then break; fi
+            digest=""
+            echo "waiting for $image:${GITHUB_REF_NAME} built from ${GITHUB_SHA} (attempt $i; saw revision '${rev:-none}')"
             sleep 20
           done
           if [ -z "${digest:-}" ]; then
@@ -218,7 +224,16 @@ jobs:
       # answers 404 -- which is exactly what the first v1.0.1 attempt did on
       # the npm 10 that ships with Node 22. release.sh asserts the version.
       - name: Use an npm that speaks trusted publishing
-        run: devbox run -- npm install -g npm@^11.5.1 && devbox run -- npm --version
+        run: |
+          set -euo pipefail
+          # The devbox node lives in the read-only nix store, so a global
+          # install fails; install npm 11 into a scratch prefix and point
+          # release.sh at it via AGENT_GM_NPM.
+          prefix="$RUNNER_TEMP/npm11"
+          mkdir -p "$prefix"
+          devbox run -- npm install --prefix "$prefix" --no-audit --no-fund "npm@^11.5.1"
+          echo "AGENT_GM_NPM=$prefix/node_modules/.bin/npm" >> "$GITHUB_ENV"
+          "$prefix/node_modules/.bin/npm" --version
       - name: Publish @agent-gm/cli
         env:
           NPM_CONFIG_PROVENANCE: "true"
