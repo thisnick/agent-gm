@@ -282,13 +282,24 @@ func idempotencyKeyCrossedAccounts(key, firstAccount, thisAccount string) *apier
 // reports a failed status. An `unknown` one is CORRECTED, which is the whole
 // reason the transition out of `unknown` exists: if a crashed send did reach
 // Google, this is how the operation stops lying.
-func (a *Account) correlateEcho(ctx context.Context, messageID string, m gm.Message) error {
-	op, err := a.Store.OperationByTmpID(ctx, a.ID, m.TmpID)
+func (in *Ingester) correlateEcho(ctx context.Context, messageID string, m gm.Message) error {
+	op, err := in.Store.OperationByTmpID(ctx, in.AccountID, m.TmpID)
 	if errors.Is(err, store.ErrOperationNotFound) {
 		return nil
 	}
 	if err != nil {
 		return err
+	}
+
+	// The size Google's echo does not carry. The operation counted the bytes
+	// it sent; this is the moment the attachment row those bytes became is
+	// known. It runs before the settlement so a settle that fails still
+	// leaves the size on the row.
+	if op.MediaSizeBytes > 0 {
+		if err := in.Store.FillMissingAttachmentSize(ctx, messageID, op.MediaSizeBytes); err != nil {
+			in.warn("filling attachment size from the send failed",
+				"account_id", in.AccountID, "operation_id", op.ID, "error", err.Error())
+		}
 	}
 
 	st := store.Settlement{Status: op.Status, MessageID: messageID}
@@ -303,9 +314,9 @@ func (a *Account) correlateEcho(ctx context.Context, messageID string, m gm.Mess
 		}
 		st.GoogleStatusRaw = m.StatusRaw
 	}
-	if _, err := a.Store.SettleOperation(ctx, op.ID, st); err != nil {
-		a.logWarn("settling operation from echo failed",
-			"account_id", a.ID, "operation_id", op.ID, "error", err.Error())
+	if _, err := in.Store.SettleOperation(ctx, op.ID, st); err != nil {
+		in.warn("settling operation from echo failed",
+			"account_id", in.AccountID, "operation_id", op.ID, "error", err.Error())
 	}
 	return nil
 }

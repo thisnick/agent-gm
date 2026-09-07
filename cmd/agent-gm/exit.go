@@ -39,7 +39,7 @@ func exitCodeFor(err error) int {
 		return exitRetryable
 	case gm.CodePairingNoCookies, gm.CodePairingNoDevices, gm.CodePairingWrongEmoji,
 		gm.CodePairingCancelled, gm.CodePairingTimeout, gm.CodePairingNoAccount,
-		gm.CodePairingWrongAccount, gm.CodeNotDefaultSMSApp, gm.CodeConfigVersionStale,
+		gm.CodePairingWrongAccount, gm.CodeNotDefaultSMSApp,
 		gm.CodeGoogleError, gm.CodeGoogleUndocumentedState, gm.CodeGooglePermissionDenied,
 		gm.CodeInternalError:
 		return exitContract

@@ -407,18 +407,6 @@ func NotDefaultSMSApp() *Error {
 	return New(CodeNotDefaultSMSApp, "Google Messages is not the default SMS app on the paired phone")
 }
 
-// ConfigVersionStale is Agent GM's own diagnosis, not Google's answer: a
-// conversation-creating call failed AND the compiled and live ConfigVersion
-// differ. It names both versions and says the fix is a pin bump, because
-// without that sentence the owner has no way to act on it (spec sections
-// 3.7, 7.2).
-func ConfigVersionStale(compiled, live string) *Error {
-	return withDetails(CodeConfigVersionStale,
-		fmt.Sprintf("Google Messages for web version %s is compiled in but Google is serving %s; "+
-			"bumping the pinned mautrix-gmessages commit is the fix", compiled, live),
-		map[string]any{"compiled_config_version": compiled, "live_config_version": live})
-}
-
 // GoogleUndocumentedStatus is a Google enum value the pinned proto has no
 // name for. details.status is the BARE integer and no meaning is claimed: an
 // invented name would be a guess an agent could act on (spec section 3.7).

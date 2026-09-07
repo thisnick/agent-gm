@@ -107,23 +107,27 @@ type Operation struct {
 	HasErrorRetryable  bool
 	GoogleStatusRaw    int32
 	RequestPayloadJSON string
-	CreatedAtMS        int64
+	// MediaSizeBytes is the plaintext size of the media this operation sent,
+	// zero for every operation that sent none. It is kept because Google's
+	// echo of our own media does not carry it (migration 0005).
+	MediaSizeBytes int64
+	CreatedAtMS    int64
 	UpdatedAtMS        int64
 }
 
 const operationColumns = `id, account_id, kind, authorization_id, idempotency_key,
 	request_fingerprint, conversation_id, message_id, tmp_id, status, terminal,
 	terminal_at_ms, corrected_at_ms, error_code, error_message, error_retryable,
-	google_status_raw, request_payload_json, created_at_ms, updated_at_ms`
+	google_status_raw, request_payload_json, media_size_bytes, created_at_ms, updated_at_ms`
 
 func scanOperation(sc interface{ Scan(...any) error }) (Operation, error) {
 	var o Operation
 	var conv, msg, tmp, code, message sql.NullString
-	var terminalAt, correctedAt, retryable, googleRaw sql.NullInt64
+	var terminalAt, correctedAt, retryable, googleRaw, mediaSize sql.NullInt64
 	err := sc.Scan(&o.ID, &o.AccountID, &o.Kind, &o.AuthorizationID, &o.IdempotencyKey,
 		&o.RequestFingerprint, &conv, &msg, &tmp, &o.Status, &o.Terminal,
 		&terminalAt, &correctedAt, &code, &message, &retryable,
-		&googleRaw, &o.RequestPayloadJSON, &o.CreatedAtMS, &o.UpdatedAtMS)
+		&googleRaw, &o.RequestPayloadJSON, &mediaSize, &o.CreatedAtMS, &o.UpdatedAtMS)
 	if err != nil {
 		return o, err
 	}
@@ -137,6 +141,7 @@ func scanOperation(sc interface{ Scan(...any) error }) (Operation, error) {
 	o.TerminalAtMS = terminalAt.Int64
 	o.CorrectedAtMS = correctedAt.Int64
 	o.GoogleStatusRaw = int32(googleRaw.Int64)
+	o.MediaSizeBytes = mediaSize.Int64
 	return o, nil
 }
 
@@ -313,6 +318,22 @@ func (s *Store) SetOperationTmpID(ctx context.Context, operationID, tmpID string
 			 -- all-accounts: an op_ ID already carries its account (section 4.1).
 			 WHERE id = ?`,
 			tmpID, now, operationID)
+		return err
+	})
+}
+
+// SetOperationMediaSize records the plaintext size of the media this
+// operation is about to send, before the library call, so the echo that
+// arrives later -- possibly after a restart -- can put it on the attachment
+// row Google's own echo leaves sizeless (spec section 5.3, step 8).
+func (s *Store) SetOperationMediaSize(ctx context.Context, operationID string, size int64) error {
+	now := s.clock.Now().UnixMilli()
+	return s.Write(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx,
+			`UPDATE operations SET media_size_bytes = ?, updated_at_ms = ?
+			 -- all-accounts: an op_ ID already carries its account (section 4.1).
+			 WHERE id = ?`,
+			size, now, operationID)
 		return err
 	})
 }

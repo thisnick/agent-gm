@@ -233,43 +233,6 @@ func TestUndocumentedResolveStatus(t *testing.T) {
 	}
 }
 
-// config_version_stale names both versions and says a pin bump is the fix. It
-// keys on the version diff alone -- never on a particular status number.
-func TestConfigVersionStaleNamesBothVersions(t *testing.T) {
-	compiled := gm.ConfigVersion{Year: 2026, Month: 3, Day: 18, V1: 4, V2: 6}
-	live := gm.ConfigVersion{Year: 2026, Month: 9, Day: 3, V1: 4, V2: 6}
-	e := gm.ConfigVersionStale(compiled, live, gm.ResolveStatus(4))
-	if e.Code != gm.CodeConfigVersionStale {
-		t.Fatalf("code = %s", e.Code)
-	}
-	if e.Details["compiled_config_version"] != compiled.String() {
-		t.Errorf("details.compiled_config_version = %v", e.Details["compiled_config_version"])
-	}
-	if e.Details["live_config_version"] != live.String() {
-		t.Errorf("details.live_config_version = %v", e.Details["live_config_version"])
-	}
-	for _, want := range []string{compiled.String(), live.String(), "pinned"} {
-		if !contains(e.Message, want) {
-			t.Errorf("the message %q does not mention %q", e.Message, want)
-		}
-	}
-}
-
-func contains(haystack, needle string) bool {
-	return len(haystack) >= len(needle) &&
-		(haystack == needle || len(needle) == 0 ||
-			indexOf(haystack, needle) >= 0)
-}
-
-func indexOf(h, n string) int {
-	for i := 0; i+len(n) <= len(h); i++ {
-		if h[i:i+len(n)] == n {
-			return i
-		}
-	}
-	return -1
-}
-
 // The listen-loop match is on the error value, never the string.
 func TestIsFatalListenError(t *testing.T) {
 	for _, tc := range []struct {

@@ -54,25 +54,34 @@ func SendWithRetry(ctx context.Context, clk clock.Clock, attempt SendAttempt) (g
 var ErrResolveNoConversation = errors.New("google answered SUCCESS with no conversation")
 
 // ClassifyResolve turns a GetOrCreateConversation answer into Agent GM's own
-// vocabulary (spec sections 3.7, 7.2, §16 Slice 2 test 11).
+// vocabulary (spec sections 3.7, 7.2).
 //
 // The CREATE_RCS retry itself lives in the gm adapter, which retries exactly
-// once with CreateRCSGroup=true exactly as upstream does, so a CREATE_RCS
-// arriving here is the *second* one and there is nothing further to try.
+// once, so a CREATE_RCS arriving here is the *second* one and there is
+// nothing further to try.
 //
-// The order of the three failure diagnoses is the contract:
+// **Google's real status always survives.** This used to relabel ANY failure
+// as `config_version_stale` whenever the compiled and live ConfigVersions
+// differed, and the Slice 2 live gate showed what that costs: a named group
+// start failed for an entirely unrelated reason -- the name was being sent on
+// the first call -- while the versions happened to differ, as they normally
+// do between pin bumps. The operator was told to bump the pin, which would
+// not have helped, and the actual status was discarded. That is precisely the
+// misdiagnosis D32 exists to prevent, committed by the very code that names
+// it.
 //
-//  1. **A version mismatch wins.** If the compiled and live ConfigVersions
-//     differ in year, month or day, a failed conversation-creating call is
-//     `config_version_stale` naming both versions, whatever the status was.
-//     The version diff is the whole detection rule (§3.7, D3); asserting on a
-//     particular status number would re-import the unsourced claim §18.1
-//     withdrew.
-//  2. A second CREATE_RCS with matching versions is `google_error`: it is a
-//     named status that Agent GM has already done the one documented thing
-//     about.
-//  3. Anything else with matching versions is `google_undocumented_status`,
-//     carrying the bare integer and claiming no meaning for it.
+// So the status decides the code, always:
+//
+//   - a second CREATE_RCS is `google_error`: a named status Agent GM has
+//     already done the one documented thing about;
+//   - anything else is `google_undocumented_status` carrying the bare
+//     integer, claiming no meaning for it.
+//
+// A version mismatch is added as CONTEXT on whichever of those it is --
+// both versions in `details`, and a sentence saying a pin bump may be the fix
+// -- because it is genuinely useful when a create fails and genuinely not a
+// diagnosis on its own. `config_version_stale` remains what D32 says it is:
+// a fact reported by GET /v1/health, never an error code.
 func ClassifyResolve(res gm.ResolveResult, compiled, live gm.ConfigVersion) (*gm.Conversation, error) {
 	if res.Status == gm.ResolveStatusSuccess {
 		if res.Conversation == nil {
@@ -80,11 +89,15 @@ func ClassifyResolve(res gm.ResolveResult, compiled, live gm.ConfigVersion) (*gm
 		}
 		return res.Conversation, nil
 	}
-	if !compiled.SameDate(live) {
-		return nil, gm.ConfigVersionStale(compiled, live, res.Status)
-	}
+
+	var e *gm.Error
 	if res.Status == gm.ResolveStatusCreateRCS {
-		return nil, gm.ResolveCreateRCSTwice()
+		e = gm.ResolveCreateRCSTwice()
+	} else {
+		e = gm.UndocumentedResolveStatus(res.Status)
 	}
-	return nil, gm.UndocumentedResolveStatus(res.Status)
+	if !compiled.SameDate(live) {
+		e = gm.WithConfigVersionContext(e, compiled, live)
+	}
+	return nil, e
 }

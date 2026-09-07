@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -101,6 +104,9 @@ func TestServeResumesAccountsFromTheSessionDirectory(t *testing.T) {
 		t.Fatalf("the second buildServer returned exit %d", code)
 	}
 	defer second.Close()
+	// The listener runs this behind the socket so /healthz answers at once;
+	// here it is called directly, which is the same function.
+	second.startAccounts(ctx)
 
 	if second.Resumed != 1 {
 		t.Fatalf("resumed %d accounts, want 1: without the resume every account row is "+
@@ -156,4 +162,48 @@ func fixtureCookies() map[string]string {
 		out[n] = "FIXTURE-" + n
 	}
 	return out
+}
+
+// Live-gate finding 5: `agent-gm serve` did not listen until resume and the
+// reprocess task had finished -- four minutes on the owner's deployment, with
+// /healthz unreachable throughout. Anything watching "is the service up"
+// concluded it was not, which is exactly backwards.
+//
+// Section 7.5 says /healthz is ok "whenever the process is serving", and a
+// process that has bound its socket is serving. An account that has not
+// connected yet is a fact about that account, reported in its own row.
+//
+// The two things that must NOT move behind the listener are already ahead of
+// it: migrations (4.3, before any listener binds) and crash recovery (6.6,
+// before any account connects). Those settle the DATABASE; this connects to
+// the network.
+//
+// Plant: call startAccounts before the listen instead of after and this
+// fails at "the listener waited for the accounts". Planted 2026-09-07.
+func TestHealthAnswersBeforeAccountsAreUp(t *testing.T) {
+	dir := t.TempDir()
+	serveEnv(t, dir)
+	ctx := context.Background()
+
+	b, code := buildServer(ctx, "127.0.0.1:0")
+	if code != exitOK {
+		t.Fatalf("buildServer returned exit %d", code)
+	}
+	defer b.Close()
+
+	// buildServer must NOT have resumed anything: that is the whole point.
+	if b.AccountsStarted() {
+		t.Error("the listener waited for the accounts; buildServer resumed them itself")
+	}
+
+	// And /healthz is answerable from the server it built, with no account
+	// connected and none started.
+	rec := httptest.NewRecorder()
+	b.Server.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/healthz = %d before accounts are up, want 200", rec.Code)
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"status":"ok"}` {
+		t.Errorf("/healthz body = %s", got)
+	}
 }

@@ -157,7 +157,20 @@ func ConvertMessage(m *gmproto.Message) Message {
 		Reactions:        convertReactions(m.GetReactions()),
 	}
 	var text string
-	for i, info := range m.GetMessageInfo() {
+	// mediaPart counts MEDIA parts, not all parts.
+	//
+	// att_ is UUIDv5 over (message ID, part index, media ID), so the index
+	// decides identity. Numbering by position among ALL MessageInfo entries
+	// meant that an echo carrying [media, text] and a later echo carrying
+	// [text, media] -- the same message, the same file -- produced two
+	// different att_ IDs and therefore two attachment rows for one file.
+	// That is what the Slice 2 live gate saw on every outgoing media send.
+	//
+	// Counting media parts among themselves makes the index a property of
+	// the attachment rather than of how Google happened to order the parts
+	// in that particular echo.
+	mediaPart := 0
+	for _, info := range m.GetMessageInfo() {
 		switch data := info.GetData().(type) {
 		case *gmproto.MessageInfo_MessageContent:
 			if text != "" {
@@ -167,7 +180,7 @@ func ConvertMessage(m *gmproto.Message) Message {
 		case *gmproto.MessageInfo_MediaContent:
 			mc := data.MediaContent
 			out.Attachments = append(out.Attachments, Attachment{
-				PartIndex:        i,
+				PartIndex:        mediaPart,
 				ActionMessageID:  info.GetActionMessageID(),
 				MediaID:          mc.GetMediaID(),
 				ThumbnailMediaID: mc.GetThumbnailMediaID(),
@@ -179,6 +192,7 @@ func ConvertMessage(m *gmproto.Message) Message {
 				Width:            mc.GetDimensions().GetWidth(),
 				Height:           mc.GetDimensions().GetHeight(),
 			})
+			mediaPart++
 		}
 	}
 	out.Text = text

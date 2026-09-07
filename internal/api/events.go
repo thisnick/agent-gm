@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/thisnick/agent-gm/internal/accounts"
 	"net/http"
 	"time"
 
@@ -68,6 +70,30 @@ func (d *HandlerDeps) stream(r *Request, accountID string) *Response {
 		sub := d.Supervisor.Subscribe(accountID)
 		defer sub.Close()
 
+		// The CURRENT state of everything in scope, before any change.
+		//
+		// A stream of nothing but changes is indistinguishable from a broken
+		// stream, and the Slice 2 live gate proved it: the owner watched for
+		// twenty minutes of sends, reactions and inbound messages and saw
+		// only the header, because the account stayed `connected` the whole
+		// time and a heartbeat is an SSE comment that no client displays.
+		// Nothing was wrong, and there was no way to tell.
+		//
+		// So the stream opens with a snapshot. Section 7.5 says "one event
+		// per state change for that account", and from a client that has
+		// just connected and holds no prior state, the current state IS the
+		// change -- it is the first thing it did not know.
+		for _, snap := range d.currentStates(r.Ctx, accountID) {
+			payload, err := json.Marshal(snap)
+			if err != nil {
+				continue
+			}
+			if _, err := fmt.Fprintf(w, "event: account.state\ndata: %s\n\n", payload); err != nil {
+				return
+			}
+		}
+		flusher.Flush()
+
 		beat := time.NewTicker(d.heartbeat())
 		defer beat.Stop()
 
@@ -101,4 +127,29 @@ func (d *HandlerDeps) stream(r *Request, accountID string) *Response {
 			}
 		}
 	}}
+}
+
+// currentStates is the opening snapshot of the SSE stream: every account in
+// scope, with the state it holds right now.
+//
+// It is deliberately the same shape as a change, with From empty, so a client
+// parses one kind of frame rather than two.
+func (d *HandlerDeps) currentStates(ctx context.Context, accountID string) []accounts.StateChange {
+	rows, err := d.Store.Accounts(ctx)
+	if err != nil {
+		return nil
+	}
+	out := make([]accounts.StateChange, 0, len(rows))
+	for _, row := range rows {
+		if accountID != "" && row.ID != accountID {
+			continue
+		}
+		out = append(out, accounts.StateChange{
+			AccountID: row.ID,
+			To:        accounts.State(row.State),
+			Reason:    accounts.Reason(row.StateReason),
+			At:        d.now().Truncate(time.Millisecond),
+		})
+	}
+	return out
 }

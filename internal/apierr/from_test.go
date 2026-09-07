@@ -83,19 +83,6 @@ func TestTheStructuredLibraryErrorsKeepTheirDetails(t *testing.T) {
 		}
 	})
 
-	t.Run("config_version_stale names both versions", func(t *testing.T) {
-		compiled := gm.ConfigVersion{Year: 2026, Month: 9, Day: 2, V1: 4, V2: 6}
-		live := gm.ConfigVersion{Year: 2026, Month: 9, Day: 3, V1: 4, V2: 6}
-		got := From(gm.ConfigVersionStale(compiled, live, gm.ResolveStatus(2)))
-		if got.Code != CodeConfigVersionStale {
-			t.Fatalf("code = %q", got.Code)
-		}
-		if got.Details["compiled_config_version"] != compiled.String() ||
-			got.Details["live_config_version"] != live.String() {
-			t.Errorf("details = %v, want both versions", got.Details)
-		}
-	})
-
 	t.Run("not_default_sms_app keeps the raw status off the public surface", func(t *testing.T) {
 		got := From(gm.NotDefaultSMSApp())
 		if got.Code != CodeNotDefaultSMSApp {

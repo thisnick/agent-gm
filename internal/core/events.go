@@ -128,9 +128,3 @@ func (a *Account) auditSource() string {
 	}
 	return "system"
 }
-
-func (a *Account) logWarn(msg string, kv ...any) {
-	if a.Log != nil {
-		a.Log.Warn(msg, kv...)
-	}
-}

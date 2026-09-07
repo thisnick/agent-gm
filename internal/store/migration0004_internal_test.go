@@ -140,6 +140,11 @@ func buildV3WithRawParticipants(t *testing.T, dir string) string {
 	              'received',100,2,1,1,'h2')`)
 	exec(`INSERT INTO reactions (id, message_id, participant_id, emoji, emoji_type, updated_at_ms)
 	      VALUES ('react-1','msg-1','them','👍','like',1)`)
+	// A v3 database genuinely lacks every column a later migration adds, and
+	// winding the stamp back without winding the SCHEMA back would make
+	// migration 0005 fail on a duplicate column -- which is the fixture
+	// lying, not the migration.
+	exec(`ALTER TABLE operations DROP COLUMN media_size_bytes`)
 	exec(`PRAGMA user_version = 3`)
 	return path
 }

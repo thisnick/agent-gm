@@ -444,18 +444,32 @@ func (b *LibGM) ResolveConversation(ctx context.Context, numbers []string, group
 	for i, n := range numbers {
 		req.Numbers[i] = &gmproto.ContactNumber{MysteriousInt: 2, Number: n, Number2: n}
 	}
-	if groupName != "" {
-		req.RCSGroupName = &groupName
-	}
+
+	// **The name is NOT sent on the first call.** This is a deliberate
+	// divergence from upstream, and it is the one place in this file that
+	// diverges (D34).
+	//
+	// `connector/startchat.go:186-189` at the pin sets `RCSGroupName` on the
+	// first `GetOrCreateConversation`. Agent GM's Slice 2 live gate found
+	// that a named start with SMS/MMS recipients FAILS there, and the same
+	// start without a name succeeds seconds later against the same phone and
+	// the same numbers. A name is an RCS group concept; Google refuses it on
+	// the call that is still deciding whether this is an RCS group at all.
+	//
+	// So the first call asks the question -- is this an RCS group? -- and the
+	// name goes on the retry, which is the call that actually creates one.
+	// That is where upstream puts it too when the first call comes back
+	// CREATE_RCS; the divergence is only about the first.
 	resp, err := b.client.GetOrCreateConversation(ctx, req)
 	if err != nil {
 		return ResolveResult{}, Classify(translateError(err))
 	}
 	if resp.GetStatus() == gmproto.GetOrCreateConversationResponse_CREATE_RCS {
-		if req.RCSGroupName == nil {
-			empty := ""
-			req.RCSGroupName = &empty
-		}
+		// The retry IS the RCS group creation, so this is where the name
+		// belongs. An empty string is acceptable and is what upstream sends
+		// when there is no name.
+		name := groupName
+		req.RCSGroupName = &name
 		create := true
 		req.CreateRCSGroup = &create
 		resp, err = b.client.GetOrCreateConversation(ctx, req)

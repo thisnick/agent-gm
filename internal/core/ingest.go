@@ -135,8 +135,16 @@ func (in *Ingester) IngestMessage(ctx context.Context, m gm.Message, isDM, isOld
 
 	// 8. Correlate the remote echo back to its send attempt, within this
 	// account. An old message never resolves an operation.
-	if !isOld && m.TmpID != "" && in.Account != nil {
-		if err := in.Account.correlateEcho(ctx, res.ID, m); err != nil {
+	//
+	// This hangs off the INGESTER, not off a core.Account. It used to
+	// require one, and the supervisor -- the thing that actually drains
+	// events in the running server -- builds its Ingester without one, so
+	// correlation never ran in production: every succeeded send left
+	// operations.message_id null while the message row sat there carrying
+	// the tmp_id. Correlation needs the store and the account ID and
+	// nothing else, so it now asks for nothing else.
+	if !isOld && m.TmpID != "" {
+		if err := in.correlateEcho(ctx, res.ID, m); err != nil {
 			return res, err
 		}
 	}
@@ -254,4 +262,12 @@ func (in *Ingester) logf(msg string, kv ...any) {
 // shouldIgnoreStatus's isDM argument means.
 func IsDM(c *gm.Conversation) bool {
 	return c != nil && !c.IsGroup
+}
+
+// warn logs at warn level, carrying the acct_ ID and never the Google
+// address (spec section 12.2).
+func (in *Ingester) warn(msg string, kv ...any) {
+	if in.Log != nil {
+		in.Log.Warn(msg, kv...)
+	}
 }

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -91,6 +92,12 @@ type built struct {
 	Server   *api.Server
 	// Resumed is how many accounts came back from sessions/ at startup.
 	Resumed int
+
+	workers *accounts.Workers
+	libLog  zerolog.Logger
+
+	mu              sync.Mutex
+	accountsStarted bool
 }
 
 // Close releases what buildServer opened.
@@ -265,40 +272,6 @@ func buildServer(ctx context.Context, addrOverride string) (*built, int) {
 	sup.Sweep = workers
 	sup.Backfill = workers
 
-	// Resume every account whose session file is on disk, BEFORE binding.
-	// Without this a restart left every account row in the database and
-	// listed, with no backend behind it: every write failed and no event
-	// stream ran, silently.
-	resumed, err := resumeAccounts(ctx, cfg, st, sessions, sup, libLog)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "agent-gm: %v\n", err)
-		return nil, exitLocalConfig
-	}
-	log.Info().Int("accounts", resumed).Msg("resumed")
-
-	// Section 4.3's other half: a migration that needs derived data
-	// recomputed sets server_meta.pending_reprocess, and "the process runs
-	// that task once after startup and clears the key". It runs BEFORE the
-	// listener binds, for the same reason crash recovery does -- a caller
-	// must not see a half-reconciled database and read an empty sender=me
-	// page as an answer.
-	// The accounts that resumed, which is the set that can be SWEPT. Every
-	// account row is relinked regardless -- see core.RunPendingReprocess.
-	var live []string
-	for _, a := range sup.List() {
-		live = append(live, a.ID)
-	}
-	if task, ran, err := core.RunPendingReprocess(ctx, st, workers, live); err != nil {
-		// Not fatal: the key stays set and the next start tries again. A
-		// server that refused to start because one phone was asleep would
-		// be worse than one that serves and retries.
-		log.Warn().Err(err).Str("task", task).
-			Msg("a pending reprocess task did not complete; it will be retried at the next start")
-	} else if ran {
-		log.Info().Str("task", task).Int("accounts", len(live)).
-			Msg("ran the pending reprocess task and cleared the key")
-	}
-
 	srv := api.NewServer(api.Deps{
 		Authz:     authzSvc,
 		PublicURL: cfg.PublicURL,
@@ -328,8 +301,63 @@ func buildServer(ctx context.Context, addrOverride string) (*built, int) {
 
 	return &built{
 		cfg: cfg, log: log, Store: st, Sessions: sessions,
-		Sup: sup, Deps: deps, Server: srv, Resumed: resumed,
+		Sup: sup, Deps: deps, Server: srv, workers: workers, libLog: libLog,
 	}, exitOK
+}
+
+// startAccounts resumes every account whose session file is on disk and runs
+// any pending reprocess task.
+//
+// **It runs AFTER the listener binds, deliberately.** Both steps talk to
+// phones: on the owner's real deployment the resume took two minutes and the
+// reprocess another two, and for those four minutes `/healthz` did not
+// answer -- so anything watching "is the service up" concluded it was not,
+// which is exactly backwards. Section 7.5 says `/healthz` is `ok` "whenever
+// the process is serving", and a process that has bound its socket is
+// serving; an account that has not connected yet is a fact about that
+// account, reported in its own row and in accounts_summary.
+//
+// The two things that must NOT wait are already done by the time this runs:
+// migrations (section 4.3, before any listener binds) and crash recovery
+// (section 6.6, before any account connects). Those settle the DATABASE.
+// This connects to the network, and nothing about correctness depends on it
+// having finished.
+func (b *built) startAccounts(ctx context.Context) {
+	resumed, err := resumeAccounts(ctx, b.cfg, b.Store, b.Sessions, b.Sup, b.libLog)
+	if err != nil {
+		// Not fatal, and it cannot be: the listener is already up. An
+		// undecryptable session is still reported loudly, because section
+		// 15.4's first runbook row is exactly that.
+		b.log.Error().Err(err).Msg("resuming accounts failed; the server is serving " +
+			"and the accounts that did not resume are listed with their state")
+	}
+	b.mu.Lock()
+	b.Resumed = resumed
+	b.accountsStarted = true
+	b.mu.Unlock()
+	b.log.Info().Int("accounts", resumed).Msg("resumed")
+
+	// The accounts that resumed, which is the set that can be SWEPT. Every
+	// account row is relinked regardless -- see core.RunPendingReprocess.
+	var live []string
+	for _, a := range b.Sup.List() {
+		live = append(live, a.ID)
+	}
+	if task, ran, err := core.RunPendingReprocess(ctx, b.Store, b.workers, live); err != nil {
+		b.log.Warn().Err(err).Str("task", task).
+			Msg("a pending reprocess task did not complete; it will be retried at the next start")
+	} else if ran {
+		b.log.Info().Str("task", task).Int("accounts", len(live)).
+			Msg("ran the pending reprocess task and cleared the key")
+	}
+}
+
+// AccountsStarted reports whether startAccounts has finished, so a test can
+// wait on the outcome rather than on a duration.
+func (b *built) AccountsStarted() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.accountsStarted
 }
 
 // listenAndServe binds and serves until the context ends.
@@ -352,6 +380,10 @@ func (b *built) listenAndServe(ctx context.Context) int {
 	}
 
 	log.Info().Str("addr", ln.Addr().String()).Msg("listening")
+
+	// Accounts come up behind the listener, so /healthz answers immediately.
+	go b.startAccounts(ctx)
+
 	done := make(chan error, 1)
 	go func() { done <- httpSrv.Serve(ln) }()
 

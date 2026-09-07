@@ -710,6 +710,13 @@ func (b *Backend) SendText(ctx context.Context, req gm.SendTextRequest) (gm.Send
 // operation alone, and the att_ row the send is FOR was never asserted. A
 // fake that quietly drops the payload makes every layer above it untestable
 // in exactly the place it matters (spec section 13.1).
+//
+// The echo carries NO SIZE, which is not an omission: the Slice 2 live gate
+// found every outgoing attachment row written with size_bytes null while
+// incoming ones carried theirs, because Google's echo of media we sent
+// returns a MediaContent with Size unset. The fake said the size back, so the
+// fill that production needs was invisible here. A fake that is kinder than
+// Google tests itself.
 func (b *Backend) SendMedia(ctx context.Context, req gm.SendMediaRequest) (gm.SendResult, error) {
 	att := []gm.Attachment{{
 		PartIndex:     0,
@@ -718,7 +725,6 @@ func (b *Backend) SendMedia(ctx context.Context, req gm.SendMediaRequest) (gm.Se
 		Filename:      req.Media.Name,
 		MimeType:      req.Media.MimeType,
 		MediaFormat:   req.Media.Format,
-		SizeBytes:     req.Media.SizeBytes,
 	}}
 	return b.doSend("SendMedia", req.ConversationID, req.TmpID, req.Caption, att...)
 }

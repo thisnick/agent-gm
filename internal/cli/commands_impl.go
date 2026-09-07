@@ -345,7 +345,16 @@ func (r *runner) watch(path string) error {
 			_, _ = fmt.Fprintf(r.out.stdout, "{\"event\":%q,\"data\":%s}\n", event, payload)
 		case strings.HasPrefix(line, ":"):
 			// A comment, which is how SSE keeps a connection alive.
-			r.out.Verbosef("stream keepalive")
+			//
+			// It goes to STDERR rather than being swallowed at --verbose
+			// only. The Slice 2 live gate had the owner watch for twenty
+			// minutes of real activity and see nothing at all: the account
+			// stayed `connected`, so there were no state changes, and the
+			// keepalives were invisible. Nothing was wrong and there was no
+			// way to tell. Stdout stays clean NDJSON -- the one command that
+			// writes more than one JSON value (11.3) -- and liveness is on
+			// stderr where every other diagnostic lives.
+			r.out.Infof("stream alive (no state change)")
 		}
 	}
 	if err := scanner.Err(); err != nil {

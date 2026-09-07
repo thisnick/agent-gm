@@ -84,6 +84,14 @@ func (a *Account) SendMedia(ctx context.Context, in SendMediaInput) (Result, err
 		return Result{}, err
 	}
 	return a.runOperation(ctx, KindSendMedia, in.Request, func(ctx context.Context, op store.Operation) (Outcome, error) {
+		// Google's echo of our own media carries no size, so the byte count
+		// is recorded here, BEFORE the send, and step 8 of section 5.3 puts
+		// it on the attachment row when the echo arrives -- which may be
+		// after a restart, which is why it is written down rather than kept
+		// in memory.
+		if err := a.Store.SetOperationMediaSize(ctx, op.ID, in.Media.SizeBytes); err != nil {
+			return Outcome{}, err
+		}
 		res, err := SendWithRetry(ctx, a.Clock, func(ctx context.Context) (gm.SendResult, error) {
 			return a.Backend.SendMedia(ctx, gm.SendMediaRequest{
 				ConversationID:   conv.SourceID,

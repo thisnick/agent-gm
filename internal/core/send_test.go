@@ -175,19 +175,54 @@ func TestClassifyResolve(t *testing.T) {
 		}
 	})
 
-	t.Run("a version mismatch is config_version_stale naming both versions", func(t *testing.T) {
-		// Deliberately NOT a special status: the detection rule is the
-		// version diff alone (spec 3.7, 13.2).
-		for _, st := range []gm.ResolveStatus{gm.ResolveStatusCreateRCS, gm.ResolveStatus(2), gm.ResolveStatus(9)} {
-			_, err := core.ClassifyResolve(gm.ResolveResult{Status: st}, same, ahead)
+	t.Run("a version mismatch is CONTEXT, never the diagnosis", func(t *testing.T) {
+		// The Slice 2 live gate: a named group start failed for an unrelated
+		// reason while the versions happened to differ, as they normally do
+		// operator to bump the pin -- which would not have helped -- and
+		// threw away the status that did fail. D32 exists to prevent exactly
+		// that, and the code that named D32 was committing it.
+		//
+		// Plant: relabel on a version mismatch again and this fails at
+		// "the version mismatch replaced the real status". Planted
+		// 2026-09-07.
+		for _, tc := range []struct {
+			status gm.ResolveStatus
+			want   gm.Code
+		}{
+			{gm.ResolveStatusCreateRCS, gm.CodeGoogleError},
+			{gm.ResolveStatus(2), gm.CodeGoogleUndocumentedState},
+			{gm.ResolveStatus(9), gm.CodeGoogleUndocumentedState},
+		} {
+			_, err := core.ClassifyResolve(gm.ResolveResult{Status: tc.status}, same, ahead)
 			var ge *gm.Error
-			if !errors.As(err, &ge) || ge.Code != gm.CodeConfigVersionStale {
-				t.Fatalf("status %d: error = %v, want config_version_stale", st, err)
+			if !errors.As(err, &ge) {
+				t.Fatalf("status %d: %v", tc.status, err)
 			}
-			if ge.Details["compiled_config_version"] != same.String() ||
-				ge.Details["live_config_version"] != ahead.String() {
-				t.Errorf("the error does not name both versions: %v", ge.Details)
+			if ge.Code != tc.want {
+				t.Errorf("status %d: code = %q, want %q", tc.status, ge.Code, tc.want)
 			}
+			// Both versions are still there, as context a reader can act on.
+			if ge.Details["config_version_compiled"] != same.String() ||
+				ge.Details["config_version_live"] != ahead.String() {
+				t.Errorf("status %d: the versions are not in details: %v", tc.status, ge.Details)
+			}
+			// And the undocumented status still carries its bare integer,
+			// which is the thing an operator reports upstream.
+			if tc.want == gm.CodeGoogleUndocumentedState &&
+				ge.Details["status"] != int32(tc.status) {
+				t.Errorf("status %d: details.status = %v", tc.status, ge.Details["status"])
+			}
+		}
+	})
+
+	t.Run("matching versions add no context at all", func(t *testing.T) {
+		_, err := core.ClassifyResolve(gm.ResolveResult{Status: gm.ResolveStatus(2)}, same, same)
+		var ge *gm.Error
+		if !errors.As(err, &ge) {
+			t.Fatal(err)
+		}
+		if _, ok := ge.Details["config_version_live"]; ok {
+			t.Error("versions that agree were reported as context anyway")
 		}
 	})
 

@@ -38,7 +38,6 @@ var specTable = []specRow{
 	{"rate_limited", 429, RetryYes},
 	{"internal_error", 500, RetryYes},
 	{"not_default_sms_app", 502, RetryNo},
-	{"config_version_stale", 502, RetryNo},
 	{"google_undocumented_status", 502, RetryNo},
 	{"google_error", 502, RetryMaybe},
 	{"google_http_error", 502, RetryYes},

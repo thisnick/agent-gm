@@ -507,17 +507,32 @@ func TestSlice2Test11ResolveThroughTheOperationPipeline(t *testing.T) {
 		}
 	})
 
-	t.Run("a_config_version_mismatch_is_config_version_stale", func(t *testing.T) {
+	t.Run("a_config_version_mismatch_is_context_not_the_diagnosis", func(t *testing.T) {
 		h := newHarness(t)
-		// The detection rule is the version diff ALONE. No particular status
-		// number is scripted, because asserting on one would re-import the
-		// unsourced claim section 18.1 withdrew.
+		// The Slice 2 live gate: a named group start failed for a reason
+		// that had nothing to do with the pin, while the versions happened
+		// to differ -- which is the NORMAL resting state between pin bumps,
+		// because Google ships a ConfigVersion on its own schedule.
+		// bump the pin and threw away the status that actually failed.
+		//
+		// So the status decides the code and the versions ride along as
+		// health, never an error code.
 		h.Backend.SetLiveConfigVersion(gm.ConfigVersion{Year: 2027, Month: 1, Day: 4, V1: 1, V2: 1})
-		h.Backend.ScriptResolveStatuses(gm.ResolveStatus(4))
+		h.Backend.ScriptResolveStatuses(gm.ResolveStatus(7))
 		_, err := start(h, "key-stale")
 		var gmErr *gm.Error
-		if !errors.As(err, &gmErr) || gmErr.Code != gm.CodeConfigVersionStale {
-			t.Fatalf("err = %v, want config_version_stale", err)
+		if !errors.As(err, &gmErr) {
+			t.Fatalf("err = %v, want a classified error", err)
+		}
+		if gmErr.Code != gm.CodeGoogleUndocumentedState {
+			t.Fatalf("code = %q, want google_undocumented_status", gmErr.Code)
+		}
+		if gmErr.Details["status"] != int32(7) {
+			t.Errorf("details.status = %#v, want the bare integer 7", gmErr.Details["status"])
+		}
+		// The versions are still there, as context a reader can act on.
+		if gmErr.Details["config_version_live"] == nil {
+			t.Errorf("the versions were dropped entirely: %v", gmErr.Details)
 		}
 	})
 }

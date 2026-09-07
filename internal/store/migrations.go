@@ -27,6 +27,7 @@ var migrations = []migration{
 	migration0002,
 	migration0003,
 	migration0004,
+	migration0005,
 }
 
 var migration0001 = migration{
@@ -641,6 +642,27 @@ var migration0004 = migration{
 		         WHERE participant_id NOT LIKE 'part\_%' ESCAPE '\'
 		    )
 		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+	},
+}
+
+// Migration 0005 gives an operation the plaintext size of the media it sent.
+//
+// Google's echo of our own outgoing media carries a MediaContent with no
+// Size: the live gate found every outgoing attachment row written with
+// `size_bytes` null, while the same account's INCOMING attachments carried
+// theirs. The size is not lost -- the upload reservation counted the bytes and
+// the send handed them to Google -- it simply had nowhere to live between the
+// send and the echo that correlates it, which may arrive after a restart. So
+// it lives on the operation row, and step 8 of section 5.3 writes it onto the
+// attachment when it links the echo.
+//
+// Rows written before this migration keep a null here, and their attachments
+// keep a null size. There is nothing to recompute: the bytes are gone.
+var migration0005 = migration{
+	version: 5,
+	name:    "operations.media_size_bytes",
+	stmts: []string{
+		`ALTER TABLE operations ADD COLUMN media_size_bytes INTEGER`,
 	},
 }
 

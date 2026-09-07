@@ -21,7 +21,6 @@ const (
 	CodeGoogleHTTPError         Code = "google_http_error"
 	CodeGoogleUndocumentedState Code = "google_undocumented_status"
 	CodeNotDefaultSMSApp        Code = "not_default_sms_app"
-	CodeConfigVersionStale      Code = "config_version_stale"
 	CodePairingNoCookies        Code = "pairing_no_cookies"
 	CodePairingNoDevices        Code = "pairing_no_devices"
 	CodePairingWrongEmoji       Code = "pairing_wrong_emoji"
@@ -333,23 +332,6 @@ func UndocumentedResolveStatus(status ResolveStatus) *Error {
 	return e
 }
 
-// ConfigVersionStale is Agent GM's own diagnosis, not Google's answer: a
-// conversation-creating call returned a non-SUCCESS status AND the live
-// ConfigVersion differs from the compiled one in year, month or day. The
-// version diff is the whole detection rule; no particular status code is
-// required or claimed (spec section 3.7, D3).
-func ConfigVersionStale(compiled, live ConfigVersion, status ResolveStatus) *Error {
-	e := newError(CodeConfigVersionStale, http.StatusBadGateway,
-		fmt.Sprintf("Google Messages for web version %s is compiled in but Google is serving %s; "+
-			"bumping the pinned mautrix-gmessages commit is the fix", compiled, live))
-	e.Details = map[string]any{
-		"compiled_config_version": compiled.String(),
-		"live_config_version":     live.String(),
-		"status":                  int32(status),
-	}
-	return e
-}
-
 // ResolveCreateRCSTwice is a second CREATE_RCS from
 // GetOrCreateConversation. The adapter has already done the one documented
 // thing about the first (retry once with CreateRCSGroup=true, exactly as
@@ -363,6 +345,34 @@ func ResolveCreateRCSTwice() *Error {
 		"google_message": "CREATE_RCS",
 	}
 	return e
+}
+
+// WithConfigVersionContext adds the compiled and live ConfigVersions to an
+// error as CONTEXT, without changing what the error IS.
+//
+// The version difference is useful when a conversation-creating call fails
+// and useless as a diagnosis on its own: Google ships a new ConfigVersion on
+// its own schedule, so a mismatch is the normal resting state between pin
+// bumps (D32). Replacing the real status with `config_version_stale` -- which
+// this code used to do -- told an operator to bump the pin for a failure that
+// had nothing to do with the pin, and threw away the status that did.
+func WithConfigVersionContext(e *Error, compiled, live ConfigVersion) *Error {
+	if e == nil {
+		return nil
+	}
+	out := *e
+	out.Details = map[string]any{}
+	for k, v := range e.Details {
+		out.Details[k] = v
+	}
+	out.Details["config_version_compiled"] = compiled.String()
+	out.Details["config_version_live"] = live.String()
+	out.Message = e.Message + fmt.Sprintf(
+		". Google Messages for web %s is compiled in and Google is serving %s; "+
+			"if this keeps happening, bumping the pinned mautrix-gmessages commit "+
+			"is worth trying, but the status above is what actually failed",
+		compiled, live)
+	return &out
 }
 
 // NotDefaultSMSApp is FAILURE_4, which is not retried: upstream renders it as

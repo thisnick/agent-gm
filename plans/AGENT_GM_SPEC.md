@@ -951,7 +951,7 @@ in the pinned tree, it says so and points at §18.1.
   unnamed value, and never claims to know what one means. See D3 and §18.1
   for the ConfigVersion field observation and the separate
   `config_version_stale` diagnosis.
-- **`config_version_stale` is Agent GM's own diagnosis, not Google's answer.**
+- **`config_version_stale` is Agent GM's own **health field**, never an error code, not Google's answer.**
   It is raised when a conversation-creating call returns a non-`SUCCESS`
   status **and** the live `ConfigVersion` from `FetchConfig` differs from the
   compiled-in `util.ConfigMessage` in year, month or day. The ConfigVersion
@@ -1239,6 +1239,10 @@ CREATE TABLE attachments (
     filename           TEXT,
     mime_type          TEXT,
     media_format       TEXT,
+    -- Google's number for an incoming attachment; for one WE sent, the size
+    -- the upload reservation counted, filled in when the echo is correlated
+    -- (see operations.media_size_bytes). A size already on the row is never
+    -- overwritten by a later sizeless echo.
     size_bytes         INTEGER,
     width              INTEGER,
     height             INTEGER,
@@ -1289,6 +1293,14 @@ CREATE TABLE operations (
     error_retryable       INTEGER,
     google_status_raw     INTEGER,                    -- admin-only
     request_payload_json  TEXT NOT NULL,              -- redacted: no bodies
+    -- Plaintext size of the media this operation sent, null for the rest.
+    -- Google's echo of media WE sent carries a MediaContent with no Size, so
+    -- the byte count the upload reservation had already counted is written
+    -- here BEFORE the send and put on the attachment row in step 8 of 5.3,
+    -- when the echo is correlated -- which may be after a restart, which is
+    -- why it is written down rather than held in memory. Without it every
+    -- outgoing attachment carries a null size while incoming ones do not.
+    media_size_bytes      INTEGER,
     created_at_ms         INTEGER NOT NULL,
     updated_at_ms         INTEGER NOT NULL,
     -- The idempotency key is scoped to the account as well as the caller and
@@ -2101,7 +2113,7 @@ JSON body for it (§7.6).
 | `rate_limited` | 429 | yes | with `Retry-After` |
 | `internal_error` | 500 | yes | a bug |
 | `not_default_sms_app` | 502 | no | `SendMessageResponse_FAILURE_4` |
-| `config_version_stale` | 502 | no | Agent GM's own diagnosis: a conversation-creating call failed **and** the compiled and live `ConfigVersion` differ (§3.7). The message names both and says the fix is a pin bump |
+| ~~`config_version_stale`~~ | — | — | **Retired as an error code** (D32, and the Slice 2 live gate). A version difference is the normal resting state between pin bumps, so relabelling a failure with it told an operator to bump the pin for failures that had nothing to do with the pin — and discarded the status that did fail. Google's real status is now always reported (`google_error` or `google_undocumented_status`), with both versions added to `details` as *context* and a sentence saying a pin bump is worth trying. `config_version_stale` remains a **field** of `GET /v1/health` |
 | `google_undocumented_status` | 502 | no | a Google enum value the pinned proto has no name for. `details.status` is the bare integer; no meaning is claimed (§3.7) |
 | `google_error` | 502 | maybe | a tachyon error; `details.google_type` (integer), `details.google_message` |
 | `google_http_error` | 502 | yes | transport level; `details.status` |
@@ -2183,7 +2195,7 @@ The cursor encodes `(sent_at_ms, id)` so it is stable across equal timestamps.
 | `GET` | `/v1/accounts` | `messages:read` | every account, whatever its state. `{id, google_account, label, state, state_reason, pairing_id, phone_id, phone_responding, paired_at, last_event_at}`. `google_account` is served because the owner needs to tell their accounts apart; it is never an ID and never in a URL |
 | `GET` | `/v1/accounts/{account_id}` | `messages:read` | one of them, plus that account's `google`, `backfill`, `sweep` and `counters` blocks — the same per-account object `GET /v1/health` embeds. The list route omits those four to keep a many-account listing small; that asymmetry is deliberate and is why `get_session` (§8.2) exists alongside `list_accounts` |
 | `PATCH` | `/v1/accounts/{account_id}` | `admin` | `{"label"?}` — a human name for a listing. Nothing else is mutable |
-| `GET` | `/v1/accounts/{account_id}/events` | `messages:read` | **SSE**, one event per state change for that account, plus a 30s heartbeat. The only streaming route; it carries no message data, so it needs no replay ring and no cursor. Backs `agm session --watch`. Omitting the ID (`/v1/accounts/events`) streams every account's changes, each tagged |
+| `GET` | `/v1/accounts/{account_id}/events` | `messages:read` | **SSE**. It opens with an `account.state` snapshot of every account in scope — a client that has just connected holds no prior state, so the current state is the first thing it did not know, and a stream of nothing but changes is indistinguishable from a broken one. Then one `account.state_changed` per state change, plus a 30s heartbeat. The only streaming route; it carries no message data, so it needs no replay ring and no cursor. Backs `agm session --watch`. Omitting the ID (`/v1/accounts/events`) streams every account's changes, each tagged |
 | `POST` | `/v1/accounts/{account_id}/reconnect` | `admin` | force `Reconnect()` on that account |
 | `POST` | `/v1/accounts/{account_id}/sign-out` | `admin` | §4.7. Shreds the session file, keeps every row. Requires `{"confirm": true}` |
 | `DELETE` | `/v1/accounts/{account_id}` | `admin` | §4.7. **The only route that deletes an account's data.** Requires `{"confirm": true}`; returns the deleted row counts and the `effect` sentence |
@@ -2395,7 +2407,7 @@ A reaction whose `EmojiType` has no unicode serves
 
 | Method | Path | Body | Answer |
 |---|---|---|---|
-| `POST` | `/v1/conversations` | `{"account_id", "recipients": ["+1…"], "name"?, "client_request_id"}`. `account_id` is required when more than one account exists (§7.3) — this is the one write whose target is a phone number rather than an ID, so nothing else can imply the account | `200` with the existing or newly created conversation plus the operation. `GetOrCreateConversation`; the `CREATE_RCS` retry of §3.7 is internal. `name` is accepted only for 2+ recipients. Zero recipients, or two that normalise to one number, is `invalid_request` **before** an operation row exists |
+| `POST` | `/v1/conversations` | `{"account_id", "recipients": ["+1…"], "name"?, "client_request_id"}`. **`name` is not sent on the first `GetOrCreateConversation`** — see D34: it goes on the `CreateRCSGroup` retry, which is the call that actually creates a group. | `account_id` is required when more than one account exists (§7.3) — this is the one write whose target is a phone number rather than an ID, so nothing else can imply the account | `200` with the existing or newly created conversation plus the operation. `GetOrCreateConversation`; the `CREATE_RCS` retry of §3.7 is internal. `name` is accepted only for 2+ recipients. Zero recipients, or two that normalise to one number, is `invalid_request` **before** an operation row exists |
 | `POST` | `/v1/conversations/{id}/messages` | `{"text"?, "upload_ids"?, "reply_to_message_id"?, "force_rcs"?, "client_request_id"}` | `200` with `{operation, message_id}`, where `message_id` is `null` until the remote echo lands — including on a `succeeded` send (§6.5). At least `text` or one upload. `upload_ids` is an array but **currently accepts exactly one element**; two is `invalid_request` naming the limit (§10.2) |
 | `POST` | `/v1/conversations/{id}/typing` | `{}` | `204`. Fire-and-forget, no operation, no idempotency key: it has no lasting effect |
 | `POST` | `/v1/conversations/{id}/read` | `{"message_id", "client_request_id"}` | `200`. Marks the conversation read through that message |
@@ -5162,6 +5174,7 @@ add missing tools to `devbox.json` rather than installing on the host.
 | **D31** | **`agm pair` prints the chosen device's `dest_reg_uuid` and nothing more: no last-seen timestamp, and no `details.device_count` on `pairing_init_timeout`.** Recorded 2026-09-06, from the Slice 1 review | §3.1 mandates `DoGaiaPairing`, which runs `StartGaiaPairing` and `FinishGaiaPairing` back to back and returns neither the `*PairingSession` nor the candidate list. The chosen device's `LastSeen` and the number of candidates reach only an upstream log line (`pair_google.go:352-370`), and `ErrHadMultipleDevices` is wrapped with `fmt.Errorf("%w (%w)", …)` carrying no count (`pair_google.go:391-397`, fixture assertion 16). `AuthData.DestRegID` *is* set before the emoji callback fires, so the UUID is available and is what §3.2 asks to be recorded. The alternative — driving `StartGaiaPairing`/`FinishGaiaPairing` directly — would forfeit the "`DoGaiaPairing` reconnects in its own goroutine" behaviour §3.1 says Agent GM depends on and must not re-implement, for two diagnostic fields |
 | **D32** | **`config_version_stale` is a diagnosis, not a fault.** `GET /v1/health` and `agm health` report it as a boolean fact about the account; it is an *error code* only when a conversation-creating call has actually failed (§3.7, §7.2). A stale version with everything working is reported and nothing more. Recorded 2026-09-06, from the Slice 1 live gate | The live gate saw `config_version_stale: true` (live `2026.9.3.4.6` against the pin's `2026.9.2.4.6`) while pairing, listing, sending and the echo all worked. Treating the version difference as an error would have failed a healthy deployment; treating it as invisible would have hidden the one diagnosis §15.4 gives for a conversation-creating failure. So it is surfaced, it does not change `status`, and §15.5 says what an operator does about it: nothing, until a create fails, and then a pin bump (§3.6) |
 | **D33** | **The pairing Chrome profile is short-lived.** It is created fresh under the platform's temporary directory for one capture and deleted the moment Chrome closes — on success, on failure, on timeout and on Ctrl-C. There is no kept profile, nothing under `$XDG_STATE_HOME/agent-gm/`, and no `--forget-browser`. **Owner decision, 2026-09-06** | A kept profile is a directory holding a live, logged-in Google session sitting on the client machine indefinitely, protected by nothing but its mode — the same blast radius as `sessions/*.enc` but with no data key in front of it, and easy to forget about. The benefit it bought was a `--refresh-cookies` that usually needed no sign-in; the owner judged a sign-in prompt per refresh to be cheap next to a permanent credential on disk. Keying it by account, and the `--forget-browser` command that existed to clean it up, both go with it |
+| **D34** | **The group name is sent on the RCS retry, not on the first `GetOrCreateConversation`.** A deliberate divergence from upstream, recorded 2026-09-07 from the Slice 2 live gate | `connector/startchat.go:186-189` at the pin sets `RCSGroupName` on the first call. The live gate found that a named start with SMS/MMS recipients **fails** there, and the same start without a name succeeds seconds later against the same phone and the same numbers. A name is an RCS group concept, and Google refuses it on the call that is still deciding whether this is an RCS group at all. So the first call asks the question and the name goes on the retry — which is where upstream puts it too once the first call returns `CREATE_RCS`; the divergence is only about the first call. The same gate showed the second half of this bug: the failure was being relabelled `config_version_stale` because the versions happened to differ, which sent the operator after the pin instead of the name (D32) |
 
 #### Field observation behind D3 — the ConfigVersion, and status 4
 

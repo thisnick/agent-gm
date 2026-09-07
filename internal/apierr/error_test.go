@@ -347,25 +347,6 @@ func TestGoogleUndocumentedStatusClaimsNothing(t *testing.T) {
 	}
 }
 
-// TestConfigVersionStaleNamesBothVersionsAndTheFix is spec sections 3.7 and
-// 7.2: the message names the compiled and the live version and says the fix
-// is a pin bump, because without that sentence the owner cannot act on it.
-func TestConfigVersionStaleNamesBothVersionsAndTheFix(t *testing.T) {
-	e := ConfigVersionStale("2026.08.24", "2026.09.02")
-	if e.Code != CodeConfigVersionStale || e.HTTPStatus() != 502 {
-		t.Fatalf("code %q status %d", e.Code, e.HTTPStatus())
-	}
-	if !strings.Contains(e.Message, "2026.08.24") || !strings.Contains(e.Message, "2026.09.02") {
-		t.Errorf("the message must name both versions: %q", e.Message)
-	}
-	if !strings.Contains(e.Message, "pin") {
-		t.Errorf("the message must say the fix is a pin bump: %q", e.Message)
-	}
-	if e.Details["compiled_config_version"] != "2026.08.24" || e.Details["live_config_version"] != "2026.09.02" {
-		t.Errorf("details must carry both versions: %#v", e.Details)
-	}
-}
-
 // constructorCase is one constructor invoked with representative arguments,
 // for the two whole-surface tests below.
 type constructorCase struct {
@@ -398,7 +379,6 @@ func allConstructors() []constructorCase {
 		{"MediaUnsupportedType", MediaUnsupportedType("application/x-nonsense")},
 		{"Internal", Internal(errors.New("boom"))},
 		{"NotDefaultSMSApp", NotDefaultSMSApp()},
-		{"ConfigVersionStale", ConfigVersionStale("2026.08.24", "2026.09.02")},
 		{"GoogleUndocumentedStatus", GoogleUndocumentedStatus(31337)},
 		{"GoogleError", GoogleError(16, "denied", false)},
 		{"GoogleHTTPError", GoogleHTTPError(503)},
@@ -481,7 +461,7 @@ func TestEveryConstructorIsExercised(t *testing.T) {
 		"WrongTypeForField", "MissingParameter", "WrongIDPrefix", "IDFromAnotherAccount",
 		"AmbiguousAccount", "UnsupportedCapability", "IdempotencyConflict", "RateLimited",
 		"NotFound", "InvalidToken", "InsufficientScope", "NotPaired", "PayloadTooLarge",
-		"MediaUnsupportedType", "Internal", "NotDefaultSMSApp", "ConfigVersionStale",
+		"MediaUnsupportedType", "Internal", "NotDefaultSMSApp",
 		"GoogleUndocumentedStatus", "GoogleError", "GoogleHTTPError",
 		"GooglePermissionDenied", "Disconnected", "PhoneNotResponding",
 	}

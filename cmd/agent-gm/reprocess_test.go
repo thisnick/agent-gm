@@ -54,6 +54,8 @@ func TestServeRunsThePendingReprocessTaskAndClearsTheKey(t *testing.T) {
 	}
 	defer second.Close()
 	defer second.Sup.StopAll(context.WithoutCancel(ctx))
+	// Behind the listener in production; called directly here.
+	second.startAccounts(ctx)
 
 	value, ok, err := second.Store.Meta(ctx, core.PendingReprocessKey)
 	if err != nil {

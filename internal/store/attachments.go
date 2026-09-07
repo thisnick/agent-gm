@@ -92,7 +92,10 @@ func (s *Store) UpsertAttachment(ctx context.Context, accountID, messageID strin
 			    filename           = excluded.filename,
 			    mime_type          = excluded.mime_type,
 			    media_format       = excluded.media_format,
-			    size_bytes         = excluded.size_bytes,
+			    -- A later echo that carries no size must not erase a size
+			    -- already known: Google's echo of our own outgoing media
+			    -- carries none at all (migration 0005).
+			    size_bytes         = COALESCE(excluded.size_bytes, attachments.size_bytes),
 			    width              = excluded.width,
 			    height             = excluded.height,
 			    download_state     = excluded.download_state`,
@@ -103,6 +106,28 @@ func (s *Store) UpsertAttachment(ctx context.Context, accountID, messageID strin
 		return err
 	})
 	return id, err
+}
+
+// FillMissingAttachmentSize writes a plaintext size onto this message's
+// attachments that have none.
+//
+// It exists because Google's echo of media WE sent carries a MediaContent
+// with no Size, so the attachment row is written sizeless while the byte
+// count is sitting on the operation that sent it (migration 0005). A size
+// already on the row wins: Google's own number for an incoming attachment is
+// never second-guessed, and this is a fill, not a correction.
+func (s *Store) FillMissingAttachmentSize(ctx context.Context, messageID string, size int64) error {
+	if size <= 0 {
+		return nil
+	}
+	return s.Write(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx,
+			`UPDATE attachments SET size_bytes = ?
+			 -- all-accounts: a msg_ ID already carries its account (section 4.1).
+			 WHERE message_id = ? AND (size_bytes IS NULL OR size_bytes = 0)`,
+			size, messageID)
+		return err
+	})
 }
 
 // SetAttachmentDownloadState records the outcome of a fetch, with the SHA-256

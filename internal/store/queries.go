@@ -143,15 +143,27 @@ func (q ConversationQuery) sql() (string, []any) {
 		// With account_id this is participants(account_id, phone_e164);
 		// without it, participants(phone_e164). Both directions are indexed
 		// because a raw number is not account-specific (spec section 7.6).
+		//
+		// The match is exact OR on the trailing digits, because section 7.6
+		// promises `participant` accepts "an E.164 number, the bare digits,
+		// a national form". Stored numbers are E.164, so an exact comparison
+		// answered `+12025550123` and returned an empty page for
+		// `2025550123` and `(202) 555-0123` -- the two forms a human
+		// actually types. An empty page is a valid answer, so nothing looked
+		// wrong; the live gate found it.
+		exact, suffix := PhoneMatch(q.ParticipantPhone)
 		if q.AccountID != "" {
 			b.and(`EXISTS (SELECT 1 FROM participants p
-			                WHERE p.account_id = ? AND p.phone_e164 = ?
-			                  AND p.conversation_id = c.id)`, q.AccountID, q.ParticipantPhone)
+			                WHERE p.account_id = ? AND p.conversation_id = c.id
+			                  AND (p.phone_e164 = ? OR (? <> '' AND p.phone_e164 LIKE ?)))`,
+				q.AccountID, exact, suffix, "%"+suffix)
 		} else {
 			b.and(`EXISTS (SELECT 1 FROM participants p
 			                -- all-accounts: a raw number is not account-specific, so it
 			                -- matches in every account and the rows carry account_id (7.6).
-			                WHERE p.phone_e164 = ? AND p.conversation_id = c.id)`, q.ParticipantPhone)
+			                WHERE p.conversation_id = c.id
+			                  AND (p.phone_e164 = ? OR (? <> '' AND p.phone_e164 LIKE ?)))`,
+				exact, suffix, "%"+suffix)
 		}
 	}
 	b.after("c.last_activity_ms", "c.id", q.Cursor)
@@ -257,15 +269,21 @@ func (q MessageQuery) where() *builder {
 			                                 WHERE p.is_me = 1)`)
 		}
 	case q.SenderPhone != "":
+		// The same three accepted forms as `participant` -- see PhoneMatch.
+		exact, suffix := PhoneMatch(q.SenderPhone)
 		if q.AccountID != "" {
 			b.and(`m.sender_participant IN (SELECT p.id FROM participants p
-			                                 WHERE p.account_id = ? AND p.phone_e164 = ?)`,
-				q.AccountID, q.SenderPhone)
+			                                 WHERE p.account_id = ?
+			                                   AND (p.phone_e164 = ?
+			                                        OR (? <> '' AND p.phone_e164 LIKE ?)))`,
+				q.AccountID, exact, suffix, "%"+suffix)
 		} else {
 			b.and(`m.sender_participant IN (SELECT p.id FROM participants p
 			                                 -- all-accounts: a raw number is not account-specific
 			                                 -- and matches in every account (section 7.6).
-			                                 WHERE p.phone_e164 = ?)`, q.SenderPhone)
+			                                 WHERE p.phone_e164 = ?
+			                                    OR (? <> '' AND p.phone_e164 LIKE ?))`,
+				exact, suffix, "%"+suffix)
 		}
 	}
 	if q.AfterMS > 0 {
@@ -600,4 +618,38 @@ func prefixed(columns, alias string) string {
 		parts[i] = alias + "." + strings.TrimSpace(p)
 	}
 	return strings.Join(parts, ", ")
+}
+
+// PhoneMatch turns what a caller typed into the two comparisons a phone
+// lookup needs: the value as given, and its trailing digits.
+//
+// Section 7.6 says `participant` and `sender` accept "an E.164 number
+// (+12025550123), the bare digits, a national form". Stored numbers are
+// E.164, so an exact comparison answers only the first, and the other two --
+// the forms a human actually types -- returned an empty page. That is the
+// worst kind of wrong answer, because an empty page is a valid one.
+//
+// The suffix is empty for anything under seven digits. A four-digit
+// fragment would match half the address book, and a filter that matches
+// everything is not a filter; a caller who genuinely means a short code can
+// still give the exact stored value.
+func PhoneMatch(raw string) (exact, suffix string) {
+	digits := make([]rune, 0, len(raw))
+	for _, r := range raw {
+		if r >= '0' && r <= '9' {
+			digits = append(digits, r)
+		}
+	}
+	if len(digits) < 7 {
+		return raw, ""
+	}
+	// A leading country code is dropped from the SUFFIX only: matching on
+	// the last ten digits is what makes +12025550123, 12025550123,
+	// 2025550123 and (202) 555-0123 the same person, without asserting
+	// anything about which country they are in.
+	const national = 10
+	if len(digits) > national {
+		digits = digits[len(digits)-national:]
+	}
+	return raw, string(digits)
 }

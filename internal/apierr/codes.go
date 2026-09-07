@@ -44,7 +44,6 @@ const (
 	CodeRateLimited              Code = "rate_limited"
 	CodeInternalError            Code = "internal_error"
 	CodeNotDefaultSMSApp         Code = "not_default_sms_app"
-	CodeConfigVersionStale       Code = "config_version_stale"
 	CodeGoogleUndocumentedStatus Code = "google_undocumented_status"
 	CodeGoogleError              Code = "google_error"
 	CodeGoogleHTTPError          Code = "google_http_error"
@@ -99,7 +98,6 @@ var table = map[Code]spec{
 	CodeRateLimited:              {http.StatusTooManyRequests, RetryYes},
 	CodeInternalError:            {http.StatusInternalServerError, RetryYes},
 	CodeNotDefaultSMSApp:         {http.StatusBadGateway, RetryNo},
-	CodeConfigVersionStale:       {http.StatusBadGateway, RetryNo},
 	CodeGoogleUndocumentedStatus: {http.StatusBadGateway, RetryNo},
 	CodeGoogleError:              {http.StatusBadGateway, RetryMaybe},
 	CodeGoogleHTTPError:          {http.StatusBadGateway, RetryYes},

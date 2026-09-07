@@ -20,7 +20,7 @@ func TestDeliveryStateMapping(t *testing.T) {
 
 		1: gm.DeliveryStateSent, 14: gm.DeliveryStateSent,
 
-		2: gm.DeliveryStateDelivered,
+		2:  gm.DeliveryStateDelivered,
 		11: gm.DeliveryStateRead,
 
 		8: gm.DeliveryStateFailed, 9: gm.DeliveryStateFailed, 13: gm.DeliveryStateFailed,
@@ -204,8 +204,8 @@ func TestForceRCSEligible(t *testing.T) {
 // Reactions are a closed enum, and normalisation is mandatory: adding one
 // spelling of a heart and removing the other must be the same reaction.
 func TestEmojiCanonicalisation(t *testing.T) {
-	t1, e1 := gm.CanonicaliseEmojiInput("❤")             // bare heart
-	t2, e2 := gm.CanonicaliseEmojiInput("❤️")        // with variation selector
+	t1, e1 := gm.CanonicaliseEmojiInput("❤")  // bare heart
+	t2, e2 := gm.CanonicaliseEmojiInput("❤️") // with variation selector
 	if t1 != gm.EmojiTypeRedHeart || t2 != gm.EmojiTypeRedHeart {
 		t.Fatalf("both spellings must be RED_HEART, got %s and %s", t1, t2)
 	}

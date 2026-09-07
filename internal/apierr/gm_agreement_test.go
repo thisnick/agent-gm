@@ -152,7 +152,6 @@ func gmCodes() []gm.Code {
 		gm.CodeGoogleHTTPError,
 		gm.CodeGoogleUndocumentedState,
 		gm.CodeNotDefaultSMSApp,
-		gm.CodeConfigVersionStale,
 		gm.CodePairingNoCookies,
 		gm.CodePairingNoDevices,
 		gm.CodePairingWrongEmoji,
