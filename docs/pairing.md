@@ -1,7 +1,6 @@
 # Pairing a Google account
 
-Serves spec §3.2, §3.3, §3.5, §4.7, §7.2, §11.4, §12.1, and decisions D19,
-D28, D30, D31, D33.
+Serves spec §3.2, §3.3, §3.5, §4.7, §7.2, §11.4 and §12.1.
 
 ## What pairing is, and what it is not
 
@@ -10,10 +9,9 @@ signs in to your Google account, asks Google which Android device on that
 account is the phone, and completes a device pairing that the phone confirms
 by emoji. That is the **gaia flow**, and at this pin it is the only one.
 
-**QR pairing is gone.** Google withdrew the QR device-pairing option, so
-there is nothing to choose between and no `--qr` flag to look for (D19). If
-you have used the older `mautrix-gmessages` bridge and remember scanning a
-code, that path no longer exists on Google's side.
+**There is one pairing flow and no QR option.** Google withdrew QR device
+pairing, so there is nothing to choose between and no `--qr` flag to look
+for.
 
 `agm pair` is one command from start to paired. It opens a browser, captures
 the session, starts the pairing, prints an emoji, and waits for you to tap it
@@ -30,6 +28,11 @@ lower-privilege alternative to pick instead; there are only handling rules,
 and they are in [operations.md](operations.md).
 
 ## Before you start
+
+`agm pair` drives the `admin`-scoped pairing routes, so you need a credential
+first: `agm auth login --admin --server <url>` once, on this machine. A
+`--server` no profile knows is refused on every other command, and `agm pair`
+with no profile at all exits `9` saying what to type.
 
 You need three things:
 
@@ -99,7 +102,7 @@ need `--account` once more than one account exists, and that
 
 ## The Chrome profile is short-lived
 
-The profile `agm pair` creates is temporary by design (D33). It is made fresh
+The profile `agm pair` creates is temporary. It is made fresh
 under the platform's temporary directory at mode `0700` for one capture, and
 **deleted the moment Chrome closes — on success, on failure, on timeout and
 on Ctrl-C**. Nothing is written under `$XDG_STATE_HOME/agent-gm/`. A
@@ -119,11 +122,6 @@ Say the consequence plainly, because you will meet it:
   may not also ask for the password; that is Google's decision and Agent GM
   cannot predict it. The command says so before it opens the window.
 
-The trade was deliberate. A kept profile would be a live, logged-in Google
-session sitting on your machine indefinitely, protected by nothing but its
-file mode — the same blast radius as a session file, with no data key in
-front of it. A sign-in prompt per refresh is the cheaper of the two.
-
 One more thing worth knowing while the window is open: **Chrome's debugging
 port is a live credential channel.** Anything that can connect to it reads
 every cookie in that profile. Agent GM binds it to `127.0.0.1` on a random
@@ -131,9 +129,6 @@ port and kills Chrome as soon as the capture finishes, but the window between
 those two moments is real.
 
 ## When Chrome does not open
-
-This is the section you will actually need, and it cost the Slice 1 live gate
-an attempt.
 
 Chrome's own stderr is kept and surfaced, not swallowed. If the browser exits
 before the debugging port answers, what Chrome said is the error `agm pair`
@@ -240,7 +235,7 @@ $ agm pair --server https://gm.example.test
 Chrome runs on your laptop; the CLI sends **only the seven cookies** to the
 server over TLS. Nothing else about your laptop travels.
 
-This is a trust decision, so §11.4 states it rather than implying it:
+Stated plainly, because it is the trust you are extending:
 
 > **The server then holds live Google account cookies for the whole life of
 > the pairing**, inside `sessions/<acct>.enc`. Not "saw them once" — *holds
@@ -295,13 +290,9 @@ the same value in the audit row, so a second run can be compared against the
 first and "which phone did we pair?" stays answerable afterwards.
 
 **It prints that and nothing more: no last-seen timestamp, and no device
-count.** This is a deliberate limit, not an omission (D31). Agent GM drives
-pairing through `DoGaiaPairing`, which runs the two halves of the flow back
-to back and returns neither the pairing session nor the candidate list; the
-chosen device's last-seen time and the number of candidates reach only an
-upstream log line. The alternative — driving the two halves directly — would
-forfeit reconnection behaviour Agent GM depends on, for two diagnostic
-fields. The same reason is why `pairing_init_timeout` carries
+count.** Agent GM drives pairing through `DoGaiaPairing`, which returns
+neither the pairing session nor the candidate list, so those two values reach
+only an upstream log line. For the same reason `pairing_init_timeout` carries
 `details.multiple_devices: true` but never a `details.device_count`.
 
 ## Two settings to check on the phone, once
@@ -327,8 +318,7 @@ backfill churn, not the pairing.
 
 ## Re-pairing, signing out, and removing
 
-These three are different acts with very different consequences, and the
-difference is the point of D30.
+These three are different acts with very different consequences.
 
 **Signing out keeps everything.** `agm accounts sign-out <acct-id>`
 disconnects that account, shreds its `sessions/<acct>.enc` and zeroes the
@@ -355,8 +345,8 @@ the trail of a removed account survives it.
 
 **Re-pairing resumes the same account.** Run `agm pair` again for an account
 you already have and Agent GM recognises it and reuses the same `acct_` ID.
-That is because the identifier is derived from the **Google account address**,
-not from the phone (D28) — so re-pairing keeps every existing `conv_` and
+The identifier is derived from the **Google account address** rather than from
+the phone, so re-pairing keeps every existing `conv_` and
 `msg_` ID **even onto a different phone**, which is the whole reason the
 identifier was chosen that way. History is not duplicated: ingest is an
 upsert on Google's own stable IDs, so backfill after a re-pair rewrites
