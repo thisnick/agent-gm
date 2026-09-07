@@ -1,25 +1,31 @@
 package mcp
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
-	"io"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
+
+	sdkauth "github.com/modelcontextprotocol/go-sdk/auth"
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/thisnick/agent-gm/internal/api"
 	"github.com/thisnick/agent-gm/internal/apierr"
 	"github.com/thisnick/agent-gm/internal/authz"
 )
 
-// Package mcp is the MCP surface of spec section 8: a stateless streamable
-// HTTP endpoint at `/mcp`, twenty-one tools, one resource template, and the
+// Package mcp is the MCP surface of spec section 8: a streamable HTTP
+// endpoint at `/mcp`, twenty-one tools, one resource template, and the
 // `instructions` block a cold agent reads before it does anything.
 //
-// Nothing here reimplements the API. Every tool call runs the REST handler
-// through api.Server.Invoke, so the filters, the validation, the error codes
-// and the DTOs are the same on both surfaces by construction.
+// The protocol is the official MCP Go SDK's (decision D36). This file is the
+// part that is still ours: the section 8.1 Origin check, the 1 MiB bound, the
+// bearer verification against our authz store, the section 8.1 concurrency
+// budget, and the section 7.1 error envelope on every refusal.
 
 // Path is where the endpoint lives.
 const Path = "/mcp"
@@ -39,6 +45,22 @@ const (
 // MaxBodyBytes is section 8.1's 1 MiB bound.
 const MaxBodyBytes = apierr.MaxBodyBytes
 
+// ChallengeScopes is what the `/mcp` challenge tells a client to ask for.
+//
+// It names `messages:read messages:write` and NOT `messages:delete`, which is
+// section 9.2's literal challenge.
+//
+// The omission is not an oversight in the spec. `scope` in a challenge is what
+// the client should ASK FOR, and section 9.4 makes exactly those two the
+// default an authorization request carries when the client names no scope. A
+// challenge that also asked for `messages:delete` would send every connector
+// to an approval screen offering to let a model delete the owner's threads,
+// for no better reason than that the scope exists. A client that wants it asks
+// for it; the discovery documents list all three under `scopes_supported`.
+var ChallengeScopes = []string{
+	string(authz.ScopeMessagesRead), string(authz.ScopeMessagesWrite),
+}
+
 // messagingScopes is the set a token must intersect to reach `/mcp` at all.
 var messagingScopes = []authz.Scope{
 	authz.ScopeMessagesRead, authz.ScopeMessagesWrite, authz.ScopeMessagesDelete,
@@ -54,9 +76,9 @@ type Config struct {
 	// PublicURL is AGENT_GM_PUBLIC_URL. The `Origin` check compares against
 	// it, and every URL handed out is built from it.
 	PublicURL string
-	// The build facts `serverInfo` reports. `Commit` and `SourceURL` are the
-	// AGPL section 13 obligation of spec section 1.4, and section 16 Slice 3
-	// test 28 asserts they equal the built commit.
+	// The build facts the `initialize` result reports. `Commit` and
+	// `SourceURL` are the AGPL section 13 obligation of spec section 1.4, and
+	// section 16 Slice 3 test 28 asserts they equal the built commit.
 	Version   string
 	Commit    string
 	SourceURL string
@@ -66,7 +88,11 @@ type Config struct {
 
 // Handler serves `/mcp`.
 type Handler struct {
-	cfg Config
+	cfg     Config
+	servers servers
+	// chain is the Origin check, the bound, the SDK's bearer middleware, the
+	// concurrency gate and the SDK's streamable transport, in that order.
+	chain http.Handler
 
 	mu       sync.Mutex
 	inFlight int
@@ -75,17 +101,55 @@ type Handler struct {
 
 // New builds the handler.
 func New(cfg Config) *Handler {
-	return &Handler{cfg: cfg, perAuth: map[string]int{}}
+	h := &Handler{cfg: cfg, perAuth: map[string]int{}}
+
+	streamable := sdk.NewStreamableHTTPHandler(h.getServer, &sdk.StreamableHTTPOptions{
+		// Stateless, and it is the SDK that makes the choice for us.
+		//
+		// `StreamableServerTransport.SupportsProtocolVersion` refuses every
+		// revision from `2026-07-28` onwards unless the transport is
+		// stateless -- SEP-2575's protocol is sessionless by design and drops
+		// resumability. Section 8.1 names `2026-07-28` as the revision this
+		// server speaks, so sessions and that revision cannot both be had:
+		// a stateful handler negotiates down to `2025-11-25` for every
+		// client, silently. Stateless is therefore the setting that keeps
+		// section 8.1's protocol, and it is also what section 8.1 already
+		// described -- every request carries its own bearer and its own
+		// protocol metadata, and durable state lives in SQLite.
+		Stateless: true,
+		// The transport's own bound agrees with ours. Ours refuses first,
+		// before authentication, so an unauthenticated flood is refused
+		// without a store lookup; this one is the SDK's belt on the same
+		// number, and it is what bounds a body that arrives chunked.
+		MaxRequestBodyBytes: MaxBodyBytes,
+		// A tool call that outlives its HTTP request has nowhere to send its
+		// answer, and every one of ours is a REST call that can be abandoned.
+		PropagateRequestCancellation: true,
+	})
+
+	bearer := sdkauth.RequireBearerToken(h.verifyToken, &sdkauth.RequireBearerTokenOptions{
+		ResourceMetadataURL: apierr.ResourceMetadataURL(cfg.PublicURL),
+		// Scopes is deliberately empty. The SDK enforces `Scopes` as an AND
+		// over the whole list, and section 8.1 asks for an OR over three: a
+		// token must carry AT LEAST ONE messaging scope. So the check is in
+		// verifyToken and the 403 is ours, while the challenge FORMAT stays
+		// the SDK's -- Challenge() below is asserted byte-equal to what a
+		// real RequireBearerToken emits for these scopes.
+	})
+
+	h.chain = h.checkOrigin(h.bound(h.singleBearerHeader(bearer(h.requireMessagingScope(h.gate(streamable))))))
+	return h
 }
 
 // Mount returns an http.Handler that serves `/mcp` from h and everything else
 // from next.
 //
 // It is a wrapper rather than a route in the api inventory on purpose: `/mcp`
-// is not a `/v1` route, it does not answer the section 7.1 envelope, and its
-// pre-parse checks run in an order the REST chain does not have. Putting it in
-// the inventory would make the two-way table test of section 16 Slice 3 test
-// 16 -- which is about `/v1` routes -- have to special-case its own endpoint.
+// is not a `/v1` route, it does not answer the section 7.1 envelope on
+// success, and its pre-transport checks run in an order the REST chain does
+// not have. Putting it in the inventory would make the two-way table test of
+// section 16 Slice 3 test 16 -- which is about `/v1` routes -- have to
+// special-case its own endpoint.
 func Mount(next http.Handler, h *Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == Path {
@@ -96,118 +160,88 @@ func Mount(next http.Handler, h *Handler) http.Handler {
 	})
 }
 
-// ServeHTTP runs section 8.1's checks, in section 8.1's order, and then the
-// JSON-RPC method.
-//
-// The order is the contract. `Origin` is first and is checked **before the
-// transport parses anything**, because a browser page on another origin must
-// not be able to reach this endpoint at all, and a check that ran after
-// parsing would already have done work on its behalf. The authorization
-// checks come before the concurrency gate so that an unauthenticated flood
-// cannot exhaust the in-flight budget of the callers who are allowed in.
+// ServeHTTP runs the chain.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	setSecurityHeaders(w)
+	// The SDK and its bearer middleware refuse with `http.Error`, which is
+	// plain text. Section 7.1's envelope is this server's answer shape on
+	// every surface, and a connector that has only ever seen JSON from us
+	// should not have to parse prose to learn it was rate limited. The
+	// wrapper substitutes the envelope on a refusal and gets out of the way
+	// on a 2xx, so an SSE stream still streams.
+	ew := &envelopeWriter{ResponseWriter: w, log: h.cfg.Log, challenge: Challenge(h.cfg.PublicURL)}
+	h.chain.ServeHTTP(ew, r)
+	ew.finish()
+}
 
-	if r.Method != http.MethodPost {
-		// There is no server-initiated stream to open and no session to
-		// delete: this server is stateless at the application layer, so GET
-		// and DELETE have nothing to do.
-		w.Header().Set("Allow", http.MethodPost)
-		h.fail(w, r, apierr.MethodNotAllowed(r.Method, http.MethodPost))
-		return
-	}
+// checkOrigin is section 8.1's first check: `Origin`, when present, must equal
+// the configured public URL, and it is checked **before the transport parses
+// anything**, because a browser page on another origin must not be able to
+// reach this endpoint at all and a check that ran after parsing would already
+// have done work on its behalf.
+//
+// It is ours and not the SDK's. The SDK offers
+// `StreamableHTTPOptions.CrossOriginProtection`, but it is opt-in behind a
+// MCPGODEBUG parameter, it is deprecated in favour of external middleware,
+// and it compares the `Origin` against the request's own `Host` -- which is
+// the tunnel's hostname here, not `AGENT_GM_PUBLIC_URL`, so behind the
+// deployment of section 14 it would compare the wrong two strings.
+func (h *Handler) checkOrigin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if origin := r.Header.Get("Origin"); origin != "" && !sameOrigin(origin, h.cfg.PublicURL) {
+			// 403 rather than 401: this is not a credential problem, and
+			// offering a challenge would invite a browser page on another
+			// origin to go and get one. There is no `forbidden` code in
+			// section 7.2's table because no `/v1` route has this failure, so
+			// the status carries the answer and the code names what was wrong
+			// with the request.
+			h.refuse(w, http.StatusForbidden, apierr.New(apierr.CodeInvalidRequest,
+				"this endpoint may only be reached from "+h.cfg.PublicURL))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
-	// 1. Origin, when present, must equal the configured public URL.
-	if origin := r.Header.Get("Origin"); origin != "" && !sameOrigin(origin, h.cfg.PublicURL) {
-		// 403 rather than 401: this is not a credential problem and offering
-		// a challenge would invite a browser page on another origin to go and
-		// get one. There is no `forbidden` code in section 7.2's table
-		// because no `/v1` route has this failure, so the status carries the
-		// answer and the code names what was wrong with the request.
-		h.failStatus(w, http.StatusForbidden, apierr.New(apierr.CodeInvalidRequest,
-			"this endpoint may only be reached from "+h.cfg.PublicURL))
-		return
-	}
+// bound is section 8.1's 1 MiB body bound, applied before authentication so
+// that an unauthenticated body cannot buy a store lookup, let alone memory.
+func (h *Handler) bound(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ContentLength > MaxBodyBytes {
+			h.refuse(w, http.StatusRequestEntityTooLarge,
+				apierr.PayloadTooLarge("the request body", MaxBodyBytes))
+			return
+		}
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, MaxBodyBytes)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
-	// 2. Body over 1 MiB.
-	body, tooLarge := readBounded(r.Body)
-	if tooLarge {
-		h.fail(w, r, apierr.PayloadTooLarge("the request body", MaxBodyBytes))
-		return
-	}
-
-	// 3. Content-Type must be application/json.
-	if !isJSONContentType(r.Header.Get("Content-Type")) {
-		h.fail(w, r, apierr.New(apierr.CodeInvalidRequest,
-			"Content-Type must be application/json"))
-		return
-	}
-
-	// 4. Accept must admit application/json or text/event-stream.
-	if !acceptsJSONOrStream(r.Header.Values("Accept")) {
-		h.fail(w, r, apierr.New(apierr.CodeInvalidRequest,
-			"Accept must admit application/json or text/event-stream"))
-		return
-	}
-
-	// 5. Exactly one Authorization header, Bearer only.
-	token, headerErr := singleBearer(r.Header)
-	if headerErr != nil {
-		h.challenge(w, r, headerErr)
-		return
-	}
-
-	// 6. The token must carry at least one messaging scope.
-	source := h.cfg.Authz.Sources.Resolve(r.RemoteAddr, r.Header)
-	auth, authErr := h.cfg.Authz.Authenticate(r.Context(), token)
-	if authErr != nil {
-		h.challenge(w, r, apierr.InvalidToken("the token was refused"))
-		return
-	}
-	if !hasAnyMessagingScope(auth) {
-		// Deliberately distinct from the 401: this credential is real, it
-		// just may not be used here, and a client that retried the
-		// authorization flow on a 401 would loop for ever on a 403.
-		h.challenge(w, r, apierr.InsufficientScope(string(authz.ScopeMessagesRead)))
-		return
-	}
-
-	// 7. Concurrency: 8 per authorization, 32 across the process.
-	release, ok := h.acquire(auth.ID)
-	if !ok {
-		e := apierr.RateLimited(0)
-		w.Header().Set("Retry-After", strconv.Itoa(ConcurrencyRetryAfterSeconds))
-		h.fail(w, r, e)
-		return
-	}
-	defer release()
-
-	// Only now is anything parsed.
-	var req jsonrpcRequest
-	if err := json.Unmarshal(body, &req); err != nil || req.Method == "" {
-		writeRPC(w, http.StatusOK, rpcFail(nil, codeParseError, "the request is not a JSON-RPC 2.0 call"))
-		return
-	}
-	if req.JSONRPC != "2.0" {
-		writeRPC(w, http.StatusOK, rpcFail(req.ID, codeInvalidRequest, `"jsonrpc" must be "2.0"`))
-		return
-	}
-
-	s := &session{
-		handler: h,
-		auth:    auth,
-		bearer:  token,
-		source:  source.Value,
-		ctx:     r.Context(),
-	}
-	resp, notification := s.dispatch(req)
-	if notification {
-		// A notification has no answer. 202 with an empty body is what the
-		// streamable HTTP transport expects.
-		w.WriteHeader(http.StatusAccepted)
-		return
-	}
-	writeRPC(w, http.StatusOK, resp)
+// gate is section 8.1's concurrency budget: 8 in flight per authorization, 32
+// across the process, and the excess is `429` with `Retry-After`.
+//
+// It runs after authentication so that an unauthenticated flood cannot
+// exhaust the in-flight budget of the callers who are allowed in, and it is
+// keyed on the authorization rather than the session or the source, because
+// the authorization is what the budget belongs to.
+func (h *Handler) gate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		call := callerFromContext(r.Context())
+		id := ""
+		if call != nil && call.auth != nil {
+			id = call.auth.ID
+		}
+		release, ok := h.acquire(id)
+		if !ok {
+			w.Header().Set("Retry-After", strconv.Itoa(ConcurrencyRetryAfterSeconds))
+			h.refuse(w, http.StatusTooManyRequests, apierr.RateLimited(0))
+			return
+		}
+		defer release()
+		next.ServeHTTP(w, r)
+	})
 }
 
 // acquire takes one slot from each budget, or reports that it could not.
@@ -233,7 +267,126 @@ func (h *Handler) acquire(authorizationID string) (release func(), ok bool) {
 	}, true
 }
 
-// --- the transport's refusals ------------------------------------------------
+// getServer picks the SDK server whose tool set matches what this caller may
+// use. It is the SDK's own hook for a server that is not the same for every
+// client, and it is how section 8.2's scope gating survives the move: a model
+// is never invited to attempt something that will be refused.
+func (h *Handler) getServer(r *http.Request) *sdk.Server {
+	call := callerFromContext(r.Context())
+	if call == nil {
+		// Unreachable: the bearer middleware runs first and refuses without
+		// one. Returning nil makes the SDK answer 400 rather than serve a
+		// server nobody authenticated for.
+		return nil
+	}
+	return h.serverFor(call.auth)
+}
+
+// --- authentication ------------------------------------------------------------
+
+// verifyToken is the SDK's TokenVerifier over our authz store.
+//
+// Everything the store decides stays the store's: the scopes an authorization
+// holds, its expiry, and its revocation -- which is why revocation is
+// effective on the **next request** rather than at some cache's convenience.
+// There is no token state anywhere in this package: every request re-reads
+// the authorization, session or no session.
+func (h *Handler) verifyToken(ctx context.Context, token string, r *http.Request) (*sdkauth.TokenInfo, error) {
+	auth, err := h.cfg.Authz.Authenticate(ctx, token)
+	if err != nil || auth == nil {
+		// ErrInvalidToken is the SDK's signal for 401-with-a-challenge. The
+		// reason is deliberately not passed on: a caller learns that the
+		// token was refused, not which of the ways it was refused, because
+		// the difference between "revoked", "expired" and "never existed" is
+		// an oracle.
+		return nil, fmt.Errorf("the token was refused: %w", sdkauth.ErrInvalidToken)
+	}
+
+	source := h.cfg.Authz.Sources.Resolve(r.RemoteAddr, r.Header)
+	return &sdkauth.TokenInfo{
+		Scopes: auth.Scopes.Strings(),
+		// UserID is the SDK's session-hijacking guard: it refuses a request
+		// that continues a session established by a different user. Keying it
+		// on the authorization means a second connector's token can never
+		// pick up the first one's session, which is the property section 8.1
+		// used to get for free by having no sessions at all.
+		UserID:     auth.ID,
+		Expiration: auth.ExpiresAt,
+		Extra: map[string]any{
+			callerKey: &caller{auth: auth, bearer: token, source: source.Value},
+		},
+	}, nil
+}
+
+// singleBearerHeader is section 8.1's "exactly one Authorization header is
+// parsed, and only the Bearer scheme".
+//
+// It is ours because the SDK's is not equivalent: `auth.verify` reads
+// `req.Header.Get("Authorization")`, which returns the FIRST of several
+// values and silently ignores the rest. Section 8.1 refuses two headers,
+// another scheme, or a value carrying two tokens **rather than resolving
+// them** -- resolving would mean choosing which of two credentials a caller
+// meant, and a proxy that appended its own header would silently decide it.
+// Driven at v1.7.0: without this middleware, two Authorization headers are
+// answered from the first one.
+func (h *Handler) singleBearerHeader(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		values := r.Header.Values("Authorization")
+		var why string
+		switch {
+		case len(values) == 0:
+			why = "no Authorization header"
+		case len(values) > 1:
+			why = "more than one Authorization header"
+		default:
+			if fields := strings.Fields(values[0]); len(fields) != 2 || !strings.EqualFold(fields[0], "Bearer") {
+				why = "the Authorization header must be exactly `Bearer <token>`"
+			}
+		}
+		if why != "" {
+			w.Header().Set("WWW-Authenticate", Challenge(h.cfg.PublicURL))
+			h.refuse(w, http.StatusUnauthorized, apierr.InvalidToken(why))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// requireMessagingScope is section 8.1's "the token must carry AT LEAST ONE
+// messaging scope".
+//
+// It is a middleware of ours rather than `RequireBearerTokenOptions.Scopes`
+// because the SDK enforces that list as an AND over all of it, and this is an
+// OR over three: a read-only token is a legitimate `/mcp` caller. The refusal
+// is `403 insufficient_scope`, deliberately distinct from the `401` -- this
+// credential is real, it just may not be used here, and a client that retried
+// the authorization flow on a 401 would loop for ever on a 403. The challenge
+// is the same string either way, because it says the same thing to the same
+// reader.
+func (h *Handler) requireMessagingScope(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		call := callerFromContext(r.Context())
+		if call == nil || !hasAnyMessagingScope(call.auth) {
+			w.Header().Set("WWW-Authenticate", Challenge(h.cfg.PublicURL))
+			h.refuse(w, http.StatusForbidden,
+				apierr.InsufficientScope(string(authz.ScopeMessagesRead)))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// callerFromContext recovers what verifyToken resolved. It comes off the
+// SDK's own `TokenInfo`, which the bearer middleware puts in the request
+// context, so there is exactly one place a request's authority is established.
+func callerFromContext(ctx context.Context) *caller {
+	ti := sdkauth.TokenInfoFromContext(ctx)
+	if ti == nil {
+		return nil
+	}
+	c, _ := ti.Extra[callerKey].(*caller)
+	return c
+}
 
 // Challenge is the `WWW-Authenticate` a 401 and a 403 from `/mcp` both carry.
 //
@@ -242,34 +395,31 @@ func (h *Handler) acquire(authorizationID string) (release func(), ok bool) {
 // challenge itself is the same string, because it says the same thing to the
 // same reader: here is where to authorize, and here is what to ask for.
 //
-// It names `messages:read messages:write` and NOT `messages:delete`, which is
-// section 9.2's literal challenge and is asserted byte for byte by section 16
-// Slice 3 test 2.
-//
-// The omission is not an oversight in the spec. `scope` in a challenge is what
-// the client should ASK FOR, and section 9.4 makes exactly those two the
-// default an authorization request carries when the client names no scope. A
-// challenge that also asked for `messages:delete` would send every connector
-// to an approval screen offering to let a model delete the owner's threads,
-// for no better reason than that the scope exists. A client that wants it asks
-// for it; the discovery documents list all three under `scopes_supported`.
+// The FORMAT is the SDK's, not ours (decision D36): it is what
+// `auth.RequireBearerToken` emits, which is why there is no `realm` parameter
+// any more. A test drives a real `RequireBearerToken` and asserts this
+// function returns exactly what it wrote, so the SDK stays the authority and
+// a bump that changes the format fails that test rather than a connector.
 func Challenge(publicURL string) string {
-	return `Bearer realm="` + apierr.AuthRealm + `", ` +
-		`resource_metadata="` + apierr.ResourceMetadataURL(publicURL) + `", ` +
-		`scope="messages:read messages:write"`
+	return fmt.Sprintf("Bearer resource_metadata=%q, scope=%q",
+		apierr.ResourceMetadataURL(publicURL), strings.Join(ChallengeScopes, " "))
 }
 
-func (h *Handler) challenge(w http.ResponseWriter, r *http.Request, e *apierr.Error) {
-	w.Header().Set("WWW-Authenticate", Challenge(h.cfg.PublicURL))
-	h.fail(w, r, e)
+func hasAnyMessagingScope(auth *authz.Authorization) bool {
+	if auth == nil {
+		return false
+	}
+	for _, s := range messagingScopes {
+		if auth.Scopes.Has(s) {
+			return true
+		}
+	}
+	return false
 }
 
-func (h *Handler) fail(w http.ResponseWriter, r *http.Request, e *apierr.Error) {
-	h.failStatus(w, e.HTTPStatus(), e)
-	_ = r
-}
+// --- refusals ---------------------------------------------------------------------
 
-func (h *Handler) failStatus(w http.ResponseWriter, status int, e *apierr.Error) {
+func (h *Handler) refuse(w http.ResponseWriter, status int, e *apierr.Error) {
 	requestID := apierr.NewRequestID()
 	w.Header().Set("X-Request-Id", requestID)
 	if header := e.RetryAfterHeader(); header != "" && w.Header().Get("Retry-After") == "" {
@@ -283,10 +433,191 @@ func (h *Handler) failStatus(w http.ResponseWriter, status int, e *apierr.Error)
 	_ = json.NewEncoder(w).Encode(e.Envelope(requestID))
 }
 
-func writeRPC(w http.ResponseWriter, status int, resp jsonrpcResponse) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(resp)
+// envelopeWriter turns the SDK's plain-text refusals into section 7.1's
+// envelope, and leaves everything else exactly as the SDK wrote it.
+//
+// A 2xx passes straight through, headers and bytes, so an SSE stream is not
+// buffered and `Flush` still reaches the socket. Only a status of 400 or above
+// is captured, and only when the body is not already JSON -- a refusal this
+// package wrote itself goes through untouched.
+type envelopeWriter struct {
+	http.ResponseWriter
+	log func(msg string, kv ...any)
+	// challenge is section 9.2's `WWW-Authenticate`, substituted on a 401 or
+	// a 403. See finish() for why it is substituted rather than added.
+	challenge string
+
+	wroteHeader bool
+	capturing   bool
+	// maybeJSONRPC is set when the captured body might be the SDK's own
+	// JSON-RPC error response rather than an `http.Error` refusal. finish()
+	// confirms it by parsing.
+	maybeJSONRPC bool
+	status       int
+	buf          bytes.Buffer
+	done         bool
+}
+
+func (w *envelopeWriter) WriteHeader(status int) {
+	if w.wroteHeader {
+		return
+	}
+	w.wroteHeader = true
+	w.status = status
+	// Capture ONLY what `http.Error` wrote, which is the SDK's own idiom for
+	// a transport refusal and always `text/plain`. Everything else goes
+	// through untouched -- in particular a JSON-RPC error response, which
+	// from protocol 2026-07-28 the SDK delivers with an HTTP status of its
+	// own (`extractErrorStatus`: -32601 as 404, -32602 as 400) and a JSON-RPC
+	// body. Rewriting one of those into a section 7.1 envelope would leave
+	// the client with neither shape, and the official client closes the
+	// connection when it gets one.
+	ct := w.Header().Get("Content-Type")
+	if status >= 400 && (ct == "" || strings.HasPrefix(ct, "text/plain")) {
+		w.capturing = true
+		return
+	}
+	if status >= 400 && strings.HasPrefix(ct, "application/json") {
+		// Possibly the SDK's own JSON-RPC error response with a 4xx status.
+		// Capture it and let finish() decide by reading the body, rather than
+		// by the Content-Type -- this package's own refusals are
+		// `application/json` too, and demoting one of those to 200 would tell
+		// a client its unauthenticated call had succeeded.
+		w.maybeJSONRPC = true
+		w.capturing = true
+		return
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *envelopeWriter) Write(p []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	if w.capturing {
+		return w.buf.Write(p)
+	}
+	return w.ResponseWriter.Write(p)
+}
+
+// Flush keeps the streaming path streaming. A captured refusal has nothing to
+// flush yet, so flushing it would commit an empty body.
+func (w *envelopeWriter) Flush() {
+	if w.capturing {
+		return
+	}
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Unwrap lets net/http reach the real writer for hijacking and for the
+// ResponseController shims the SDK uses on a long-lived stream.
+func (w *envelopeWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// finish writes the substituted envelope, once.
+func (w *envelopeWriter) finish() {
+	if w.done || !w.capturing {
+		return
+	}
+	w.done = true
+
+	// A JSON-RPC error response keeps its body and loses its 4xx status.
+	//
+	// From protocol 2026-07-28 the SDK gives some JSON-RPC errors an HTTP
+	// status of their own -- `extractErrorStatus` maps -32601 to 404 and
+	// -32602 to 400 (mcp/streamable.go:1042). Its OWN CLIENT then treats any
+	// non-2xx that is not transient as a CONNECTION failure and tears the
+	// session down (`checkResponse`, mcp/streamable.go:2544). Driven: one
+	// `tools/call` naming a tool that does not exist, or one `resources/read`
+	// of a missing attachment, ends the session -- so a model that
+	// hallucinates a tool name disconnects the connector.
+	//
+	// That is not a refusal a model can correct itself from, which is the
+	// whole point of section 8.2. The error object is passed through
+	// unchanged, code and all -- the SDK stays the authority for WHICH error
+	// this is -- and only the transport status is demoted to 200, which is
+	// what every protocol before 2026-07-28 did and what the client survives.
+	if w.maybeJSONRPC && isJSONRPCError(w.buf.Bytes()) {
+		w.ResponseWriter.WriteHeader(http.StatusOK)
+		_, _ = w.ResponseWriter.Write(w.buf.Bytes())
+		return
+	}
+	if w.maybeJSONRPC {
+		// JSON, but not a JSON-RPC error: this package wrote it, so it is
+		// already section 7.1's envelope and keeps its status.
+		w.ResponseWriter.WriteHeader(w.status)
+		_, _ = w.ResponseWriter.Write(w.buf.Bytes())
+		return
+	}
+
+	e := errorForStatus(w.status, w.buf.String())
+	if w.status == http.StatusUnauthorized || w.status == http.StatusForbidden {
+		// SET, not Add: section 8.1 has exactly one challenge and section 9.2
+		// fixes its content.
+		//
+		// The SDK's bearer middleware writes its own, and it cannot write the
+		// right one: `RequireBearerTokenOptions.Scopes` is what puts a
+		// `scope` parameter in the challenge AND is enforced as an AND over
+		// the whole list, and section 8.1's rule is an OR over three, so the
+		// options that would produce section 9.2's `scope="messages:read
+		// messages:write"` would also refuse a legitimate read-only token.
+		// Leaving it off is not neutral: driven with the SDK's own OAuth
+		// client, a challenge with no `scope` makes the client fall back to
+		// the metadata's `scopes_supported` and ask for `messages:delete`
+		// too, which is the exact outcome ChallengeScopes exists to prevent.
+		w.Header().Set("WWW-Authenticate", w.challenge)
+	}
+	requestID := apierr.NewRequestID()
+	w.Header().Set("X-Request-Id", requestID)
+	if w.log != nil {
+		w.log("mcp request refused", "request_id", requestID, "code", string(e.Code), "status", w.status)
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Del("Content-Length")
+	w.ResponseWriter.WriteHeader(w.status)
+	_ = json.NewEncoder(w.ResponseWriter).Encode(e.Envelope(requestID))
+}
+
+// isJSONRPCError reports whether a body is a JSON-RPC response carrying an
+// error object -- which is what distinguishes the SDK's protocol answer from
+// this package's own section 7.1 refusal.
+func isJSONRPCError(body []byte) bool {
+	var parsed struct {
+		JSONRPC string          `json:"jsonrpc"`
+		Error   json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return false
+	}
+	return parsed.JSONRPC == "2.0" && len(parsed.Error) > 0
+}
+
+// errorForStatus names the section 7.2 code for a transport refusal the SDK
+// wrote. The SDK's own sentence is kept as the message, because it says the
+// true and specific thing -- which `Accept` was missing, which protocol
+// version was not supported -- and inventing a vaguer one here would lose it.
+func errorForStatus(status int, body string) *apierr.Error {
+	message := strings.TrimSpace(body)
+	if message == "" {
+		message = http.StatusText(status)
+	}
+	switch status {
+	case http.StatusUnauthorized:
+		return apierr.InvalidToken(message)
+	case http.StatusForbidden:
+		return apierr.InsufficientScope(string(authz.ScopeMessagesRead))
+	case http.StatusRequestEntityTooLarge:
+		return apierr.PayloadTooLarge("the request body", MaxBodyBytes)
+	case http.StatusTooManyRequests:
+		return apierr.RateLimited(0)
+	case http.StatusMethodNotAllowed:
+		return apierr.New(apierr.CodeInvalidRequest, message)
+	case http.StatusInternalServerError:
+		return apierr.New(apierr.CodeInternalError, message)
+	default:
+		return apierr.New(apierr.CodeInvalidRequest, message)
+	}
 }
 
 func setSecurityHeaders(w http.ResponseWriter) {
@@ -297,80 +628,8 @@ func setSecurityHeaders(w http.ResponseWriter) {
 	h.Set("X-Frame-Options", "DENY")
 }
 
-// --- the pre-parse predicates -------------------------------------------------
-
 // sameOrigin compares an `Origin` header with the configured public URL. The
 // comparison is on scheme and host only, because that is all an `Origin` is.
 func sameOrigin(origin, publicURL string) bool {
 	return strings.EqualFold(strings.TrimRight(origin, "/"), strings.TrimRight(publicURL, "/"))
-}
-
-// readBounded reads at most 1 MiB and reports whether there was more.
-func readBounded(body io.ReadCloser) ([]byte, bool) {
-	if body == nil {
-		return nil, false
-	}
-	data, _ := io.ReadAll(io.LimitReader(body, MaxBodyBytes+1))
-	if int64(len(data)) > MaxBodyBytes {
-		return nil, true
-	}
-	return data, false
-}
-
-func isJSONContentType(v string) bool {
-	media, _, _ := strings.Cut(v, ";")
-	return strings.EqualFold(strings.TrimSpace(media), "application/json")
-}
-
-// acceptsJSONOrStream reports whether the Accept header admits one of the two
-// media types the streamable HTTP transport can answer with. An absent Accept
-// admits everything, which is what RFC 9110 says it means.
-func acceptsJSONOrStream(values []string) bool {
-	if len(values) == 0 {
-		return true
-	}
-	for _, v := range values {
-		for _, part := range strings.Split(v, ",") {
-			media, _, _ := strings.Cut(part, ";")
-			switch strings.ToLower(strings.TrimSpace(media)) {
-			case "application/json", "text/event-stream", "*/*", "application/*", "text/*":
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// singleBearer parses **exactly one** Authorization header and only the
-// Bearer scheme (spec section 8.1).
-//
-// Two headers, another scheme, or a value carrying two tokens are all refused
-// rather than resolved to whichever happens to be first. Resolving would mean
-// choosing which of two credentials a caller meant, and a proxy that appended
-// its own header would silently decide it.
-func singleBearer(h http.Header) (string, *apierr.Error) {
-	values := h.Values("Authorization")
-	switch {
-	case len(values) == 0:
-		return "", apierr.InvalidToken("no Authorization header")
-	case len(values) > 1:
-		return "", apierr.InvalidToken("more than one Authorization header")
-	}
-	fields := strings.Fields(values[0])
-	if len(fields) != 2 || !strings.EqualFold(fields[0], "Bearer") {
-		return "", apierr.InvalidToken("the Authorization header must be exactly `Bearer <token>`")
-	}
-	return fields[1], nil
-}
-
-func hasAnyMessagingScope(auth *authz.Authorization) bool {
-	if auth == nil {
-		return false
-	}
-	for _, s := range messagingScopes {
-		if auth.Scopes.Has(s) {
-			return true
-		}
-	}
-	return false
 }

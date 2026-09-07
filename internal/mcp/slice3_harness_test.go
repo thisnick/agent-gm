@@ -4,11 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/thisnick/agent-gm/internal/accounts"
 	"github.com/thisnick/agent-gm/internal/api"
@@ -79,6 +83,7 @@ type harness struct {
 	Token string
 
 	accounts map[string]*fake.Backend
+	sessions map[string]*sdk.ClientSession
 }
 
 func newHarness(t *testing.T) *harness {
@@ -285,24 +290,158 @@ type rpcAnswer struct {
 	}
 }
 
-// call makes one JSON-RPC call with the admin session's token.
+// --- the reference client ------------------------------------------------------
+//
+// Every well-formed call below goes through the OFFICIAL MCP Go SDK client
+// against the running httptest server, not through a hand-rolled poster
+// (decision D36). That is the point: the reference implementation on both
+// ends means a result these tests accept is a result a real connector
+// accepts, and a shape the SDK rejects fails here rather than at a live gate.
+// The reviewer's Slice 3 finding R-1 -- a `resources/read` failure the
+// official client threw on before the application saw it -- is exactly the
+// class of bug a hand-rolled client cannot find.
+//
+// h.post below stays raw, because the transport tests deliberately send what
+// a well-formed call would not.
+
+// bearerClient is an http.Client that presents one token on every request.
+type bearerRoundTripper struct {
+	token string
+	next  http.RoundTripper
+}
+
+func (b bearerRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
+	clone := r.Clone(r.Context())
+	if b.token != "" {
+		clone.Header.Set("Authorization", "Bearer "+b.token)
+	}
+	return b.next.RoundTrip(clone)
+}
+
+// session connects the SDK client for a token, once per token per harness.
+func (h *harness) session(token string) *sdk.ClientSession {
+	h.t.Helper()
+	if cs, ok := h.sessions[token]; ok {
+		return cs
+	}
+	client := sdk.NewClient(&sdk.Implementation{Name: "agent-gm-tests", Version: "0.0.0"}, nil)
+	transport := &sdk.StreamableClientTransport{
+		Endpoint:   h.HTTP.URL + mcp.Path,
+		HTTPClient: &http.Client{Transport: bearerRoundTripper{token: token, next: http.DefaultTransport}},
+	}
+	cs, err := client.Connect(context.Background(), transport, nil)
+	if err != nil {
+		h.t.Fatalf("the SDK client could not connect with this token: %v", err)
+	}
+	h.t.Cleanup(func() { _ = cs.Close() })
+	if h.sessions == nil {
+		h.sessions = map[string]*sdk.ClientSession{}
+	}
+	h.sessions[token] = cs
+	return cs
+}
+
+// call makes one call with the admin session's token, through the SDK client.
 func (h *harness) call(method string, params any) rpcAnswer {
 	h.t.Helper()
 	return h.callWith(h.Token, method, params, nil)
 }
 
-// callWith makes one call with an explicit bearer and optional extra headers.
+// callWith makes one call with an explicit bearer.
+//
+// `headers` is accepted for the transport tests that still hand-build a
+// request; a call that passes any falls through to the raw poster, because
+// the SDK client owns its own headers and overriding them would be testing
+// the poster rather than the server.
 func (h *harness) callWith(token, method string, params any, headers map[string]string) rpcAnswer {
 	h.t.Helper()
-	body := map[string]any{"jsonrpc": "2.0", "id": 1, "method": method}
-	if params != nil {
-		body["params"] = params
+	if len(headers) > 0 || token == "" {
+		body := map[string]any{"jsonrpc": "2.0", "id": 1, "method": method}
+		if params != nil {
+			body["params"] = params
+		}
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			h.t.Fatalf("encoding the call: %v", err)
+		}
+		return h.post(token, encoded, headers)
 	}
-	encoded, err := json.Marshal(body)
+
+	cs := h.session(token)
+	ctx := context.Background()
+	var (
+		result sdk.Result
+		err    error
+	)
+	switch method {
+	case "tools/list":
+		result, err = cs.ListTools(ctx, decodeParams[sdk.ListToolsParams](h.t, params))
+	case "tools/call":
+		result, err = cs.CallTool(ctx, decodeParams[sdk.CallToolParams](h.t, params))
+	case "resources/list":
+		result, err = cs.ListResources(ctx, decodeParams[sdk.ListResourcesParams](h.t, params))
+	case "resources/templates/list":
+		result, err = cs.ListResourceTemplates(ctx, decodeParams[sdk.ListResourceTemplatesParams](h.t, params))
+	case "resources/read":
+		result, err = cs.ReadResource(ctx, decodeParams[sdk.ReadResourceParams](h.t, params))
+	case "initialize":
+		// The SDK initialises on Connect and keeps the result; there is no
+		// second initialize to make, and asking for one would be a protocol
+		// error the SDK is right to refuse.
+		result = cs.InitializeResult()
+	case "ping":
+		err = cs.Ping(ctx, nil)
+		result = &sdk.CallToolResult{}
+	default:
+		h.t.Fatalf("the harness has no SDK client call for %q; add one rather than hand-rolling a POST", method)
+	}
+	return answerOf(h.t, result, err)
+}
+
+// decodeParams re-reads a test's params map as the SDK's typed params, so a
+// test still writes the wire shape it is asserting about.
+func decodeParams[T any](t *testing.T, params any) *T {
+	t.Helper()
+	var out T
+	if params == nil {
+		return &out
+	}
+	raw, err := json.Marshal(params)
 	if err != nil {
-		h.t.Fatalf("encoding the call: %v", err)
+		t.Fatalf("encoding params: %v", err)
 	}
-	return h.post(token, encoded, headers)
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decoding params as %T: %v", out, err)
+	}
+	return &out
+}
+
+// answerOf renders a typed SDK result back into the wire object the
+// assertions read, and a JSON-RPC error into the error half.
+func answerOf(t *testing.T, result sdk.Result, err error) rpcAnswer {
+	t.Helper()
+	answer := rpcAnswer{Status: http.StatusOK, Headers: http.Header{}}
+	if err != nil {
+		var jerr *jsonrpc.Error
+		if errors.As(err, &jerr) {
+			answer.Error = &struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+			}{Code: int(jerr.Code), Message: jerr.Message}
+			answer.Raw = []byte(jerr.Error())
+			return answer
+		}
+		t.Fatalf("the SDK client failed outside JSON-RPC: %v", err)
+	}
+	raw, marshalErr := json.Marshal(result)
+	if marshalErr != nil {
+		t.Fatalf("re-encoding the result: %v", marshalErr)
+	}
+	answer.Raw = raw
+	if unmarshalErr := json.Unmarshal(raw, &answer.Result); unmarshalErr != nil {
+		t.Fatalf("re-reading the result: %v", unmarshalErr)
+	}
+	return answer
 }
 
 // post is the raw form, for the transport tests that send something a
@@ -335,6 +474,19 @@ func (h *harness) post(token string, body []byte, headers map[string]string) rpc
 		h.t.Fatalf("reading the answer: %v", err)
 	}
 	answer := rpcAnswer{Status: resp.StatusCode, Headers: resp.Header, Raw: raw}
+	// A stateless streamable server answers a POST with a one-event SSE
+	// frame unless the client asked for JSON only, so the raw poster has to
+	// read both shapes. The SDK client does this for itself; this helper
+	// exists for the handful of tests that must send what no client would.
+	payload := raw
+	if bytes.HasPrefix(bytes.TrimSpace(raw), []byte("event:")) {
+		for _, line := range bytes.Split(raw, []byte("\n")) {
+			if rest, ok := bytes.CutPrefix(line, []byte("data: ")); ok {
+				payload = rest
+				break
+			}
+		}
+	}
 	var parsed struct {
 		Result map[string]any `json:"result"`
 		Error  *struct {
@@ -342,11 +494,71 @@ func (h *harness) post(token string, body []byte, headers map[string]string) rpc
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	if json.Unmarshal(raw, &parsed) == nil {
+	if json.Unmarshal(payload, &parsed) == nil {
 		answer.Result = parsed.Result
 		answer.Error = parsed.Error
 	}
 	return answer
+}
+
+// rawCall posts one hand-built JSON-RPC call. It is for the tests that must
+// send something no reference client will send -- an unknown method, an
+// explicit protocolVersion -- and for nothing else.
+func (h *harness) rawCall(token, method string, params any) rpcAnswer {
+	h.t.Helper()
+	return h.rawCallWith(token, method, params, nil)
+}
+
+// atProtocol is the header a raw call sets to be judged by section 8.1's
+// protocol rather than by the oldest one the SDK still supports. It matters:
+// an unknown method is answered as a JSON-RPC error only from 2026-07-28
+// onwards (mcp/streamable.go:1477).
+func atProtocol(version string) map[string]string {
+	return map[string]string{"MCP-Protocol-Version": version}
+}
+
+// initializeParams is a raw `initialize` at one revision.
+//
+// From 2026-07-28 the handshake carries the revision in `_meta` under
+// `io.modelcontextprotocol/protocolVersion` as well as in `protocolVersion`
+// (SEP-2575); the SDK refuses `initialize` without it. A reference client
+// does this for itself -- this exists only so a test can ask for a revision
+// of its choosing, which no reference client will do.
+func initializeParams(version string) map[string]any {
+	params := map[string]any{
+		"protocolVersion": version,
+		"capabilities":    map[string]any{},
+		"clientInfo":      map[string]any{"name": "test", "version": "0"},
+	}
+	if version >= mcp.ProtocolVersion {
+		params["_meta"] = map[string]any{
+			"io.modelcontextprotocol/protocolVersion":    version,
+			"io.modelcontextprotocol/clientCapabilities": map[string]any{},
+		}
+	}
+	return params
+}
+
+func (h *harness) rawCallWith(token, method string, params any, headers map[string]string) rpcAnswer {
+	h.t.Helper()
+	body := map[string]any{"jsonrpc": "2.0", "id": 1, "method": method}
+	if params != nil {
+		body["params"] = params
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		h.t.Fatalf("encoding the call: %v", err)
+	}
+	// From 2026-07-28 the SDK requires the method in a header as well as in
+	// the body (SEP-2575). A reference client sets it; a raw poster has to.
+	if headers["MCP-Protocol-Version"] >= mcp.ProtocolVersion && headers["Mcp-Method"] == "" {
+		withMethod := map[string]string{"Mcp-Method": method}
+		for k, v := range headers {
+			withMethod[k] = v
+		}
+		headers = withMethod
+	}
+	return h.post(token, encoded, headers)
 }
 
 // tool calls one tool and returns the result object.

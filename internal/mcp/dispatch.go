@@ -9,14 +9,20 @@ import (
 	"strconv"
 	"strings"
 
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/thisnick/agent-gm/internal/api"
 	"github.com/thisnick/agent-gm/internal/apierr"
 	"github.com/thisnick/agent-gm/internal/authz"
 )
 
-// session is one authenticated request's worth of context. There is no
-// durable session: this server is stateless at the application layer, and
-// every request carries its own bearer and its own protocol metadata.
+// session is ONE REQUEST's worth of authority, not an MCP session.
+//
+// The SDK's streamable transport does hold MCP sessions, and they span many
+// POSTs. This does not: it is rebuilt from `RequestExtra.TokenInfo` on every
+// call, so the authorization a tool runs under is always the one the bearer
+// on THIS request resolved to. That is what keeps revocation effective on the
+// next request now that a session outlives a request.
 type session struct {
 	handler *Handler
 	auth    *authz.Authorization
@@ -25,210 +31,38 @@ type session struct {
 	ctx     context.Context
 }
 
-// dispatch runs one JSON-RPC method.
-//
-// The second return says the call was a notification and has no answer.
-func (s *session) dispatch(req jsonrpcRequest) (jsonrpcResponse, bool) {
-	if req.isNotification() {
-		// `notifications/initialized` and its siblings are acknowledged by
-		// accepting them. An unknown notification is also accepted: a
-		// notification has no reply, so refusing one would be shouting into
-		// a closed channel.
-		return jsonrpcResponse{}, true
-	}
-	switch req.Method {
-	case "initialize":
-		return rpcResult(req.ID, s.initialize(req.Params)), false
-	case "ping":
-		return rpcResult(req.ID, map[string]any{}), false
-	case "tools/list":
-		return rpcResult(req.ID, s.toolsList()), false
-	case "tools/call":
-		return s.toolsCall(req), false
-	case "resources/list":
-		// Empty on purpose: attachments are addressed by template, not
-		// enumerated. A server that listed every attachment it holds would
-		// answer a question nobody asked with a page nobody can use.
-		return rpcResult(req.ID, map[string]any{"resources": []any{}}), false
-	case "resources/templates/list":
-		return rpcResult(req.ID, s.resourceTemplates()), false
-	case "resources/read":
-		return s.resourcesRead(req), false
-	default:
-		// An unknown method is one of the four things section 8.2 allows to
-		// be a JSON-RPC error: it is a fact about the protocol, not about
-		// the owner's messages, and a model cannot correct itself from it.
-		return rpcFail(req.ID, codeMethodNotFound, "no such method: "+req.Method), false
-	}
-}
-
-// --- initialize ---------------------------------------------------------------
-
-func (s *session) initialize(raw json.RawMessage) map[string]any {
-	var params struct {
-		ProtocolVersion string `json:"protocolVersion"`
-	}
-	_ = json.Unmarshal(raw, &params)
-	version := ProtocolVersion
-	if supportedProtocol(params.ProtocolVersion) {
-		version = params.ProtocolVersion
-	}
-	return map[string]any{
-		"protocolVersion": version,
-		"capabilities": map[string]any{
-			"tools":     map[string]any{},
-			"resources": map[string]any{},
-		},
-		"serverInfo": map[string]any{
-			"name": "agent-gm",
-			// The AGPL section 13 obligation of spec section 1.4: every
-			// deployment says where its own source is, at the exact commit
-			// it is running. An empty commit or source_url here would make
-			// the MCP surface a licence gap.
-			"version":    s.handler.cfg.Version,
-			"commit":     s.handler.cfg.Commit,
-			"source_url": s.handler.cfg.SourceURL,
-		},
-		"instructions": Instructions,
-	}
-}
-
-// --- tools/list ----------------------------------------------------------------
-
-func (s *session) toolsList() map[string]any {
-	visible := VisibleTools(s.auth)
-	out := make([]any, 0, len(visible))
-	for _, t := range visible {
-		out = append(out, map[string]any{
-			"name":         t.Name,
-			"description":  t.Description,
-			"inputSchema":  t.InputSchema(),
-			"outputSchema": t.OutputSchema(),
-			"annotations":  t.Annotations,
-		})
-	}
-	return map[string]any{"tools": out}
-}
-
-// --- tools/call ----------------------------------------------------------------
-
-// toolResult is the shape a tool call answers with.
-type toolResult struct {
-	Content           []any          `json:"content"`
-	StructuredContent map[string]any `json:"structuredContent,omitempty"`
-	IsError           bool           `json:"isError"`
-}
-
-func textBlock(text string) map[string]any {
-	return map[string]any{"type": "text", "text": text}
-}
-
-// errorResult is section 8.2's isError semantics: **a domain failure is a
-// result, not a JSON-RPC error**, carrying the REST error envelope's error in
-// `structuredContent.error`.
-//
-// The split matters because many MCP clients surface a JSON-RPC error as a
-// transport failure and never hand it to the model. A `not_found` reported
-// that way is a fact the model never learns and cannot correct itself from.
-func errorResult(e *apierr.Error) toolResult {
-	body := e.Envelope("").Error
-	details := body.Details
-	if details == nil {
-		details = map[string]any{}
-	}
-	return toolResult{
-		Content: []any{textBlock(e.Message)},
-		StructuredContent: map[string]any{
-			"error": map[string]any{
-				"code":      string(body.Code),
-				"message":   body.Message,
-				"retryable": body.Retryable,
-				"details":   details,
-			},
-		},
-		IsError: true,
-	}
-}
-
-// scopeRefusal is the refusal a tool call gets when the caller's
-// authorization does not cover it.
-//
-// `insufficient_scope` appears on both sides of section 8.2 deliberately,
-// addressed to different readers. The transport's 401/403 is addressed to the
-// CLIENT, which can go and get a wider credential. This one is addressed to
-// the MODEL, which cannot -- so it names `required_scope`, which the model
-// can act on by choosing a different tool.
-func scopeRefusal(scope authz.Scope) *apierr.Error {
-	e := apierr.InsufficientScope(string(scope))
-	e.Details["required_scope"] = string(scope)
-	return e
-}
-
-func (s *session) toolsCall(req jsonrpcRequest) jsonrpcResponse {
-	var params struct {
-		Name      string          `json:"name"`
-		Arguments json.RawMessage `json:"arguments"`
-	}
-	if err := json.Unmarshal(req.Params, &params); err != nil {
-		return rpcFail(req.ID, codeInvalidParams, "the params of tools/call are malformed")
-	}
-	tool, ok := ToolByName(params.Name)
-	if !ok {
-		// An unknown tool NAME is a JSON-RPC error (section 8.2): the model
-		// asked for something that does not exist, which is a protocol fact
-		// rather than an answer about the owner's messages.
-		return rpcFail(req.ID, codeInvalidParams, "no such tool: "+params.Name)
-	}
-
-	// The call-time scope re-check. `tools/list` already hid this tool from
-	// a caller that may not use it, but visibility is not authorization and
-	// a client may call a name it learned elsewhere.
-	//
-	// It is a RESULT rather than a transport refusal, because this one is
-	// addressed to the model: it can act on it by choosing a different tool.
-	if s.auth == nil || !s.auth.Scopes.Has(tool.Scope) {
-		return rpcResult(req.ID, errorResult(scopeRefusal(tool.Scope)))
-	}
-
-	result, e := s.callTool(tool, params.Arguments)
-	if e != nil {
-		return rpcResult(req.ID, errorResult(e))
-	}
-	return rpcResult(req.ID, result)
-}
-
 // callTool decodes the arguments, invokes the route, and renders the result.
-func (s *session) callTool(tool Tool, raw json.RawMessage) (toolResult, *apierr.Error) {
+func (s *session) callTool(tool Tool, raw json.RawMessage) (*sdk.CallToolResult, *apierr.Error) {
 	args, e := decodeArgs(tool, raw)
 	if e != nil {
-		return toolResult{}, e
+		return nil, e
 	}
 
 	in, e := s.buildInvocation(tool, args)
 	if e != nil {
-		return toolResult{}, e
+		return nil, e
 	}
 
 	invoked, callErr := s.handler.cfg.API.Invoke(*in)
 	if callErr != nil {
-		return toolResult{}, callErr
+		return nil, callErr
 	}
 
 	structured, e := envelopeOf(invoked)
 	if e != nil {
-		return toolResult{}, e
+		return nil, e
 	}
 
 	summary := summarise(tool, structured)
-	content := []any{textBlock(summary)}
+	content := []sdk.Content{&sdk.TextContent{Text: summary}}
 	// `get_attachment` decides its content form by size and type, not
 	// preference, and the summary text is the FIRST content block either
 	// way -- so a client that reads only the first block reads a sentence
 	// rather than a megabyte of base64.
 	if tool.Name == "get_attachment" {
-		content = append(content, s.attachmentBlocks(structured)...)
+		content = append(content, s.attachmentContent(structured)...)
 	}
-	return toolResult{Content: content, StructuredContent: structured}, nil
+	return &sdk.CallToolResult{Content: content, StructuredContent: structured}, nil
 }
 
 // decodeArgs enforces the closed input schema **by rejecting unknown fields**

@@ -1,14 +1,11 @@
 package mcp
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"net/http"
 	"strings"
 
 	"github.com/thisnick/agent-gm/internal/api"
 	"github.com/thisnick/agent-gm/internal/apierr"
-	"github.com/thisnick/agent-gm/internal/authz"
 	"github.com/thisnick/agent-gm/internal/media"
 )
 
@@ -29,68 +26,6 @@ const AttachmentURIPrefix = "agm://attachments/"
 
 // AttachmentURITemplate is what `resources/templates/list` offers.
 const AttachmentURITemplate = "agm://attachments/{attachment_id}"
-
-func (s *session) resourceTemplates() map[string]any {
-	// Offered **only** to a caller holding `messages:read`. A template a
-	// caller may not read is an invitation to a refusal.
-	if s.auth == nil || !s.auth.Scopes.Has(authz.ScopeMessagesRead) {
-		return map[string]any{"resourceTemplates": []any{}}
-	}
-	return map[string]any{"resourceTemplates": []any{
-		map[string]any{
-			"uriTemplate": AttachmentURITemplate,
-			"name":        "attachment",
-			"title":       "Message attachment bytes",
-			"description": "The bytes of one attachment, addressed by the `att_` ID that appears on a message. " +
-				"Text media comes back as text and everything else as base64. " +
-				"Fetching bytes this way keeps them out of the model's context; `get_attachment` returns the metadata and a download ticket.",
-			"mimeType": "application/octet-stream",
-		},
-	}}
-}
-
-func (s *session) resourcesRead(req jsonrpcRequest) jsonrpcResponse {
-	var params struct {
-		URI string `json:"uri"`
-	}
-	if err := json.Unmarshal(req.Params, &params); err != nil {
-		return rpcFail(req.ID, codeInvalidParams, "the params of resources/read are malformed")
-	}
-	// Every failure below is a JSON-RPC ERROR, not an isError result.
-	//
-	// Section 8.2's isError rule is about `tools/call`: its result type has
-	// an `isError` field, and reporting a domain failure there keeps the fact
-	// in front of the model. `resources/read` answers a ReadResourceResult,
-	// which has no `isError` field and MUST carry `contents` -- so a
-	// "result" reporting a failure is not a valid result, and the official
-	// TypeScript SDK rejects it on schema before the client's own code runs.
-	// The model learns nothing either way; the only difference is whether the
-	// CLIENT gets a readable refusal or a parse error.
-	if s.auth == nil || !s.auth.Scopes.Has(authz.ScopeMessagesRead) {
-		return rpcFail(req.ID, codeInvalidRequest,
-			"resources/read requires the messages:read scope")
-	}
-	id, ok := strings.CutPrefix(params.URI, AttachmentURIPrefix)
-	if !ok || id == "" {
-		return rpcFail(req.ID, codeResourceNotFound, "no such resource: "+params.URI)
-	}
-
-	body, contentType, e := s.attachmentBytes(id)
-	if e != nil {
-		if e.Code == apierr.CodeNotFound {
-			return rpcFail(req.ID, codeResourceNotFound, "no such resource: "+params.URI)
-		}
-		return rpcFail(req.ID, codeInternalError, "the resource could not be read: "+string(e.Code))
-	}
-
-	contents := map[string]any{"uri": params.URI, "mimeType": contentType}
-	if isTextMedia(contentType) {
-		contents["text"] = string(body)
-	} else {
-		contents["blob"] = base64.StdEncoding.EncodeToString(body)
-	}
-	return rpcResult(req.ID, map[string]any{"contents": []any{contents}})
-}
 
 // attachmentBytes runs the REST content route in process, so the media limit,
 // the cache path, the ticket accounting and the sanitised content type are the
@@ -145,57 +80,3 @@ func (r *recorder) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 func (r *recorder) WriteHeader(status int) { r.status = status }
-
-// --- get_attachment's content blocks ------------------------------------------
-
-// attachmentBlocks is the size-and-type decision of section 8.2.
-//
-// `get_attachment` decides its content form by **size and type, not
-// preference**: a supported image under `settings.media.inline_mcp_image_max_bytes`
-// comes back as image content in the result; anything larger or non-inlinable
-// comes back as an `agm://attachments/{id}` resource link. **The download
-// ticket comes back either way**, in `structuredContent.data`, so a client is
-// never left without a way to fetch the bytes.
-//
-// The summary text is the first content block, which is why this returns the
-// blocks that follow it rather than the whole list.
-func (s *session) attachmentBlocks(structured map[string]any) []any {
-	data, _ := structured["data"].(map[string]any)
-	if data == nil {
-		return nil
-	}
-	id, _ := data["attachment_id"].(string)
-	uri, _ := data["resource_uri"].(string)
-	if uri == "" {
-		uri = AttachmentURIPrefix + id
-	}
-	mimeType, _ := data["mime_type"].(string)
-	filename, _ := data["filename"].(string)
-	inline, _ := data["inline"].(bool)
-	available, _ := data["download_state"].(string)
-	served := media.ServedContentType(mimeType)
-
-	if inline && strings.HasPrefix(served, "image/") && available == "available" {
-		if body, contentType, e := s.attachmentBytes(id); e == nil {
-			return []any{map[string]any{
-				"type":     "image",
-				"data":     base64.StdEncoding.EncodeToString(body),
-				"mimeType": contentType,
-			}}
-		}
-		// Falling through to the link is the right answer when the bytes
-		// cannot be had: the caller still gets an address and a ticket.
-	}
-	name := filename
-	if name == "" {
-		name = id
-	}
-	return []any{map[string]any{
-		"type":     "resource_link",
-		"uri":      uri,
-		"name":     name,
-		"mimeType": served,
-		"description": "The bytes of this attachment. Read it as a resource, or run the `curl` command in " +
-			"`data.curl`; either way the bytes stay out of the model's context.",
-	}}
-}

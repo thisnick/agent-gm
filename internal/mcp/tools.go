@@ -413,9 +413,9 @@ var Tools = []Tool{
 		},
 	},
 	{
-		Name:  "list_contacts",
-		Scope: authz.ScopeMessagesRead,
-		Route: "contacts_list",
+		Name:        "list_contacts",
+		Scope:       authz.ScopeMessagesRead,
+		Route:       "contacts_list",
 		Description: "List the contacts the phone knows, so a name can be turned into a phone number before searching for a thread.",
 		Annotations: readAnnotations,
 		Args: []Arg{
@@ -476,7 +476,7 @@ var Tools = []Tool{
 			{Name: "text", In: InBody, Schema: nullableStr(""),
 				Description: "The message body. Optional only when `upload_ids` is present, in which case it is the caption."},
 			{Name: "upload_ids", In: InBody,
-				Schema: &Schema{Type: []string{"array", "null"}, Items: &Schema{Type: "string"}, MaxItems: intPtr(1)},
+				Schema:      &Schema{Type: []string{"array", "null"}, Items: &Schema{Type: "string"}, MaxItems: intPtr(1)},
 				Description: "The attachment to send, as a one-element array of an `upl_` ID from `create_upload` whose bytes you have already uploaded. Exactly one element is accepted today; two is refused naming the limit. An upload can be sent only once."},
 			{Name: "reply_to_message_id", In: InBody, Schema: nullableStr(""),
 				Description: "The `msg_` ID this is a reply to. Replies are an RCS feature: on an `sms_mms` thread this argument is refused with `unsupported_capability` and `reason: \"reply_not_supported\"`, so check the thread's `type` or its `capabilities.reply` first."},

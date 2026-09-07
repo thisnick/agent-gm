@@ -221,8 +221,10 @@ func TestSlice3Test19IsErrorSemantics(t *testing.T) {
 		t.Fatalf("an unknown tool name answered a result rather than a JSON-RPC error: %s", answer.Raw)
 	}
 
-	// ...and so is an unknown METHOD.
-	answer = h.callWith(h.Token, "tools/summon", nil, nil)
+	// ...and so is an unknown METHOD. This one is posted by hand: no
+	// reference client will send a method its own protocol does not have,
+	// so the assertion cannot go through the SDK client.
+	answer = h.rawCallWith(h.Token, "tools/summon", nil, atProtocol(mcp.ProtocolVersion))
 	if answer.Error == nil {
 		t.Fatalf("an unknown method answered a result rather than a JSON-RPC error: %s", answer.Raw)
 	}
@@ -230,13 +232,19 @@ func TestSlice3Test19IsErrorSemantics(t *testing.T) {
 		t.Fatalf("an unknown method answered code %d, want -32601", answer.Error.Code)
 	}
 
-	// A malformed request is the third of the four.
-	malformed := h.post(h.Token, []byte("{not json"), nil)
-	if malformed.Error == nil {
-		t.Fatalf("a malformed body answered no JSON-RPC error: %s", malformed.Raw)
+	// A malformed request is the third of the four, and it is the one the
+	// SDK answers at the TRANSPORT rather than as a JSON-RPC error: a body
+	// that is not a JSON-RPC message carries no `id`, so there is no request
+	// to answer and nothing to put an error object's `id` field. It comes
+	// back as `400` with section 7.1's envelope, which is a refusal a client
+	// can read; a JSON-RPC error with a null id would not be attributable to
+	// anything the client sent.
+	malformed := h.post(h.Token, []byte("{not json"), atProtocol(mcp.ProtocolVersion))
+	if malformed.Status != http.StatusBadRequest {
+		t.Fatalf("a malformed body answered %d, want 400: %s", malformed.Status, malformed.Raw)
 	}
-	if malformed.Error.Code != -32700 {
-		t.Fatalf("a malformed body answered code %d, want -32700", malformed.Error.Code)
+	if malformed.Error != nil {
+		t.Fatalf("a malformed body answered a JSON-RPC error, which has no id to carry: %s", malformed.Raw)
 	}
 
 	// And the boundary of the rule: `resources/read` is NOT a tools/call, so
@@ -347,7 +355,9 @@ func TestSlice3Test21Transport(t *testing.T) {
 
 	t.Run("a valid token with no messaging scope is 403 with the SAME challenge", func(t *testing.T) {
 		adminOnly := h.narrowToken("admin")
-		answer := h.callWith(adminOnly, "ping", nil, nil)
+		// Raw: a reference client cannot even connect with this token, which
+		// is the point -- the refusal happens before any session exists.
+		answer := h.rawCall(adminOnly, "ping", nil)
 		if answer.Status != http.StatusForbidden {
 			t.Fatalf("an admin-only token answered %d, want 403 -- deliberately distinct from the 401", answer.Status)
 		}
@@ -367,19 +377,30 @@ func TestSlice3Test21Transport(t *testing.T) {
 		}
 	})
 
+	// Content-Type and Accept are the SDK transport's checks now (decision
+	// D36), and it answers 415 rather than 400 for the wrong media type --
+	// which is the more correct status, and is what every other MCP server
+	// built on this SDK answers.
 	t.Run("Content-Type must be application/json", func(t *testing.T) {
 		answer := h.callWith(h.Token, "ping", nil, map[string]string{"Content-Type": "text/plain"})
-		if answer.Status != http.StatusBadRequest {
-			t.Fatalf("a text/plain body answered %d, want 400", answer.Status)
+		if answer.Status != http.StatusUnsupportedMediaType {
+			t.Fatalf("a text/plain body answered %d, want 415", answer.Status)
 		}
 	})
 
-	t.Run("Accept must admit application/json or text/event-stream", func(t *testing.T) {
-		answer := h.callWith(h.Token, "ping", nil, map[string]string{"Accept": "application/xml"})
-		if answer.Status != http.StatusBadRequest {
-			t.Fatalf("an Accept of application/xml answered %d, want 400", answer.Status)
+	// The MCP streamable transport requires BOTH media types in `Accept`,
+	// not either: the server chooses which to answer with, so a client that
+	// admitted only one would be refusing an answer the server is entitled
+	// to give. Section 8.1 said "or" and the SDK says "and"; the SDK is the
+	// protocol.
+	t.Run("Accept must admit both application/json and text/event-stream", func(t *testing.T) {
+		for _, accept := range []string{"application/xml", "application/json", "text/event-stream"} {
+			answer := h.callWith(h.Token, "ping", nil, map[string]string{"Accept": accept})
+			if answer.Status != http.StatusBadRequest {
+				t.Fatalf("an Accept of %q answered %d, want 400", accept, answer.Status)
+			}
 		}
-		for _, accept := range []string{"application/json", "text/event-stream", "*/*"} {
+		for _, accept := range []string{"application/json, text/event-stream", "*/*"} {
 			answer := h.callWith(h.Token, "ping", nil, map[string]string{"Accept": accept})
 			if answer.Status != http.StatusOK {
 				t.Fatalf("an Accept of %q answered %d, want 200", accept, answer.Status)
@@ -387,14 +408,36 @@ func TestSlice3Test21Transport(t *testing.T) {
 		}
 	})
 
-	t.Run("GET is 405", func(t *testing.T) {
-		resp, err := h.HTTP.Client().Get(h.HTTP.URL + mcp.Path)
+	// GET and DELETE have nothing to do: the transport is stateless, so
+	// there is no server-initiated stream to open and no session to delete.
+	// Authentication comes first in section 8.1's order, so an
+	// unauthenticated GET is a 401 and only an authenticated one reaches the
+	// transport's 405.
+	t.Run("GET is 405 once authenticated, and 401 before", func(t *testing.T) {
+		anonymous, err := h.HTTP.Client().Get(h.HTTP.URL + mcp.Path)
+		if err != nil {
+			t.Fatalf("GET /mcp: %v", err)
+		}
+		defer func() { _ = anonymous.Body.Close() }()
+		if anonymous.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("an unauthenticated GET /mcp answered %d, want 401", anonymous.StatusCode)
+		}
+
+		req, err := http.NewRequest(http.MethodGet, h.HTTP.URL+mcp.Path, nil)
+		if err != nil {
+			t.Fatalf("building the request: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+h.Token)
+		resp, err := h.HTTP.Client().Do(req)
 		if err != nil {
 			t.Fatalf("GET /mcp: %v", err)
 		}
 		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusMethodNotAllowed {
-			t.Fatalf("GET /mcp answered %d, want 405", resp.StatusCode)
+			t.Fatalf("an authenticated GET /mcp answered %d, want 405", resp.StatusCode)
+		}
+		if allow := resp.Header.Get("Allow"); allow != http.MethodPost {
+			t.Errorf("the 405 carries Allow: %q, want POST", allow)
 		}
 	})
 }
@@ -403,18 +446,25 @@ func TestSlice3Test21Transport(t *testing.T) {
 // one, and `2025-11-25` accepted for compatibility.
 func TestSlice3ProtocolRevisions(t *testing.T) {
 	h := newHarness(t)
-	for _, version := range []string{mcp.ProtocolVersion, mcp.ProtocolVersionCompat} {
-		answer := h.call("initialize", map[string]any{
-			"protocolVersion": version,
-			"capabilities":    map[string]any{},
-			"clientInfo":      map[string]any{"name": "test", "version": "0"},
-		})
-		if answer.Result == nil {
-			t.Fatalf("initialize at %s answered no result: %s", version, answer.Raw)
-		}
-		if got := answer.Result["protocolVersion"]; got != version {
-			t.Errorf("initialize at %s answered %v", version, got)
-		}
+
+	// The current revision, asserted through the OFFICIAL SDK client, which
+	// asks for the newest it knows. This is the test that fails loudly if a
+	// future SDK bump changes the rule that `2026-07-28` needs a stateless
+	// transport (mcp/streamable.go:871): the negotiation would silently drop
+	// to `2025-11-25` and this would catch it.
+	negotiated := h.session(h.Token).InitializeResult().ProtocolVersion
+	if negotiated != mcp.ProtocolVersion {
+		t.Fatalf("the reference client negotiated %q, want section 8.1's %q", negotiated, mcp.ProtocolVersion)
+	}
+
+	// And `2025-11-25` accepted for compatibility. No reference client will
+	// ask for an old revision, so this one is posted by hand.
+	answer := h.rawCall(h.Token, "initialize", initializeParams(mcp.ProtocolVersionCompat))
+	if answer.Result == nil {
+		t.Fatalf("initialize at %s answered no result: %s", mcp.ProtocolVersionCompat, answer.Raw)
+	}
+	if got := answer.Result["protocolVersion"]; got != mcp.ProtocolVersionCompat {
+		t.Errorf("initialize at %s answered %v", mcp.ProtocolVersionCompat, got)
 	}
 }
 
@@ -426,23 +476,29 @@ func TestSlice3ProtocolRevisions(t *testing.T) {
 // object.
 func TestSlice3Test28ServerInfo(t *testing.T) {
 	h := newHarness(t)
-	answer := h.call("initialize", map[string]any{"protocolVersion": mcp.ProtocolVersion})
+	answer := h.call("initialize", nil)
 	info, ok := answer.Result["serverInfo"].(map[string]any)
 	if !ok {
 		t.Fatalf("initialize answered no serverInfo: %s", answer.Raw)
 	}
-	if info["name"] != "agent-gm" {
+	if info["name"] != mcp.ServerName {
 		t.Errorf("serverInfo.name is %v, want agent-gm", info["name"])
 	}
-	if info["version"] != testVersion {
-		t.Errorf("serverInfo.version is %v, want the built version %q", info["version"], testVersion)
+	// The built commit rides in `serverInfo.version` as semver build
+	// metadata and the source URL in `serverInfo.websiteUrl`, because those
+	// are the only two fields a reference client keeps -- see ServerVersion
+	// for why `_meta` does not survive `server/discover`. This assertion is
+	// made on the result THE OFFICIAL CLIENT HOLDS, not on the wire, which
+	// is the whole point: a licence obligation nobody's client can read is
+	// not met.
+	wantVersion := mcp.ServerVersion(testVersion, testCommit)
+	if info["version"] != wantVersion {
+		t.Errorf("serverInfo.version is %v, want %q -- the built version and the built commit",
+			info["version"], wantVersion)
 	}
-	if info["commit"] != testCommit {
-		t.Errorf("serverInfo.commit is %v, want the built commit %q", info["commit"], testCommit)
-	}
-	sourceURL, _ := info["source_url"].(string)
+	sourceURL, _ := info["websiteUrl"].(string)
 	if sourceURL == "" {
-		t.Fatal("serverInfo carries no source_url, which is the AGPL section 13 obligation of section 1.4")
+		t.Fatal("serverInfo carries no websiteUrl, which is the AGPL section 13 obligation of section 1.4")
 	}
 	if !strings.Contains(sourceURL, testCommit) {
 		t.Errorf("source_url %q does not point at the built commit %q", sourceURL, testCommit)
@@ -451,12 +507,15 @@ func TestSlice3Test28ServerInfo(t *testing.T) {
 	// The same two facts are on GET /v1/health, and they must agree: two
 	// surfaces reporting different commits is worse than one reporting none.
 	rest := h.getHealth(t)
-	if rest["commit"] != info["commit"] {
-		t.Errorf("GET /v1/health reports commit %v and serverInfo reports %v", rest["commit"], info["commit"])
+	restCommit, _ := rest["commit"].(string)
+	restVersion, _ := rest["version"].(string)
+	if got := info["version"]; got != mcp.ServerVersion(restVersion, restCommit) {
+		t.Errorf("GET /v1/health reports version %q at commit %q, and serverInfo.version is %v",
+			restVersion, restCommit, got)
 	}
-	if rest["source_url"] != info["source_url"] {
-		t.Errorf("GET /v1/health reports source_url %v and serverInfo reports %v",
-			rest["source_url"], info["source_url"])
+	if rest["source_url"] != sourceURL {
+		t.Errorf("GET /v1/health reports source_url %v and serverInfo.websiteUrl is %v",
+			rest["source_url"], sourceURL)
 	}
 }
 
