@@ -16,6 +16,19 @@ to one is a fix to both.
 
 Authorization is OAuth 2.1 ([oauth.md](oauth.md)).
 
+**Connecting a client**, in the order it happens:
+
+1. The owner issues an enrollment code —
+   `agm admin enrollment-codes create "claude.ai"` — which prints once.
+2. The client is pointed at `AGENT_GM_PUBLIC_URL` + `/mcp`. It discovers the
+   authorization server, registers itself, and opens the authorization screen.
+3. Whoever holds the code types it into that screen and picks the scopes.
+4. The owner approves the request it creates —
+   `agm admin authorization-requests approve authreq_…` — and the client's
+   waiting page redirects with a code it exchanges for a token.
+
+There is no self-service: steps 1 and 4 are the owner's, on a terminal.
+
 The section below, "First five minutes", is the `instructions` block the
 server returns from `initialize`, byte for byte. A test asserts the two are
 identical, so a client that surfaces instructions to its model has already
@@ -236,15 +249,14 @@ check; the single-`Authorization`-header rule; the "at least one messaging
 scope" rule; the concurrency budget; the §7.1 envelope on every refusal; and
 the whole authorization server of [oauth.md](oauth.md).
 
-**The pin is bumped the way the `libgm` pin of spec §3.6 is bumped: as its own
-deliberate slice, never as a drive-by commit.** A bump re-runs the MCP
-acceptance tests, re-baselines `devbox run conformance` in both directions, and
-drives a real server with the SDK's own client and with the official TypeScript
-client. It does not need §3.6's live gate, because nothing here touches Google.
-For an operator the consequence is narrow and worth knowing: a status code, a
-header or an error code on this page can change under you when that pin moves,
-and nothing else can. If a connector stops working after an upgrade, the pinned
-version is the first thing to read.
+**The pin is bumped on its own, never as a drive-by commit.** A bump re-runs
+the MCP acceptance tests, re-baselines `devbox run conformance` in both
+directions, and drives a real server with the SDK's own client and with the
+official TypeScript client. It needs no live gate, because nothing here touches
+Google. For an operator the consequence is narrow: a status code, a header or
+an error code on this page can change when that pin moves, and nothing else
+can. If a connector stops working after an upgrade, the pinned version is the
+first thing to read.
 
 ## Scopes and what you see
 
