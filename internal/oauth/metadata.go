@@ -16,7 +16,7 @@ import (
 // equals AGENT_GM_PUBLIC_URL byte for byte and `resource` is that plus
 // `/mcp`, with no trailing-slash drift, and section 16 Slice 3 test 1 asserts
 // both as string equality rather than as parsed-URL equivalence. That is not
-// pedantry: a client that fetches `https://gm.agent-wx.app/` and compares the
+// pedantry: a client that fetches `https://gm.example.test/` and compares the
 // issuer it got back to the one it asked for will reject a mismatch, and two
 // URLs that parse the same are not the same bytes.
 

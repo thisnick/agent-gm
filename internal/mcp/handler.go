@@ -645,7 +645,7 @@ func setSecurityHeaders(w http.ResponseWriter) {
 // only a query or a fragment -- and an `Origin` header never carries one. So a
 // deployment at `https://example.test/gm` answered `403` to every browser
 // client on its own correct origin, which is the one case the check exists to
-// let through. `https://gm.agent-wx.app` has no path and was never affected,
+// let through. `https://gm.example.test` has no path and was never affected,
 // which is exactly why it survived a slice.
 func sameOrigin(origin, publicURL string) bool {
 	o, err := url.Parse(origin)

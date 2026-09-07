@@ -48,7 +48,7 @@ func seedRequest(t *testing.T, st *Store, requestID string) string {
 		return tx.CreateAuthorizationRequest(AuthorizationRequest{
 			ID: requestID, ClientID: clientID, RedirectURI: "http://127.0.0.1/cb",
 			State: "s", CodeChallenge: "c", CodeChallengeMethod: "S256",
-			Resource: "https://gm.agent-wx.app/mcp", RequestedScopes: "messages:read",
+			Resource: "https://gm.example.test/mcp", RequestedScopes: "messages:read",
 			SelectedScopes: "messages:read", Status: AuthRequestPending,
 			HandleHash: "h", FormTokenHash: "f", ExpiresAtMS: 1 << 40,
 		})
@@ -74,7 +74,7 @@ func TestAnAuthorizationCodeIsConsumedOnce(t *testing.T) {
 		return tx.CreateAuthorizationCode(AuthorizationCode{
 			CodeHash: hash, RequestID: requestID, ClientID: clientID,
 			RedirectURI: "http://127.0.0.1/cb", CodeChallenge: "c",
-			Scopes: "messages:read", Resource: "https://gm.agent-wx.app/mcp",
+			Scopes: "messages:read", Resource: "https://gm.example.test/mcp",
 			ExpiresAtMS: 1 << 40,
 		})
 	}); err != nil {

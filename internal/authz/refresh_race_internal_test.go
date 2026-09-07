@@ -45,7 +45,7 @@ func TestARefreshThatLosesTheRaceIsReuse(t *testing.T) {
 	t.Cleanup(func() { _ = st.Close() })
 	svc, err := New(st, clk, NewMemorySettings(), nil, Config{
 		AdminSecret: secret,
-		PublicURL:   "https://gm.agent-wx.app",
+		PublicURL:   "https://gm.example.test",
 	})
 	if err != nil {
 		t.Fatal(err)

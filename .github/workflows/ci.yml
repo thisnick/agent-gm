@@ -63,6 +63,21 @@ jobs:
           enable-cache: "true"
       - run: devbox run no-real-numbers
 
+  # The owner's deployment hostname is configuration, not a constant. It may
+  # appear in the spec's deployment and decision sections and in
+  # docs/deploy.md, labelled as the owner's deployment, and nowhere else: a
+  # built-in hostname is right for one person and silently wrong for everyone,
+  # and in a public repository it is also an address written where nobody put
+  # it. Also inside `devbox run check`.
+  no-deployment-host:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jetify-com/devbox-install-action@v0.13.0
+        with:
+          enable-cache: "true"
+      - run: devbox run no-deployment-host
+
   # The MCP conformance run of spec section 8.4, against the baseline in both
   # directions. The token is minted through the WHOLE OAuth flow -- admin
   # bootstrap, enrollment code, DCR, the authorization screen, owner approval,

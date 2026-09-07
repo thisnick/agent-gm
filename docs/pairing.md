@@ -234,7 +234,7 @@ If Agent GM runs somewhere with no desktop, run `agm pair` on a machine that
 has one and point it at the server:
 
 ```console
-$ agm pair --server https://gm.agent-wx.app
+$ agm pair --server https://gm.example.test
 ```
 
 Chrome runs on your laptop; the CLI sends **only the seven cookies** to the

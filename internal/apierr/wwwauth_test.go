@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-const testPublicURL = "https://gm.agent-wx.app"
+const testPublicURL = "https://gm.example.test"
 
 // TestWWWAuthenticateFor401 pins the header spec section 7.2 requires on a
 // 401: realm, an error parameter, and resource_metadata pointing at the
@@ -15,7 +15,7 @@ const testPublicURL = "https://gm.agent-wx.app"
 func TestWWWAuthenticateFor401(t *testing.T) {
 	got := WWWAuthenticate(testPublicURL, CodeInvalidToken, "")
 	const want = `Bearer realm="agent-gm", error="invalid_token", ` +
-		`resource_metadata="https://gm.agent-wx.app/.well-known/oauth-protected-resource/mcp"`
+		`resource_metadata="https://gm.example.test/.well-known/oauth-protected-resource/mcp"`
 	if got != want {
 		t.Errorf("WWW-Authenticate\n got: %s\nwant: %s", got, want)
 	}
@@ -29,7 +29,7 @@ func TestWWWAuthenticateFor401(t *testing.T) {
 func TestWWWAuthenticateFor403(t *testing.T) {
 	got := WWWAuthenticate(testPublicURL, CodeInsufficientScope, "messages:write")
 	const want = `Bearer realm="agent-gm", error="insufficient_scope", scope="messages:write", ` +
-		`resource_metadata="https://gm.agent-wx.app/.well-known/oauth-protected-resource/mcp"`
+		`resource_metadata="https://gm.example.test/.well-known/oauth-protected-resource/mcp"`
 	if got != want {
 		t.Errorf("WWW-Authenticate\n got: %s\nwant: %s", got, want)
 	}
@@ -41,11 +41,11 @@ func TestWWWAuthenticateFor403(t *testing.T) {
 // otherwise point a client at an attacker's authorization server (spec
 // sections 7.2, 9.2, Slice 2 test 19).
 func TestResourceMetadataURLIsBuiltFromThePublicURL(t *testing.T) {
-	const want = "https://gm.agent-wx.app/.well-known/oauth-protected-resource/mcp"
+	const want = "https://gm.example.test/.well-known/oauth-protected-resource/mcp"
 	for _, in := range []string{
-		"https://gm.agent-wx.app",
-		"https://gm.agent-wx.app/",
-		"https://gm.agent-wx.app///",
+		"https://gm.example.test",
+		"https://gm.example.test/",
+		"https://gm.example.test///",
 	} {
 		if got := ResourceMetadataURL(in); got != want {
 			t.Errorf("ResourceMetadataURL(%q) = %q, want %q", in, got, want)

@@ -286,7 +286,7 @@ func TestTest25ConcurrencyBudget(t *testing.T) {
 // `AGENT_GM_PUBLIC_URL` is allowed to carry one. The check used to compare the
 // two trimmed strings, so a deployment under a path answered `403` to every
 // browser client on its own correct origin -- the one case the check exists to
-// let through -- while `https://gm.agent-wx.app`, which has no path, was
+// let through -- while `https://gm.example.test`, which has no path, was
 // unaffected. That is why it survived a slice: the deployment we have is the
 // one shape that hides it.
 func TestSameOriginComparesTheOriginAndNotTheURL(t *testing.T) {

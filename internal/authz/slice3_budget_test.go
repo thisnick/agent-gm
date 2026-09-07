@@ -36,7 +36,7 @@ func newBudgetService(t *testing.T, dir string, clk clock.Clock) (*store.Store, 
 	}
 	svc, err := authz.New(st, clk, authz.NewMemorySettings(), nil, authz.Config{
 		AdminSecret: adminSecretForBudgetTests,
-		PublicURL:   "https://gm.agent-wx.app",
+		PublicURL:   "https://gm.example.test",
 	})
 	if err != nil {
 		t.Fatal(err)

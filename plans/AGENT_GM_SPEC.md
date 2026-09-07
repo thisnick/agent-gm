@@ -2092,7 +2092,8 @@ that is not terminal.
 
 ## 7. REST API
 
-Base: `https://gm.agent-wx.app/v1`. JSON in, JSON out. Every route requires a
+Base: `<AGENT_GM_PUBLIC_URL>/v1`, where `<AGENT_GM_PUBLIC_URL>` is the configured public
+URL (§15.1). JSON in, JSON out. Every route requires a
 bearer token except `/healthz`, `/oauth/*` and `/.well-known/*`.
 ### 7.1 Envelopes
 
@@ -2189,7 +2190,7 @@ something to search for. Every other raw Google value is `admin`-only (§4.1).
 
 `401` and `403` carry `WWW-Authenticate` with `realm="agent-gm"`, an `error`
 parameter, `resource_metadata` pointing at
-`https://gm.agent-wx.app/.well-known/oauth-protected-resource/mcp`, and, for a
+`<AGENT_GM_PUBLIC_URL>/.well-known/oauth-protected-resource/mcp`, and, for a
 scope refusal, the `scope` the route requires.
 
 ### 7.3 Choosing an account
@@ -2537,7 +2538,7 @@ conversation exists, is readable, and will be writable again after
 
 ### 8.1 Transport
 
-Streamable HTTP at `https://gm.agent-wx.app/mcp`, served by the official MCP
+Streamable HTTP at `<AGENT_GM_PUBLIC_URL>/mcp`, served by the official MCP
 Go SDK's `StreamableHTTPHandler` (**D36**). Protocol revision `2026-07-28`,
 with `2025-11-25` accepted for compatibility; the SDK also answers the two
 revisions older than those, and that is the SDK's business rather than this
@@ -2555,7 +2556,8 @@ The checks, in this order. The first two run **before the transport parses
 anything**; the rest are the SDK's, and run after authentication because the
 SDK owns the parse.
 
-- `Origin`, when present, must equal `https://gm.agent-wx.app`; a foreign one
+- `Origin`, when present, must equal the configured `AGENT_GM_PUBLIC_URL`
+  on scheme, host and port; a foreign one
   is `403`. A non-browser client sending no `Origin` is supported. **This one
   is ours**, not the SDK's: the SDK's cross-origin protection is opt-in behind
   a debug parameter, is deprecated in favour of external middleware, and
@@ -2963,8 +2965,8 @@ envelope.
 
 ```json
 {
-  "resource": "https://gm.agent-wx.app/mcp",
-  "authorization_servers": ["https://gm.agent-wx.app"],
+  "resource": "<AGENT_GM_PUBLIC_URL>/mcp",
+  "authorization_servers": ["<AGENT_GM_PUBLIC_URL>"],
   "scopes_supported": ["messages:read", "messages:write", "messages:delete"],
   "bearer_methods_supported": ["header"],
   "resource_documentation": "https://github.com/thisnick/agent-gm"
@@ -2975,11 +2977,11 @@ envelope.
 
 ```json
 {
-  "issuer": "https://gm.agent-wx.app",
-  "authorization_endpoint": "https://gm.agent-wx.app/oauth/authorize",
-  "token_endpoint": "https://gm.agent-wx.app/oauth/token",
-  "registration_endpoint": "https://gm.agent-wx.app/oauth/register",
-  "revocation_endpoint": "https://gm.agent-wx.app/oauth/revoke",
+  "issuer": "<AGENT_GM_PUBLIC_URL>",
+  "authorization_endpoint": "<AGENT_GM_PUBLIC_URL>/oauth/authorize",
+  "token_endpoint": "<AGENT_GM_PUBLIC_URL>/oauth/token",
+  "registration_endpoint": "<AGENT_GM_PUBLIC_URL>/oauth/register",
+  "revocation_endpoint": "<AGENT_GM_PUBLIC_URL>/oauth/revoke",
   "response_types_supported": ["code"],
   "grant_types_supported": ["authorization_code", "refresh_token"],
   "token_endpoint_auth_methods_supported": ["none"],
@@ -3002,7 +3004,7 @@ The `401` challenge from `/mcp`, which the `403 insufficient_scope` carries
 too because it says the same thing to the same reader:
 
 ```http
-WWW-Authenticate: Bearer resource_metadata="https://gm.agent-wx.app/.well-known/oauth-protected-resource/mcp", scope="messages:read messages:write"
+WWW-Authenticate: Bearer resource_metadata="<AGENT_GM_PUBLIC_URL>/.well-known/oauth-protected-resource/mcp", scope="messages:read messages:write"
 ```
 
 **There is no `realm`.** The format is the SDK's, byte for byte — a test runs
@@ -3083,7 +3085,7 @@ callback carrying `error`, `state`, and the RFC 9207 `iss`:
 |---|---|
 | `response_type` is not `code` | `unsupported_response_type` |
 | missing `state`, missing or non-`S256` PKCE, malformed challenge | `invalid_request` |
-| `resource` is not `https://gm.agent-wx.app/mcp` | `invalid_target` |
+| `resource` is not `<AGENT_GM_PUBLIC_URL>/mcp` | `invalid_target` |
 | unknown or empty scope, or `admin` requested | `invalid_scope` |
 
 The page sets `agm_oauth_context`, a signed cookie with `Path=/oauth`,
@@ -3208,7 +3210,7 @@ or an audit payload.
 | `oauth.authorization_request_ttl` | 15m | 1m–1h |
 | `oauth.enrollment_default_ttl` | 15m | 1m–24h |
 
-Access tokens are bound to `https://gm.agent-wx.app/mcp`. **If
+Access tokens are bound to `<AGENT_GM_PUBLIC_URL>/mcp`. **If
 `AGENT_GM_PUBLIC_URL` ever changes, every token minted under the previous
 origin is refused with `401 invalid_token` on both `/mcp` and `/v1`, and every
 registered client is orphaned.** See §15.6.
@@ -3347,10 +3349,10 @@ ticket**:
   "width": 1024, "height": 768, "download_state": "available",
   "inline": false,
   "resource_uri": "agm://attachments/att_9f3c...",
-  "download_url": "https://gm.agent-wx.app/v1/attachments/att_9f3c.../content",
+  "download_url": "<AGENT_GM_PUBLIC_URL>/v1/attachments/att_9f3c.../content",
   "token": "agm_dt_…", "token_audience": "download:att_9f3c...",
   "expires_at": "2026-09-06T10:11:07.000Z", "max_redemptions": 5,
-  "curl": "curl --fail -H 'Authorization: Bearer agm_dt_…' -o 'IMG_0421.jpg' 'https://gm.agent-wx.app/v1/attachments/att_9f3c.../content'" }
+  "curl": "curl --fail -H 'Authorization: Bearer agm_dt_…' -o 'IMG_0421.jpg' '<AGENT_GM_PUBLIC_URL>/v1/attachments/att_9f3c.../content'" }
 ```
 
 `GET /v1/attachments/{id}/content` accepts either a `messages:read` access
@@ -3382,14 +3384,14 @@ computed, `sha256` is `null`, `sha256_available` is `false`, and
 
 ```json
 { "upload_id": "upl_01k4...",
-  "upload_url": "https://gm.agent-wx.app/v1/uploads/upl_01k4.../content",
+  "upload_url": "<AGENT_GM_PUBLIC_URL>/v1/uploads/upl_01k4.../content",
   "method": "PUT",
   "token": "agm_ut_…", "token_audience": "upload:upl_01k4...",
   "expires_at": "2026-09-06T12:11:07.000Z",
   "limits": { "max_bytes": 104857600, "size_bytes": 184320,
               "mime_type": "image/jpeg", "sha256": "…",
               "expires_in_seconds": 7200 },
-  "curl": "curl --fail -X PUT -H 'Authorization: Bearer agm_ut_…' -H 'Content-Type: image/jpeg' --data-binary @FILE 'https://gm.agent-wx.app/v1/uploads/upl_01k4.../content'" }
+  "curl": "curl --fail -X PUT -H 'Authorization: Bearer agm_ut_…' -H 'Content-Type: image/jpeg' --data-binary @FILE '<AGENT_GM_PUBLIC_URL>/v1/uploads/upl_01k4.../content'" }
 ```
 
 2. **`PUT {upload_url}`** with `Authorization: Bearer <token>` streams the
@@ -3819,7 +3821,7 @@ Two ways forward, best first:
   1. Run this same command from a machine that has Chrome, pointing at this
      server -- only the cookies travel, over TLS:
 
-         agm pair --server https://gm.agent-wx.app
+         agm pair --server https://gm.example.test
 
   2. Paste them yourself. In a browser already signed in to
      messages.google.com, open devtools -> Network, right-click any request
@@ -3847,7 +3849,7 @@ missing ones and the domain each comes from (§3.2), because a paste scoped to
 #### Headless servers
 
 ```console
-$ agm pair --server https://gm.agent-wx.app
+$ agm pair --server https://gm.example.test
 ```
 
 Chrome runs on the owner's laptop; the CLI POSTs **only the seven cookies** to
@@ -4582,7 +4584,7 @@ Environment only, plus a runtime settings table. **There is no config file.**
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `AGENT_GM_PUBLIC_URL` | *(required)* | `https://gm.agent-wx.app`. Issuer, canonical resource, and the base of every URL handed out. Never derived from `Host` |
+| `AGENT_GM_PUBLIC_URL` | *(required, no default)* | The public origin. Issuer, canonical resource, and the base of every URL handed out. Never derived from `Host`, and **never defaulted**: a built-in hostname is a value that is right for one deployment and silently wrong for every other. The owner's deployment sets `https://gm.agent-wx.app`; §9.2's documents and §8.1's `Origin` check are stated against whatever this is configured to |
 | `AGENT_GM_LISTEN_ADDR` | `0.0.0.0:8080` | bind address |
 | `AGENT_GM_DATA_DIR` | `/data` | holds `agent-gm.sqlite3`, `sessions/` (one file per account, §3.3), `media-cache/`, `backups/` |
 | `AGENT_GM_ADMIN_SECRET` | *(required)* | owner bootstrap credential, ≥43 chars |
@@ -5111,7 +5113,8 @@ this slice's gate, not in this one.
 
 **Acceptance tests.**
 
-1. `issuer` equals `https://gm.agent-wx.app` **byte for byte** and `resource`
+1. `issuer` equals the configured `AGENT_GM_PUBLIC_URL` **byte for byte**
+   and `resource`
    equals it plus `/mcp` with no trailing-slash drift, asserted as string
    equality on both discovery documents.
 2. An unauthenticated `/mcp` request answers `401` with the exact

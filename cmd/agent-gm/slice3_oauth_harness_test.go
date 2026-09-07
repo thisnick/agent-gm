@@ -39,7 +39,7 @@ import (
 // URL this server hands out is built from AGENT_GM_PUBLIC_URL and never from
 // the request's Host (spec sections 10.3, 12.3), so the issuer can be a name
 // that resolves nowhere while the tests dial 127.0.0.1.
-const oauthTestIssuer = "https://gm.agent-wx.app"
+const oauthTestIssuer = "https://gm.example.test"
 
 const oauthTestAdminSecret = "a-test-admin-secret-well-over-the-43-character-minimum-0123456789"
 

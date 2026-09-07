@@ -16,7 +16,7 @@ no config file, and there is no plan for one.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `AGENT_GM_PUBLIC_URL` | *(required)* | The public origin, e.g. `https://gm.agent-wx.app`. It is the OAuth issuer, the canonical resource, and the base of every URL Agent GM hands out. **Never derived from the `Host` header** — see "changing the public URL" below, because changing it is a migration |
+| `AGENT_GM_PUBLIC_URL` | *(required)* | The public origin, e.g. `https://gm.example.test`. It is the OAuth issuer, the canonical resource, and the base of every URL Agent GM hands out. **Never derived from the `Host` header** — see "changing the public URL" below, because changing it is a migration |
 | `AGENT_GM_LISTEN_ADDR` | `0.0.0.0:8080` | Bind address |
 | `AGENT_GM_DATA_DIR` | `/data` | Holds `agent-gm.sqlite3`, `sessions/` (one file per account), `media-cache/` and `backups/` |
 | `AGENT_GM_ADMIN_SECRET` | *(required)* | The owner's bootstrap credential. Must be at least 43 characters; the server refuses to start with a shorter one |
