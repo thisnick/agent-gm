@@ -13,7 +13,7 @@ detail:
   owner does two separate things: issue an enrollment code, and approve the
   request that code produces. A leaked code still cannot mint anything without
   a person looking at a screen and saying yes.
-- **Client resolution is DCR-only** (D20). There is no preregistered client
+- **Client resolution is DCR-only.** There is no preregistered client
   table, no Client ID Metadata Document fetch, and therefore **no outbound
   HTTP from the OAuth layer at all** — which removes the SSRF surface rather
   than defending it. Every client this server will ever see registers itself.
@@ -181,12 +181,10 @@ token endpoint still requires `redirect_uri` to equal the one bound to the code
 exactly**, so the port a client authorized on is the port it must present at
 exchange.
 
-> **Deliberate deviation, recorded as contract text.** `http://localhost/…` is
-> accepted, against RFC 8252 §8.3, which prefers the IP literals because
-> `localhost` resolution depends on the host's name service. That hazard exists
-> only on the client's own machine, and widely used MCP clients register the
-> name; refusing them buys little. **The allowance is for the literal host name
-> and nothing else**: the comparison is exact and case-insensitive, so
+> **One deviation from RFC 8252 §8.3.** `http://localhost/…` is accepted, where
+> the RFC prefers the IP literals because `localhost` resolution depends on the
+> host's name service. **The allowance is for the literal host name and nothing
+> else**: the comparison is exact and case-insensitive, so
 > `localhost.evil.example`, `notlocalhost`, `local.host` and
 > `localhost@evil.example` are ordinary domains with no plain-http exemption. A
 > suffix or substring match here would be far worse than the problem the
@@ -222,8 +220,8 @@ The page sets `agm_oauth_context`, a signed cookie with `Path=/oauth`,
 `HttpOnly`, `Secure`, `SameSite=Lax`. The form carries the signed context, an
 anti-CSRF `form_token`, hidden echoes of every OAuth parameter, one `scope`
 checkbox per requested scope, an `enrollment_code` input, and — **because
-scopes are global across accounts (D29)** — this line, rendered verbatim above
-the checkboxes:
+scopes are global across accounts** — this line, rendered verbatim above the
+checkboxes:
 
 > This will let the client read and send as any Google account on this server,
 > including accounts added later.
@@ -290,8 +288,8 @@ the `oauth.enrollment_default_ttl` setting (15m), bounded 1m–24h. `scopes`
 `allow_scopes` **extends** it; they are mutually exclusive, because a request
 carrying both is a request whose author did not know which they meant.
 **`admin` can never be enrolled.** Enrollment codes carry **no account
-dimension**, consistent with D29: a code caps which scopes may be granted,
-never which accounts they reach.
+dimension**: a code caps which scopes may be granted, never which accounts they
+reach.
 
 Revocation takes its reason as the query parameter `?reason=`, and repeating it
 answers `200` with `revoked: false` — a second revocation is not a failure, and
@@ -338,9 +336,8 @@ matters because the browser-selected set is what the owner saw on screen next
 to the disclosure line — an approval that could widen it would grant access the
 screen never described.
 
-There is no approval **page**. An approval page is a human UI and contradicts
-non-goal N2; the owner approves on a terminal. That is open question OQ-3's
-recorded answer.
+There is no approval **page**: a human UI is a non-goal, and the owner approves
+on a terminal.
 
 ### The waiting page
 
@@ -443,14 +440,11 @@ because one of them is one edit away from being wrong.
 | `messages:delete` | `delete_message` and `delete_conversation`, and nothing else |
 | `admin` | `/v1/admin/*` and all pairing routes. Issued only by the admin bootstrap; **never enrollable** |
 
-**Scopes are global across accounts** (D29). A token holding `messages:read`
-reads every account this server holds; one holding `messages:write` can send
-from any of them. Per-account scoping is **deferred, not refused**: it needs a
-scope grammar, a UI for choosing accounts at the authorization screen, and
-enrollment ceilings that can name accounts that may not exist yet. Until then
-the honest statement is the one the authorization screen renders verbatim above
-its scope checkboxes. An owner who needs a genuinely separated account runs a
-second Agent GM.
+**Scopes are global across accounts.** A token holding `messages:read` reads
+every account this server holds; one holding `messages:write` can send from any
+of them. There is no per-account scoping, which is what the authorization
+screen renders verbatim above its scope checkboxes. An owner who needs a
+genuinely separated account runs a second Agent GM.
 
 ## Budgets on unauthenticated endpoints
 
@@ -479,6 +473,34 @@ stays a single atomic decision.
 `POST /v1/auth/admin-session` is budgeted separately and more tightly (5 per 15
 minutes per source, 20 globally, exponential cooldown), because a success there
 yields more than a success anywhere else.
+
+## Adding a connector
+
+A claude.ai or ChatGPT connector walks the flow above by itself. The owner's
+two acts bracket it:
+
+```console
+# 1. Issue a code. It is printed once and only its SHA-256 is stored.
+$ agm admin enrollment-codes create "claude.ai" --expires-in 30m
+code: A1B2-C3D4-E5F6-G7H8
+
+# 2. Add the connector in the client, with the URL
+#      https://gm.example.test/mcp
+#    The client discovers this server, registers itself, and shows the
+#    authorization screen. Type the code there and choose the scopes.
+
+# 3. Approve the request the screen created.
+$ agm admin authorization-requests list --status pending
+$ agm admin authorization-requests approve authreq_…
+```
+
+The client's waiting page then redirects with a code it exchanges for a token,
+and the connector is live. A code expires (15 minutes by default), and an
+authorization request expires with `oauth.authorization_request_ttl`, so if the
+approval is slow the client starts again from step 2 with a fresh code.
+
+Nothing about this is per-account: the token reaches every Google account this
+server holds, which is what the screen says before the owner approves.
 
 ## Revoking a connector
 
