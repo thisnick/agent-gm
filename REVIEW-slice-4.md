@@ -674,3 +674,46 @@ The two coordinator items are unchanged. The first tag is itself a live gate —
 no GitHub release, cosign signature, npm version or `ci`→`release` digest
 handshake has ever executed. And §16 Slice 4 test 6, the owner's Mac CLI gate,
 is outstanding.
+
+---
+
+# Addendum 4 — `18e71ef`, the deletion, verified against my own test
+
+Sign-off moves `f8dde90` → `18e71ef`. `devbox run check` EXIT=0;
+`internal/release` 24 tests, 24 passing (25 minus the one removed). The diff is
+one file, one function deleted, a note in its place; nothing else touched.
+
+I reproduced the justification independently rather than accept it, because
+the thing being deleted was mine and "the author agrees" is not evidence.
+Plant: `do_publish`'s digest guard replaced by
+`if false; then die "AGENT_GM_IMAGE_DIGEST is not a sha256: digest"; fi` — a
+function that refuses nothing whatsoever.
+
+```
+TestPublishRefusesToRecordAnUnknownImageDigest   (mine, restored)   --- PASS
+TestPublishRefusesADigestThatIsAbsentOrMalformed (theirs, executes) --- FAIL
+    /unset  /the_literal_unknown  /a_bare_hex_string
+    /too_short  /the_wrong_algorithm  /a_tag,_not_a_digest        all six
+```
+
+My test passed against a `do_publish` that would have published `@unknown`.
+That is the finding, reproduced by me at `18e71ef`, and it is the whole
+justification for the deletion — which is the right call, and made for the
+right reason: patching it to match `$digest_shape` would have gone back to
+asserting that a string appears somewhere in a function, which is the thing
+that had just failed. A text test earns its place where there is nothing to
+execute — the workflow YAML — and not otherwise.
+
+**Final sign-off: `18e71ef`. PR #1 may merge; `v1.0.0` may be tagged.**
+
+Across four rounds: 26 mutations planted at `a9f5626`, 6 at `ee7cad1`, 6 at
+`9f1b646`, 4 at `f8dde90`, 2 at `18e71ef`. Every survivor is now killed by a
+named test, including the one that was mine.
+
+Unchanged, and neither is discharged by anything in this repository:
+
+1. **The first tag is itself a live gate.** No GitHub release has been
+   created, no cosign signature written, no npm version published, and the
+   `ci`→`release` digest handshake has never run. It is now thoroughly
+   asserted. Assertion is not execution.
+2. **§16 Slice 4 test 6**, the owner's Mac CLI gate.
