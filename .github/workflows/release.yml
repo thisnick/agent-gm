@@ -208,15 +208,12 @@ jobs:
           AGENT_GM_IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
         run: devbox run -- ./scripts/release.sh publish
 
-      # NODE_AUTH_TOKEN is temporary. npm's trusted publishing (OIDC) has to
-      # be configured against a package that already exists, so the FIRST
-      # release uses the token; after it, the owner enables trusted publishing
-      # for this repository and this workflow, deletes the NPM_TOKEN secret,
-      # and this env block loses NODE_AUTH_TOKEN. The job already has
-      # `id-token: write` for cosign, which is the permission OIDC publishing
-      # wants. docs/operations.md carries the three steps.
+      # npm authenticates this step with the job's OIDC identity (trusted
+      # publishing, enabled by the owner on 2026-09-07 for this repository and
+      # this workflow file). There is no npm token anywhere: not in secrets,
+      # not in an env block. `id-token: write` above is the only permission
+      # it needs, and provenance is mandatory rather than best-effort.
       - name: Publish @agent-gm/cli
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: "true"
         run: devbox run -- ./scripts/release.sh npm-publish

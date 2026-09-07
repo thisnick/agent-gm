@@ -481,13 +481,12 @@ do_npm_publish() {
       "release is $version. Run 'release.sh build' and 'release.sh npm-pack' again;" \
       "publishing a tarball from another run publishes another build."
   [ -f "$tarball" ] || die "$tarball is recorded but does not exist"
-  # --provenance needs id-token: write, which the release workflow grants. If
-  # the registry or the runner will not do provenance the publish still has to
-  # happen, so the fallback is explicit rather than silent.
-  if ! npm publish --access public --provenance "$tarball"; then
-    note "provenance publish failed; retrying without it"
-    npm publish --access public "$tarball"
-  fi
+  # Trusted publishing: npm authenticates with the workflow's OIDC identity
+  # (id-token: write) and provenance is part of that identity, so there is no
+  # token to fall back to and a publish without provenance is not a publish
+  # this project makes. A failure here is a failure, not a retry.
+  npm publish --access public --provenance "$tarball" \
+    || die "npm publish failed; trusted publishing must be enabled on npm for this repository and workflow (docs/operations.md)"
   note "published @agent-gm/cli@$version"
 }
 

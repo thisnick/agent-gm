@@ -508,24 +508,15 @@ path is the one path CI cannot rehearse:
 
 ### After the first release: trusted publishing
 
-`@agent-gm/cli` is published today with an `NPM_TOKEN` repository secret,
-because npm's trusted publishing has to be configured against a package that
-already exists. **Once `v1.0.0` is on npm, switch:**
-
-1. On npmjs.com, open `@agent-gm/cli` → *Settings* → *Trusted publisher*, and
-   add this repository with workflow `release.yml` (GitHub Actions, OIDC).
-2. Delete the `NPM_TOKEN` secret from the repository. A long-lived token that
-   nobody needs is a long-lived token nobody rotates.
-3. Drop `NODE_AUTH_TOKEN` from the *Publish `@agent-gm/cli`* step in
-   `.github/workflows/release.yml`. The job already has `id-token: write` for
-   cosign, which is the same permission OIDC publishing needs, and
-   `--provenance` keeps working.
-
-Do it as its own commit, and prove it on the next release rather than
-assuming: a publish that silently falls back to an absent token fails at the
-end of a release, which is the worst place to find out.
-
-## Logging
+**Done on 2026-09-07.** `@agent-gm/cli` was first published with an npm
+token (v1.0.0); the owner then enabled npm trusted publishing for this
+repository and the `release.yml` workflow, the `NPM_TOKEN` secret was
+deleted, and the publish step now authenticates with the job's OIDC identity
+only (`id-token: write`), with provenance mandatory. There is no npm
+credential stored anywhere for this project. If a future publish fails with
+an authentication error, the fix is on npm's side (the trusted publisher
+entry: owner `thisnick`, repository `agent-gm`, workflow `release.yml`, no
+environment), never a new token.
 
 ### What is redacted
 
