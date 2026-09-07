@@ -58,6 +58,19 @@ COPY --from=build /out/agent-gm /usr/local/bin/agent-gm
 # ownership is right regardless of how the daemon resolves names.
 COPY --from=build --chown=65532:65532 /out/data /data
 
+# The commit and version, on the IMAGE as well as in the binary. The release
+# note pins a deployment by digest (section 14.2), and `release.sh publish`
+# refuses a digest whose image was not built from the commit being released --
+# a tag that was pushed, built, moved and re-pushed otherwise resolves to the
+# previous image and the note pins source nobody released (R-6). The label is
+# how that question is asked without pulling and running the image.
+ARG VERSION
+ARG COMMIT
+LABEL org.opencontainers.image.revision="${COMMIT}" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.source="https://github.com/thisnick/agent-gm" \
+      org.opencontainers.image.licenses="AGPL-3.0-or-later"
+
 ENV AGENT_GM_DATA_DIR=/data AGENT_GM_LISTEN_ADDR=0.0.0.0:8080
 VOLUME ["/data"]
 EXPOSE 8080

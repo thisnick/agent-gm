@@ -72,6 +72,11 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+  # A `v*` tag reaches this job; only a `vMAJOR.MINOR.PATCH` tag gets past its
+  # first step. The `if:` cannot express the pattern (GitHub Actions has no
+  # regex), so the shape is asserted twice: here as far as `v*` goes, and
+  # strictly in `scripts/release.sh`'s require_tag, which is what actually
+  # refuses. R-1.
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
@@ -96,9 +101,61 @@ jobs:
 
       # The digest of the image the `ci` workflow pushed for this same tag.
       # A release note records the digest because deployments pin by digest
-      # and not by tag (section 14.2); "unknown" here means the image job has
-      # not finished, and a release note that says `@unknown` is worse than a
-      # release that waits.
+      # and not by tag (section 14.2).
+      #
+      # This step only FINDS the digest. Whether it is usable -- a real
+      # `sha256:`, resolvable on the registry, and built from this very commit
+      # -- is `release.sh publish`'s own `require_digest` (R-2, R-6), because
+      # that is the script the note comes from, and a judgement that lives
+      # only in a YAML step is a judgement `devbox run release` does not have.
+      # R-1, R-5. Three questions, asked before anything is built, because
+      # every step after this one leaves a permanent public trace: a sigstore
+      # entry, a GitHub release, an npm version.
+      #
+      #   1. Is the tag a version? `v*` fires this workflow, so `vtest` and
+      #      `vnonsense` get here. release.sh refuses them too; this refuses
+      #      them before the six-minute build.
+      #   2. Is the tagged commit ON main? Section 16 makes the tag the
+      #      coordinator's act on a reviewed commit; nothing stopped a tag on
+      #      a branch, or on a commit that was never merged.
+      #   3. Did that commit's `ci` run pass? Section 14.3 says no release is
+      #      cut from a commit that has not passed a live gate, and a red `ci`
+      #      is a commit that has not passed anything. `release.yml` is a
+      #      separate workflow with no `needs:` on `ci.yml`, so this is the
+      #      only place the two can be tied together.
+      - name: The tag is a version, on main, and green
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'${GITHUB_REF_NAME}' is not vMAJOR.MINOR.PATCH with an optional" \
+                 "prerelease. A tag that is not a version would cut a real, signed, public" \
+                 "release that cannot be withdrawn from the sigstore transparency log." >&2
+            exit 1
+          fi
+
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
+            echo "::error::${GITHUB_SHA} is not an ancestor of origin/main. A release is cut" \
+                 "from a reviewed commit on main (spec section 16); this tag names a commit" \
+                 "that is not on it. Merge first, then tag the merged commit." >&2
+            exit 1
+          fi
+
+          # The `ci` workflow's own conclusion for this exact commit. A run
+          # that is still going is not a pass, and neither is a missing one.
+          conclusion="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${GITHUB_SHA}&per_page=100" \
+            --jq '[.workflow_runs[] | select(.name == "ci" and .event == "push")]
+                  | sort_by(.run_started_at) | last | .conclusion // "none"')"
+          if [ "$conclusion" != "success" ]; then
+            echo "::error::the ci run for ${GITHUB_SHA} concluded '${conclusion}', not 'success'." \
+                 "Section 14.3: no release is cut from a commit that has not passed." >&2
+            exit 1
+          fi
+          echo "tag ${GITHUB_REF_NAME} is a version, ${GITHUB_SHA} is on main, and its ci run is green"
+
       - name: The GHCR digest for this tag
         id: image
         env:
@@ -134,6 +191,13 @@ jobs:
           AGENT_GM_IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
         run: devbox run -- ./scripts/release.sh publish
 
+      # NODE_AUTH_TOKEN is temporary. npm's trusted publishing (OIDC) has to
+      # be configured against a package that already exists, so the FIRST
+      # release uses the token; after it, the owner enables trusted publishing
+      # for this repository and this workflow, deletes the NPM_TOKEN secret,
+      # and this env block loses NODE_AUTH_TOKEN. The job already has
+      # `id-token: write` for cosign, which is the permission OIDC publishing
+      # wants. docs/operations.md carries the three steps.
       - name: Publish @agent-gm/cli
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

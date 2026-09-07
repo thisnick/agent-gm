@@ -489,7 +489,41 @@ of the tree rather than typed, because a deployment pins by digest and a
 reader has to be able to tell which upstream a binary was built against
 without cloning anything.
 
+Four things are refused before anything permanent happens, because the tag
+path is the one path CI cannot rehearse:
+
+- a tag that is not `vMAJOR.MINOR.PATCH` — `vtest` would otherwise build,
+  sign with a real keyless certificate and create a public release before npm
+  rejected the version, and a sigstore entry cannot be withdrawn;
+- a tagged commit that is not an ancestor of `main`, or whose `ci` run is not
+  green;
+- an image digest that is absent, is not `sha256:<64 hex>`, or does not
+  resolve on the registry;
+- an image whose `org.opencontainers.image.revision` is not the commit being
+  released — a tag that was pushed, built, moved and re-pushed resolves
+  immediately to the *previous* image, and the note would pin source nobody
+  released.
+
 **No release is cut from a commit that has not passed a live gate.**
+
+### After the first release: trusted publishing
+
+`@agent-gm/cli` is published today with an `NPM_TOKEN` repository secret,
+because npm's trusted publishing has to be configured against a package that
+already exists. **Once `v1.0.0` is on npm, switch:**
+
+1. On npmjs.com, open `@agent-gm/cli` → *Settings* → *Trusted publisher*, and
+   add this repository with workflow `release.yml` (GitHub Actions, OIDC).
+2. Delete the `NPM_TOKEN` secret from the repository. A long-lived token that
+   nobody needs is a long-lived token nobody rotates.
+3. Drop `NODE_AUTH_TOKEN` from the *Publish `@agent-gm/cli`* step in
+   `.github/workflows/release.yml`. The job already has `id-token: write` for
+   cosign, which is the same permission OIDC publishing needs, and
+   `--provenance` keeps working.
+
+Do it as its own commit, and prove it on the next release rather than
+assuming: a publish that silently falls back to an absent token fails at the
+end of a release, which is the worst place to find out.
 
 ## Logging
 

@@ -12,8 +12,8 @@ import (
 
 // TestDecodeQueryRejectsEverythingItDoesNotDefine is spec section 7.1 and
 // Slice 2 test 12: nothing is allowlisted, including the cache-busting `_`
-// and the `client_request_id` that has exactly two transports, neither of
-// them a query parameter (spec section 7.1).
+// and the idempotency key, whose one transport is the `Idempotency-Key` header
+// and never a query parameter (spec section 7.1, D38).
 func TestDecodeQueryRejectsEverythingItDoesNotDefine(t *testing.T) {
 	allowed := NewAllowedQuery("account_id", "direction", "limit", "cursor")
 
@@ -32,7 +32,7 @@ func TestDecodeQueryRejectsEverythingItDoesNotDefine(t *testing.T) {
 	refused := []string{
 		"_",                 // the cache buster the spec names explicitly
 		"directon",          // the misspelling the rule exists for
-		"client_request_id", // has two transports, neither of them a query
+		"client_request_id", // D38 removed it entirely; it is an unknown name now
 		"Direction",         // parameters are case sensitive
 		"limit ",            // trailing space is a different name
 		"account_id[]",      // array syntax is not a parameter this API has
