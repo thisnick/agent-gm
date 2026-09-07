@@ -33,7 +33,8 @@ curl -fsS http://localhost:8080/healthz                   # {"status":"ok"}
 
 # 2. Get a credential for the machine you drive it from.
 npm i -g @agent-gm/cli
-agm auth login --admin --server https://gm.example.com --secret-stdin < secret.txt
+printf %s "$AGENT_GM_ADMIN_SECRET" |
+  agm auth login --admin --server https://gm.example.com --secret-stdin
 
 # 3. Pair a Google account. Chrome opens; you sign in and tap an emoji on the phone.
 agm pair
