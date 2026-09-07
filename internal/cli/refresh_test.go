@@ -343,12 +343,13 @@ func TestARotationDoesNotChangeWhichProfileIsActive(t *testing.T) {
 //
 // Bounded, it is exit 9 naming the lock, with nothing spent.
 func TestAHeldCredentialsLockFailsWithinItsDeadlineRatherThanHanging(t *testing.T) {
-	// Shortened, because the assertion is that the wait ENDS, not how long
-	// it is. Ten real seconds on every CI run to assert a constant would be
-	// paying for the wrong thing.
-	restore := cli.LockWait
-	cli.LockWait = 200 * time.Millisecond
-	t.Cleanup(func() { cli.LockWait = restore })
+	if !cli.LockSupported {
+		// Windows has no advisory lock, so there is nothing to wait for and
+		// nothing to bound. Said out loud rather than passed silently: this
+		// is also the platform where section 11.5's rule has no
+		// implementation at all, which is a Slice 4 problem.
+		t.Skip("no advisory file lock on this platform")
+	}
 
 	s := newStub(t)
 	now := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
@@ -366,7 +367,7 @@ func TestAHeldCredentialsLockFailsWithinItsDeadlineRatherThanHanging(t *testing.
 		t.Fatal(err)
 	}
 	defer func() { _ = held.Close() }()
-	if err := cli.LockFileForTest(held); err != nil {
+	if err := cli.LockForTest(held); err != nil {
 		t.Fatalf("taking the lock: %v", err)
 	}
 
@@ -382,8 +383,8 @@ func TestAHeldCredentialsLockFailsWithinItsDeadlineRatherThanHanging(t *testing.
 	select {
 	case <-done:
 	case <-time.After(20 * time.Second):
-		t.Fatalf("`agm` was still waiting for the credentials lock after 20s with a %s "+
-			"deadline configured; an unbounded wait is a hang with no output", cli.LockWait)
+		t.Fatal("`agm` was still waiting for the credentials lock after 20s with a 200ms " +
+			"deadline configured; an unbounded wait is a hang with no output")
 	}
 
 	if got.code != 9 {

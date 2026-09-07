@@ -461,6 +461,17 @@ to do, would disconnect the connector rather than be told. The error object is
 passed through unchanged, code and all; only the status is demoted, which is
 what every protocol revision before `2026-07-28` did anyway.
 
+> **Correlating one of these with the server log takes a little work, and here
+> is why.** The response carries an `X-Request-Id` and the server writes a
+> matching line, but a reference MCP client builds its error from the JSON-RPC
+> error object and does not surface response headers — so what reaches the
+> operator is bare prose, `MCP error -32602`, with no ID in it. Putting the ID
+> where a client would show it means writing into the SDK's `error.data`,
+> which would break the pass-through rule above and make this server's errors
+> differ from every other server built on the same SDK. The trade is
+> deliberate: the log line is the correlation point, and
+> `agm admin audit list` plus the timestamp is how you find it.
+
 **The `isError` rule is about `tools/call`, and `resources/read` is the
 boundary of its scope.** A `CallToolResult` has an `isError` field, and
 reporting a domain failure there keeps the fact in front of the model. A

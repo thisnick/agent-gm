@@ -31,6 +31,24 @@ jobs:
           enable-cache: "true"
       - run: devbox run check
 
+  # The four platforms of spec section 13.6 must at least COMPILE, tests
+  # included. `devbox run check` covers this too; it is its own job so that a
+  # cross-platform break is legible in the run summary rather than buried in
+  # the aggregate.
+  #
+  # It exists because a symbol declared in a `//go:build !windows` file and
+  # used from an unconstrained test compiled fine on Linux and not at all on
+  # Windows, and would first have surfaced in Slice 4's build matrix, on a
+  # slice with nothing to do with it.
+  cross-compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jetify-com/devbox-install-action@v0.13.0
+        with:
+          enable-cache: "true"
+      - run: devbox run vet
+
   # The pin is a fact recorded in three places that must agree.
   pin-consistency:
     runs-on: ubuntu-latest

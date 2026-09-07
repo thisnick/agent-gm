@@ -91,10 +91,23 @@ func newHarness(t *testing.T) *harness {
 	return newHarnessAt(t, publicURL)
 }
 
+// newHarnessWithFault builds the harness with mcp.Config's fault seam
+// installed, for the one test that needs the handler to panic after a
+// refusal has been buffered.
+func newHarnessWithFault(t *testing.T, fault func()) *harness {
+	t.Helper()
+	return newHarnessConfigured(t, publicURL, fault)
+}
+
 // newHarnessAt builds the harness with a chosen AGENT_GM_PUBLIC_URL, for the
 // tests that are about what that URL's SHAPE does -- a path on it, a trailing
 // slash on it -- rather than about its value.
 func newHarnessAt(t *testing.T, publicURL string) *harness {
+	t.Helper()
+	return newHarnessConfigured(t, publicURL, nil)
+}
+
+func newHarnessConfigured(t *testing.T, publicURL string, fault func()) *harness {
 	t.Helper()
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -155,12 +168,13 @@ func newHarnessAt(t *testing.T, publicURL string) *harness {
 		t.Fatalf("registering handlers: %v", err)
 	}
 	mcpHandler := mcp.New(mcp.Config{
-		API:       apiServer,
-		Authz:     authzService,
-		PublicURL: publicURL,
-		Version:   testVersion,
-		Commit:    testCommit,
-		SourceURL: testSource + "/tree/" + testCommit,
+		API:                    apiServer,
+		Authz:                  authzService,
+		PublicURL:              publicURL,
+		Version:                testVersion,
+		Commit:                 testCommit,
+		SourceURL:              testSource + "/tree/" + testCommit,
+		FaultAfterChainForTest: fault,
 	})
 	httpServer := httptest.NewServer(mcp.Mount(apiServer, mcpHandler))
 	t.Cleanup(httpServer.Close)

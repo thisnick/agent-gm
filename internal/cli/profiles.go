@@ -20,7 +20,9 @@ func (r *runner) profileStore() *Store {
 	if r.store != nil {
 		return r.store
 	}
-	return NewStore(CredentialsPath(r.g.credentialsFile, r.env.Getenv))
+	store := NewStore(CredentialsPath(r.g.credentialsFile, r.env.Getenv))
+	store.LockWait = r.env.LockWait
+	return store
 }
 
 // profilesList prints every stored profile and MARKS the active one. The

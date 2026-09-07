@@ -186,6 +186,22 @@ func TestAJSONRPCErrorDoesNotEndTheSession(t *testing.T) {
 				t.Fatalf("%s answered HTTP %d; the reference client treats a non-2xx as a "+
 					"connection failure and tears the session down", failing.name, answer.Status)
 			}
+			// The same call over the wire, to see the headers the SDK
+			// client does not surface: a demoted error must still carry a
+			// request ID, because it is the only thing an operator can
+			// correlate against the server log.
+			raw := h.rawCallWith(h.Token, failing.method, failing.params,
+				atProtocol(mcp.ProtocolVersion))
+			if raw.Error == nil {
+				t.Fatalf("%s over the wire answered no JSON-RPC error: %s", failing.name, raw.Raw)
+			}
+			if raw.Status != http.StatusOK {
+				t.Errorf("%s over the wire answered HTTP %d, want 200", failing.name, raw.Status)
+			}
+			if id := raw.Headers.Get("X-Request-Id"); id == "" {
+				t.Errorf("%s carries no X-Request-Id, so nothing connects a client's report "+
+					"to the server's log", failing.name)
+			}
 			// The same session, immediately afterwards. This is the
 			// assertion: an error the model can correct itself from must not
 			// have cost it the connection.
@@ -333,9 +349,7 @@ func TestSameOriginComparesTheOriginAndNotTheURL(t *testing.T) {
 // transport error it cannot, which is the same failure the whole
 // demote-to-200 rule exists to avoid one layer up.
 func TestARefusalSurvivesAPanicWhileItIsBuffered(t *testing.T) {
-	h := newHarness(t)
-
-	h.MCP.FaultAfterChainForTest(func() { panic("a panic after the refusal was buffered") })
+	h := newHarnessWithFault(t, func() { panic("a panic after the refusal was buffered") })
 
 	// A well-formed bearer whose token is invalid: the SDK refuses it with
 	// `http.Error`, which is text/plain, which is the case envelopeWriter

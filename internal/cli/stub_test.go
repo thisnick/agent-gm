@@ -369,6 +369,10 @@ func runCLIAt(t *testing.T, s *stub, env map[string]string, now func() time.Time
 		Version:      "test",
 		PollInterval: time.Millisecond,
 		Now:          now,
+		// Short, because the assertion the deadline test makes is that the
+		// wait ENDS, not how long it is. Every other test takes the lock
+		// uncontended and never waits at all.
+		LockWait: 200 * time.Millisecond,
 	})
 	return result{code: code, stdout: stdout.String(), stderr: stderr.String()}
 }

@@ -85,6 +85,23 @@ type Config struct {
 	SourceURL string
 	// Log receives one line per refusal. It never writes to stdout.
 	Log func(msg string, kv ...any)
+	// FaultAfterChainForTest is a FAULT SEAM, nil in production: it runs
+	// after the chain and before ServeHTTP returns.
+	//
+	// It is here because the thing worth proving cannot be reached any other
+	// way. A refusal at 400 or above is BUFFERED and reaches the socket only
+	// from the deferred finish(), so the property is "a panic after the
+	// buffer is filled still delivers it", and no client input can make the
+	// SDK panic on demand. The repository already uses this idiom -- see
+	// authz's BeforeRefreshTx -- and a seam placed exactly where the window
+	// is beats a test that reaches around the production path and proves
+	// nothing about it.
+	//
+	// It is a Config field consumed by New, not a setter, so that it cannot
+	// be written while the handler is serving: a post-construction setter is
+	// safe only by convention, and this package puts everything explicit in
+	// Config already.
+	FaultAfterChainForTest func()
 }
 
 // Handler serves `/mcp`.
@@ -98,10 +115,6 @@ type Handler struct {
 	mu       sync.Mutex
 	inFlight int
 	perAuth  map[string]int
-
-	// faultAfterChain is a FAULT SEAM, nil in production. See
-	// FaultAfterChainForTest.
-	faultAfterChain func()
 }
 
 // New builds the handler.
@@ -182,22 +195,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// error it cannot.
 	defer ew.finish()
 	h.chain.ServeHTTP(ew, r)
-	if h.faultAfterChain != nil {
-		h.faultAfterChain()
+	if h.cfg.FaultAfterChainForTest != nil {
+		h.cfg.FaultAfterChainForTest()
 	}
 }
-
-// FaultAfterChainForTest installs a fault seam that runs after the chain and
-// before ServeHTTP returns, nil in production.
-//
-// It is here because the thing worth proving cannot be reached any other way:
-// a refusal at 400 or above is BUFFERED and reaches the socket only from the
-// deferred finish(), so the property is "a panic after the buffer is filled
-// still delivers it", and no client input can make the SDK panic on demand.
-// The repository already uses this idiom -- see authz's BeforeRefreshTx --
-// and a seam placed exactly where the window is beats a test that reaches
-// around the production path and proves nothing about it.
-func (h *Handler) FaultAfterChainForTest(fault func()) { h.faultAfterChain = fault }
 
 // checkOrigin is section 8.1's first check: `Origin`, when present, must equal
 // the configured public URL, and it is checked **before the transport parses

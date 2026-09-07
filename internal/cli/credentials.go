@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/thisnick/agent-gm/internal/apierr"
 	"github.com/thisnick/agent-gm/internal/config"
@@ -146,7 +147,15 @@ func migrate(c Credentials) Credentials {
 }
 
 // Store is the credentials file and the directory it lives in.
-type Store struct{ Path string }
+type Store struct {
+	Path string
+	// LockWait bounds the wait for the credentials lock; zero means
+	// DefaultLockWait. It is a field set at construction rather than a
+	// package variable so that it cannot be changed after a write is
+	// possible: a value made small fails closed, but a value made large
+	// restores exactly the unbounded hang the deadline exists to remove.
+	LockWait time.Duration
+}
 
 // CredentialsPath resolves the file per spec section 11.5:
 // --credentials-file, else AGENT_GM_CREDENTIALS_FILE, else
@@ -206,7 +215,7 @@ func (s *Store) Load() (Credentials, error) {
 // replacement has lost it; that is the failure this ordering exists to
 // prevent.
 func (s *Store) Begin() (*PendingWrite, error) {
-	return beginCredentialsWrite(s.Path, filepath.Join(s.Dir(), CredentialsLockName))
+	return beginCredentialsWrite(s.Path, filepath.Join(s.Dir(), CredentialsLockName), s.lockWait())
 }
 
 // PendingWrite is a proved-writable destination: a held lock and an open
@@ -228,7 +237,7 @@ type PendingWrite struct {
 // widened or narrowed the mode of a directory it was merely writing into
 // would be changing something it was not asked to change -- and would defeat
 // the very check the write-back safety rule depends on.
-func beginCredentialsWrite(final, lockPath string) (*PendingWrite, error) {
+func beginCredentialsWrite(final, lockPath string, wait time.Duration) (*PendingWrite, error) {
 	dir := filepath.Dir(final)
 	if err := os.MkdirAll(dir, credentialsDirMode); err != nil {
 		return nil, localErr(err, "the credentials directory %s could not be created", dir)
@@ -236,13 +245,13 @@ func beginCredentialsWrite(final, lockPath string) (*PendingWrite, error) {
 	if err := os.Chmod(dir, credentialsDirMode); err != nil {
 		return nil, localErr(err, "the credentials directory %s could not be set to 0700", dir)
 	}
-	return beginWrite(final, lockPath)
+	return beginWrite(final, lockPath, wait)
 }
 
 // beginWrite takes the lock when one is named and creates the temporary file
 // at 0600, proving the destination writable without writing to it. Every
 // failure is a *LocalError, which is exit 9.
-func beginWrite(final, lockPath string) (*PendingWrite, error) {
+func beginWrite(final, lockPath string, wait time.Duration) (*PendingWrite, error) {
 	dir := filepath.Dir(final)
 
 	p := &PendingWrite{final: final}
@@ -251,7 +260,7 @@ func beginWrite(final, lockPath string) (*PendingWrite, error) {
 		if err != nil {
 			return nil, localErr(err, "the credentials lock %s could not be opened", lockPath)
 		}
-		if err := lockFile(lock); err != nil {
+		if err := lockFile(lock, wait); err != nil {
 			_ = lock.Close()
 			return nil, localErr(err, "the credentials lock %s could not be taken", lockPath)
 		}

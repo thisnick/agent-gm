@@ -53,6 +53,13 @@ type Env struct {
 	PollInterval time.Duration
 	// Now is the clock, injected for the same reason.
 	Now func() time.Time
+	// LockWait bounds the wait for the credentials lock. Zero means
+	// DefaultLockWait; a test sets it small so that proving the deadline
+	// exists does not cost ten seconds of every run. It is here, beside the
+	// clock and the poll interval, rather than in a package variable,
+	// because a package variable can be made LARGE -- and a large one
+	// restores exactly the unbounded hang the deadline removes.
+	LockWait time.Duration
 }
 
 func (e *Env) normalise() {
@@ -223,6 +230,7 @@ func dispatch(env *Env) error {
 // it happens before any command sends anything.
 func (r *runner) connect() error {
 	r.store = NewStore(CredentialsPath(r.g.credentialsFile, r.env.Getenv))
+	r.store.LockWait = r.env.LockWait
 
 	cred, err := ResolveCredential(r.store, r.env.Getenv, r.g.server, r.g.profile,
 		r.cmd != nil && r.cmd.createsProfile)
@@ -282,7 +290,9 @@ func (r *runner) exchangeRefreshToken() error {
 	}
 
 	// Step 1. Nothing has been spent at this point.
-	pending, err := beginWrite(r.cred.RefreshTokenFile, "")
+	// No lock: the refresh-token file is the operator's, at a path they
+	// chose, so there is nothing of ours to serialise against and no wait.
+	pending, err := beginWrite(r.cred.RefreshTokenFile, "", 0)
 	if err != nil {
 		return err
 	}
