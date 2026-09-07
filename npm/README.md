@@ -6,7 +6,7 @@ over REST and MCP.
 
 ```sh
 npm i -g @agent-gm/cli
-agm auth login --url https://gm.example.test
+agm auth login --server https://gm.example.test
 agm conversations list
 ```
 
@@ -43,6 +43,6 @@ wrapper's, the shell's or the runtime's — never Agent GM's.
 
 ## Licence
 
-AGPL-3.0-or-later. This package distributes AGPL binaries; the corresponding
-source is <https://github.com/thisnick/agent-gm> at the commit named in the
-release notes and reported by `agm version`.
+Licensed under AGPL-3.0-or-later. This package distributes AGPL binaries; the
+corresponding source is <https://github.com/thisnick/agent-gm> at the commit
+named in the release notes and reported by `agm version`.

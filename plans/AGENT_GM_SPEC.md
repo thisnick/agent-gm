@@ -2,6 +2,15 @@
 
 Status: design, pre-implementation. Version 1.0 (2026-09-06).
 
+> **This document is deliberately historical.** It is the contract Agent GM was
+> built against and the log of the decisions taken along the way, including the
+> reasoning behind each one, so it is written in the tense it was written in and
+> is not rewritten as the software ships. **If you are looking for how to
+> install, pair, deploy or drive Agent GM, read [`../docs/`](../docs/README.md)
+> instead** — those pages describe the software as it runs today. Read this file
+> when you want to know *why* a rule is the way it is, or to check a claim
+> against the clause it comes from.
+
 This file is the contract. Where the code and this file disagree, the code is
 wrong. An implementer should be able to build any slice in §16 without asking a
 question; a reviewer should be able to accept or reject a slice by checking it
