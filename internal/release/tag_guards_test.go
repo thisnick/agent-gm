@@ -272,14 +272,28 @@ func TestTheReleaseWorkflowGatesTheTagOnMainAndOnGreen(t *testing.T) {
 			"`vtest` would spend six minutes building before scripts/release.sh refused it")
 	}
 
-	// R-5: the tagged commit is on main.
-	if !strings.Contains(wf, "merge-base --is-ancestor") {
-		t.Error("the release workflow does not assert the tagged commit is an ancestor of " +
-			"origin/main; a tag on an unmerged branch would build, sign and publish " +
-			"(spec section 16 makes the tag an act on a reviewed commit)")
+	// R-5, asserted as ONE string rather than three (R-12).
+	//
+	// Two shapes got past the looser version, and the reviewer found both.
+	// `origin/main` was checked independently of the ancestry check, so
+	// pointing the check at `origin/any-branch` survived -- `origin/main` was
+	// still on the next line, in the error message. And `if false && ! git
+	// merge-base …` survived, because "does the text contain it" is still yes
+	// when the text is there and unreachable.
+	//
+	// The whole condition, matched as written, closes both: the check, its
+	// subject and its target are one fact and are asserted as one.
+	const ancestry = `if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then`
+	if !strings.Contains(wf, ancestry) {
+		t.Error("the release workflow does not assert, exactly, that the tagged commit is an " +
+			"ancestor of origin/main. A tag on an unmerged branch would build, sign and " +
+			"publish (spec section 16 makes the tag an act on a reviewed commit), and a " +
+			"check aimed at another branch, or short-circuited, reads the same from a " +
+			"distance:\n  want: " + ancestry)
 	}
-	if !strings.Contains(wf, "origin/main") {
-		t.Error("the ancestor check names no branch")
+	if !strings.Contains(wf, "git fetch --no-tags origin main") {
+		t.Error("the workflow does not fetch origin/main before asking whether the commit " +
+			"is on it; on a fresh checkout the ref would not be there to compare against")
 	}
 
 	// R-9: the question must be "did ANY ci push run for this sha go green",

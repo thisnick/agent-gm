@@ -49,6 +49,13 @@ ref_type="${GITHUB_REF_TYPE:-branch}"
 # No leading zeros in a numeric identifier: semver says `01.0.0` is not a
 # version, and npm agrees, so `v01.0.0` would have been refused at the very
 # last step of a release instead of the very first. R-11.
+# DigestShape is the one spelling of a digest, beside the one spelling of a
+# tag, so the two guards that check it cannot drift apart (R-12). It was
+# written out twice -- once in do_publish, once in require_digest -- which is
+# two places for one fact and one of the two ways a rule quietly stops
+# applying.
+digest_shape='^sha256:[0-9a-f]{64}$'
+
 semver_tag='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$'
 
 tagged=0
@@ -357,7 +364,7 @@ require_digest() {
   # Hex, not 64 wildcards. `sha256:zzz…` passed a `?`-glob check and was then
   # caught by the registry, so a typo was diagnosed as "the image is not
   # there" -- which sends the reader looking in the wrong place. R-11.
-  if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  if [[ ! "$digest" =~ $digest_shape ]]; then
     die "AGENT_GM_IMAGE_DIGEST is '$digest', which is not a sha256:<64 lowercase hex> digest"
   fi
 
@@ -445,7 +452,7 @@ do_publish() {
     die "AGENT_GM_IMAGE_DIGEST is unset; a release note pins a deployment by digest" \
         "(section 14.2) and a note that names none is an instruction nobody can follow"
   fi
-  if [[ ! "${AGENT_GM_IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  if [[ ! "${AGENT_GM_IMAGE_DIGEST}" =~ $digest_shape ]]; then
     die "AGENT_GM_IMAGE_DIGEST is '${AGENT_GM_IMAGE_DIGEST}', not a sha256:<64 lowercase hex> digest"
   fi
   require_digest
