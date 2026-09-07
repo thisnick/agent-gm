@@ -49,7 +49,6 @@ func TestADocumentationOnlyPullRequestNeedsNoChangeset(t *testing.T) {
 		{"docs/operations.md"},
 		{"README.md", "CONTRIBUTING.md", "CHANGELOG.md"},
 		{"plans/AGENT_GM_SPEC.md", "docs/api.md", "docs/mcp/tools.md"},
-		{"LICENSE"},
 	}
 	for _, paths := range docsOnly {
 		t.Run(strings.Join(paths, ","), func(t *testing.T) {
@@ -76,6 +75,12 @@ func TestAPullRequestThatShipsSomethingIsRefusedWithoutAChangeset(t *testing.T) 
 		{".github/workflows/release.yml"},               // ditto
 		{"npm/scripts/postinstall.js"},                  // the wrapper is shipped
 		{"npm/README.md"},                               // and so is its README
+		{"LICENSE"},                                     // it is in every archive and in the tarball
+		// V-3: a rename OUT of code and into docs. git collapses a rename to
+		// its destination, so without --no-renames the pull request that
+		// deleted a Go file would read as documentation. Both paths are what
+		// the workflow now passes.
+		{"internal/a.go", "docs/a.md"}, // the deleted source names itself in the refusal
 		{"go.mod", "go.sum"},                            // a dependency bump ships
 		{"internal/gm/pin.go", "plans/AGENT_GM_SPEC.md"}, // the pin most of all
 	}
@@ -161,5 +166,18 @@ func TestTheChangesetCheckIsAJobOnEveryPullRequest(t *testing.T) {
 	if !strings.Contains(ci, "github.event.pull_request.base.sha") {
 		t.Error("the changeset job does not diff against the pull request's base, so it is " +
 			"asking about the wrong set of files")
+	}
+	// V-3. Without this, `git mv internal/a.go docs/a.md` reports `docs/a.md`
+	// alone and the check calls a deleted Go file documentation.
+	if !strings.Contains(ci, "--no-renames") {
+		t.Error("the changeset job does not pass --no-renames, so git collapses a rename to " +
+			"its destination: moving code under docs/ would classify as documentation-only")
+	}
+	// V-4. Three dots, the merge base -- the query the script documents and
+	// the one these tests describe. A two-dot diff also carries everything
+	// merged into main since the branch started.
+	if !strings.Contains(ci, `"${base}...${head}"`) {
+		t.Error("the changeset job uses a two-dot diff; it asks how the branch differs from " +
+			"main today rather than what the branch changed")
 	}
 }

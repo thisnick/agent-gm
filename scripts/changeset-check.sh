@@ -2,9 +2,14 @@
 # changeset-check -- a pull request that changes what Agent GM ships carries a
 # changeset. Spec section 14.3, decision D39.
 #
-#   git diff --name-only origin/main...HEAD | scripts/changeset-check.sh
+#   git diff --no-renames --name-only origin/main...HEAD | scripts/changeset-check.sh
 #   scripts/changeset-check.sh <file-of-changed-paths>
 #   AGENT_GM_PR_LABELS="no-release" … | scripts/changeset-check.sh
+#
+# `--no-renames` is not decoration: git collapses a rename to its destination,
+# so `git mv internal/a.go docs/a.md` shows up as `docs/a.md` alone and this
+# script would call it documentation. With --no-renames both paths appear, the
+# deletion is visible, and the change is what it is.
 #
 # It reads the changed paths on stdin or from a file, one per line, and the
 # labels from AGENT_GM_PR_LABELS (comma or newline separated). It writes its
@@ -57,8 +62,10 @@ while IFS= read -r p; do
     .changeset/*) ;;
     # Documentation, and only documentation. `plans/` is the spec, `docs/` is
     # the manual, and a top-level *.md is the README and its neighbours. None
-    # of them is in an archive, an image or the npm tarball.
-    docs/*|plans/*|LICENSE) ;;
+    # of them is in an archive, an image or the npm tarball -- unlike LICENSE,
+    # which release.sh copies into every archive AND into the npm tarball, so
+    # it is not on this list however much it reads like prose.
+    docs/*|plans/*) ;;
     *.md) case "$p" in */*) code_paths+=("$p") ;; esac ;;
     *) code_paths+=("$p") ;;
   esac
