@@ -434,3 +434,73 @@ func oauthLoginViaCLI(t *testing.T, h *oauthHarness, credentials string) {
 		t.Fatalf("agm auth login exited %d\nstderr:\n%s", exit, stderr.String())
 	}
 }
+
+// §11.5's write-back safety, on the OAUTH half (review finding C-1).
+//
+// The destination is proved writable *before* the token is spent, and the
+// existing test for that rule uses a profile with no `client_id` — so it only
+// ever drove the admin exchange, and the reviewer's plant P14 (spend the
+// token, then prove the destination writable, in `finishOAuthRefresh`)
+// survived the whole suite. The regression it missed loses an OAuth refresh
+// token permanently on a read-only credentials directory, and does it on the
+// connector-shaped path rather than the automation one.
+//
+// So this is the twin with `client_id` set, driven through the real login so
+// that the client_id is one the token endpoint will actually accept.
+func TestSlice3bAnUnwritableDestinationNeverSpendsAnOAuthRefreshToken(t *testing.T) {
+	h := newOAuthHarnessOnItsOwnURL(t)
+	dir := t.TempDir()
+	credentials := filepath.Join(dir, "credentials.json")
+	host := mustHost(t, h.http.URL)
+	oauthLoginViaCLI(t, h, credentials)
+
+	before := readStoredCredentials(t, credentials).Profiles[host]
+	if before.ClientID == "" || before.RefreshToken == "" || before.ExpiresAt == "" {
+		t.Fatalf("the OAuth profile is not the shape this test needs: %+v", before)
+	}
+	expiry, err := time.Parse(time.RFC3339, before.ExpiresAt)
+	if err != nil {
+		t.Fatalf("expires_at %q is not RFC3339: %v", before.ExpiresAt, err)
+	}
+
+	// Make the write impossible in a way the CLI cannot repair: a directory
+	// where the lock file must be. `agm` may chmod the credentials directory
+	// back to 0700 — §11.5 has it assert that mode — so a read-only
+	// directory repairs itself and would not test anything.
+	lockPath := filepath.Join(dir, cli.CredentialsLockName)
+	if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(lockPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	code, _, stderr := runAgmAt(t, func() time.Time { return expiry.Add(-30 * time.Second) },
+		"auth", "whoami", "--credentials-file", credentials)
+	if code != 9 {
+		t.Fatalf("an unwritable credentials destination exited %d, want 9 while the refresh "+
+			"token is still good\nstderr: %s", code, stderr)
+	}
+
+	// The stored profile is untouched.
+	after := readStoredCredentials(t, credentials).Profiles[host]
+	if after.RefreshToken != before.RefreshToken || after.AccessToken != before.AccessToken {
+		t.Fatalf("the profile was rewritten despite the failure: %+v", after)
+	}
+
+	// And the token is still GOOD, which is the half that matters and the
+	// half a request count cannot show. Rotation makes a refresh token
+	// single-use, so spending one whose replacement cannot be stored destroys
+	// the credential; redeeming it here proves it was never spent.
+	redeemed := h.postForm("/oauth/token", url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {before.RefreshToken},
+		"client_id":     {before.ClientID},
+	})
+	if redeemed.StatusCode != http.StatusOK {
+		t.Fatalf("the refresh token no longer works (%d): it was spent even though nothing "+
+			"could be stored, so the credential is gone\n%s",
+			redeemed.StatusCode, readBody(t, redeemed))
+	}
+	_ = readBody(t, redeemed)
+}
