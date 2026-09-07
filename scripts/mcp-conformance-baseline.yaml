@@ -105,17 +105,26 @@
 # under `messages:read`, so the fixture URIs are a miss and always will be.
 #
 # There is no reporting difference left to record here. `resources/read`
-# failures are JSON-RPC ERRORS — the SDK's `-32002 Resource not found`,
-# observed — and never `isError` results. Section 8.2's isError rule is about
-# `tools/call`; a ReadResourceResult has no isError field and must carry
+# failures are JSON-RPC ERRORS — the SDK's own `ResourceNotFoundError`, which
+# at go-sdk v1.7.0 is `-32602 Resource not found` (SEP-2164 moved
+# resource-not-found off -32002; the SDK is the authority for protocol codes,
+# decision D36) — and never `isError` results. Section 8.2's isError rule is
+# about `tools/call`; a ReadResourceResult has no isError field and must carry
 # `contents`. The conformance suite and Agent GM agree on that half; the three
 # entries below are the fixture and nothing else.
+#
+# Every JSON-RPC error in this file, whatever its code, is delivered with HTTP
+# **200** — observed, `resources/read` on `test://static-text` and `tools/call`
+# on `test_simple_text` both answer 200 with an `error` member. The SDK's
+# SEP-2575 4xx status mapping is deliberately NOT adopted, because the SDK's
+# own client treats a non-2xx as connection-fatal and would tear the session
+# down over an unknown tool name.
 - name: resources-read-text
-  reason: '-32002 Resource not found: reads the reference server''s `test://static-text`, which Agent GM does not serve'
+  reason: '-32602 Resource not found (HTTP 200): reads the reference server''s `test://static-text`, which Agent GM does not serve'
 - name: resources-read-binary
-  reason: '-32002 Resource not found: reads the reference server''s fixture binary resource'
+  reason: '-32602 Resource not found (HTTP 200): reads the reference server''s fixture binary resource'
 - name: resources-templates-read
-  reason: '-32002 Resource not found: reads the reference server''s fixture template'
+  reason: '-32602 Resource not found (HTTP 200): reads the reference server''s fixture template'
 
 # --- DNS rebinding ------------------------------------------------------------
 #
