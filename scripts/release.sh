@@ -485,6 +485,12 @@ do_npm_publish() {
   # (id-token: write) and provenance is part of that identity, so there is no
   # token to fall back to and a publish without provenance is not a publish
   # this project makes. A failure here is a failure, not a retry.
+  # npm < 11.5.1 has no trusted-publishing (OIDC) support: it would publish
+  # unauthenticated and the registry would answer 404. Refuse early instead.
+  npmv="$(npm --version)"
+  if [ "$(printf '%s\n11.5.1\n' "$npmv" | sort -V | head -1)" != "11.5.1" ]; then
+    die "npm $npmv cannot do trusted publishing; need npm >= 11.5.1 (the workflow installs it)"
+  fi
   npm publish --access public --provenance "$tarball" \
     || die "npm publish failed; trusted publishing must be enabled on npm for this repository and workflow (docs/operations.md)"
   note "published @agent-gm/cli@$version"

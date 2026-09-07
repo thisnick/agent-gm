@@ -213,6 +213,12 @@ jobs:
       # this workflow file). There is no npm token anywhere: not in secrets,
       # not in an env block. `id-token: write` above is the only permission
       # it needs, and provenance is mandatory rather than best-effort.
+      # Trusted publishing needs npm >= 11.5.1: older npm never performs the
+      # OIDC token exchange, sends an unauthenticated PUT, and the registry
+      # answers 404 -- which is exactly what the first v1.0.1 attempt did on
+      # the npm 10 that ships with Node 22. release.sh asserts the version.
+      - name: Use an npm that speaks trusted publishing
+        run: devbox run -- npm install -g npm@^11.5.1 && devbox run -- npm --version
       - name: Publish @agent-gm/cli
         env:
           NPM_CONFIG_PROVENANCE: "true"
