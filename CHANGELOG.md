@@ -37,9 +37,14 @@ Agent GM *is* rather than what changed.
   account address rather than from the phone, so re-pairing — including onto a
   different handset — keeps every existing `conv_` and `msg_` ID.
 - Sends are **synchronous and have no outbox**: a write either reaches Google
-  or returns an error naming why. Every mutation carries an idempotency key,
-  and repeating a call with the same key returns the same operation and sends
-  nothing further.
+  or returns an error naming why. Every mutation returns an **operation with a
+  server-minted id**, and status is checked by that id.
+- **An idempotency key is optional**, and its only transport is the
+  `Idempotency-Key` header. Sending one makes a repeat with the same body a
+  replay that sends nothing; not sending one is the ordinary case, because an
+  agent regenerates its arguments on a retry and cannot supply a stable key
+  across one. If a call's result is lost, the instruction is to **look before
+  sending again** — read the conversation, or list operations.
 - SMS, MMS and RCS, with reactions, replies, read receipts, typing, media up
   and down, contacts and full-text search.
 
