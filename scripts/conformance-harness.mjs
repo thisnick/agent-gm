@@ -310,6 +310,14 @@ function runConformance(url) {
         ...(process.env.AGENT_GM_CONFORMANCE_SCENARIO
           ? ["--scenario", process.env.AGENT_GM_CONFORMANCE_SCENARIO]
           : []),
+        // The spec revision to filter scenarios by. Section 8.4 requires a
+        // revision that runs ZERO scenarios to be a FAILURE rather than a
+        // green line that tested nothing, and that clause is only testable if
+        // the revision can be chosen; so it can be. CI leaves it unset and
+        // runs whatever the pinned package's suite holds.
+        ...(process.env.AGENT_GM_CONFORMANCE_SPEC_VERSION
+          ? ["--spec-version", process.env.AGENT_GM_CONFORMANCE_SPEC_VERSION]
+          : []),
         ...(process.env.AGENT_GM_CONFORMANCE_OUTPUT
           ? ["-o", process.env.AGENT_GM_CONFORMANCE_OUTPUT]
           : []),

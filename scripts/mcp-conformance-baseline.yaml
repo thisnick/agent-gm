@@ -6,106 +6,129 @@
 # and so does a listed scenario that starts passing. Without the second
 # direction this file rots into a list of excuses nobody revisits.
 #
-# Three kinds of entry appear below, and the distinction is the point:
+# Every reason below quotes the error the suite ACTUALLY reported, taken from
+# the per-scenario `checks.json` the package writes under `-o`
+# (`AGENT_GM_CONFORMANCE_OUTPUT`). A reason that describes a difference that no
+# longer exists is a lie, so the rule here is: no reason without an observation.
+#
+# Two kinds of entry appear below, and the distinction is the point:
 #
 #   1. **The suite's own fixtures.** `@modelcontextprotocol/conformance`
-#      tests a REFERENCE server: it calls tools named `test_error_handling`
-#      and reads resources at `test://static-text`. Agent GM serves one
-#      person's Google Messages and has neither, so these scenarios cannot
-#      pass and would not mean anything if they did.
-#   2. **Optional capabilities Agent GM does not offer.** Prompts, logging,
-#      completions, sampling, elicitation and resource subscriptions are all
-#      optional in MCP; `initialize` declares `tools` and `resources` and
-#      nothing else, and an undeclared method answers -32601, which is the
-#      correct answer. Offering them to make a suite green would be adding
-#      surface for the sake of a number.
-#   3. **One genuine disagreement, recorded rather than hidden.** See
-#      `resources-read-text` and `dns-rebinding-protection` below.
+#      tests a REFERENCE server: it calls tools named `test_error_handling`,
+#      fetches prompts named `test_simple_prompt`, and reads resources at
+#      `test://static-text`. Agent GM serves one person's Google Messages and
+#      has none of them, so these scenarios cannot pass and would not mean
+#      anything if they did. These are the majority.
+#   2. **Optional capabilities the server does not register.** Since the MCP
+#      protocol layer became the official Go SDK's, `initialize` declares
+#      `logging`, `resources` (`listChanged`) and `tools` (`listChanged`) —
+#      observed. Completions and resource subscriptions are registered with no
+#      handler, so the SDK answers `-32601 method not found`, which is the
+#      correct answer for a method the server does not implement. Offering them
+#      to make a suite green would be adding surface for the sake of a number.
+#
+# And one genuine disagreement, recorded rather than hidden: see
+# `dns-rebinding-protection` at the bottom.
 #
 # Pinned suite: @modelcontextprotocol/conformance@0.1.16, run at spec revision
 # 2025-11-25 (the newest the suite knows; Agent GM's own revision is
-# 2026-07-28 and it accepts 2025-11-25 for compatibility, section 8.1).
-# 30 scenarios run, 5 pass, 25 are listed here.
+# 2026-07-28 and it accepts 2025-11-25 for compatibility, section 8.1 — an
+# `initialize` asking for 2026-07-28 is answered `2025-11-25` here because that
+# is what the client offered).
+# 30 scenarios run, 7 pass, 23 are listed here. The seven that pass are
+# `server-initialize`, `ping`, `tools-list`, `resources-list`, `prompts-list`,
+# `logging-set-level` and `server-sse-multiple-streams` — the last of which runs
+# a single check that ends WARNING ("server did not provide session ID"), not a
+# failure, because the transport is the SDK's StreamableHTTPHandler in
+# STATELESS mode and issues no `Mcp-Session-Id`. The summary counts it 0 passed,
+# 0 failed, so it is not a baseline entry.
 
 # --- the suite's own fixture tools -------------------------------------------
-# Every one of these calls a tool of the reference server (`test_simple_text`,
-# `test_error_handling`, and so on). Agent GM's twenty-one tools are the
-# messaging surface of section 8.2 and nothing else.
+# Every one of these calls a tool of the reference server. Agent GM's tools are
+# the messaging surface of section 8.2 and nothing else, so the SDK answers
+# `-32602 unknown tool "<name>"` — a JSON-RPC error, not an `isError` result,
+# because the tool was never dispatched.
 - name: tools-call-simple-text
-  reason: calls the reference server's fixture tool, which Agent GM does not serve
+  reason: '-32602 unknown tool "test_simple_text": a reference-server fixture tool Agent GM does not serve'
 - name: tools-call-image
-  reason: calls the reference server's fixture tool
+  reason: '-32602 unknown tool "test_image_content": a reference-server fixture tool'
 - name: tools-call-audio
-  reason: calls the reference server's fixture tool; Agent GM serves no audio tool
+  reason: '-32602 unknown tool "test_audio_content": a reference-server fixture tool; Agent GM serves no audio tool'
 - name: tools-call-embedded-resource
-  reason: calls the reference server's fixture tool
+  reason: '-32602 unknown tool "test_embedded_resource": a reference-server fixture tool'
 - name: tools-call-mixed-content
-  reason: calls the reference server's fixture tool
+  reason: '-32602 unknown tool "test_multiple_content_types": a reference-server fixture tool'
 - name: tools-call-with-logging
-  reason: calls the reference server's fixture tool and expects logging notifications
+  reason: '-32602 unknown tool "test_tool_with_logging": a reference-server fixture tool. The logging CAPABILITY is declared and logging/setLevel passes; what is missing is the fixture tool that would emit the notifications'
 - name: tools-call-error
-  reason: calls `test_error_handling`, which Agent GM does not serve
+  reason: '-32602 unknown tool "test_error_handling": a reference-server fixture tool'
 - name: tools-call-with-progress
-  reason: calls the reference server's fixture tool and expects progress notifications
+  reason: '-32602 unknown tool "test_tool_with_progress": a reference-server fixture tool'
 - name: tools-call-sampling
-  reason: expects the server to request sampling; Agent GM never asks a client's model for anything
+  reason: '-32602 unknown tool "test_sampling": the scenario calls a fixture tool that would ask the client''s model for a completion. Agent GM never asks a client''s model for anything, so it serves no such tool'
 - name: tools-call-elicitation
-  reason: expects the server to elicit input; Agent GM has no interactive tool
-
-# --- optional capabilities Agent GM does not declare -------------------------
-- name: prompts-list
-  reason: no prompts capability; `prompts/list` answers -32601, which is correct for an undeclared capability
-- name: prompts-get-simple
-  reason: no prompts capability
-- name: prompts-get-with-args
-  reason: no prompts capability
-- name: prompts-get-embedded-resource
-  reason: no prompts capability
-- name: prompts-get-with-image
-  reason: no prompts capability
-- name: logging-set-level
-  reason: no logging capability; the server's own logs are an operator's, not a client's (section 12.2)
-- name: completion-complete
-  reason: no completions capability
+  reason: '-32602 unknown tool "test_elicitation": the scenario calls a fixture tool that would elicit input. Agent GM has no interactive tool'
 - name: elicitation-sep1034-defaults
-  reason: no elicitation capability
+  reason: '-32602 unknown tool "test_elicitation_sep1034_defaults": a reference-server fixture tool. The scenario never reaches elicitation itself'
 - name: elicitation-sep1330-enums
-  reason: no elicitation capability
-- name: resources-subscribe
-  reason: no resource subscriptions; attachments are immutable and addressed by template, so there is nothing to be notified about
-- name: resources-unsubscribe
-  reason: no resource subscriptions
+  reason: '-32602 unknown tool "test_elicitation_sep1330_enums": a reference-server fixture tool. The scenario never reaches elicitation itself'
 
-# --- the suite's own fixture resources, and one real disagreement ------------
+# --- the suite's own fixture prompts -----------------------------------------
+#
+# `prompts-list` PASSES: the SDK serves `prompts/list` and answers the empty
+# list, which is a truthful answer for a server that registers no prompt. Every
+# `prompts/get` below then asks for a prompt of the reference server by name and
+# is answered `-32602 unknown prompt`, which is also the truthful answer. Note
+# `initialize` does not declare a `prompts` capability — observed — so a client
+# that checks capabilities first will never send these.
+- name: prompts-get-simple
+  reason: '-32602 unknown prompt "test_simple_prompt": Agent GM registers no prompts, so every prompts/get is a miss'
+- name: prompts-get-with-args
+  reason: '-32602 unknown prompt "test_prompt_with_arguments": Agent GM registers no prompts'
+- name: prompts-get-embedded-resource
+  reason: '-32602 unknown prompt "test_prompt_with_embedded_resource": Agent GM registers no prompts'
+- name: prompts-get-with-image
+  reason: '-32602 unknown prompt "test_prompt_with_image": Agent GM registers no prompts'
+
+# --- methods the server registers no handler for -----------------------------
+- name: completion-complete
+  reason: '-32601 method not found: "completion/complete". No completion handler is registered, so the SDK routes the method nowhere; a server that does not implement completions must say so rather than guess'
+- name: resources-subscribe
+  reason: '-32601 method not found: "resources/subscribe". Attachments are immutable and addressed by template, so there is nothing to be notified about'
+- name: resources-unsubscribe
+  reason: '-32601 method not found: "resources/subscribe" — the scenario subscribes before it unsubscribes and fails at the first step, for the same reason as resources-subscribe'
+
+# --- the suite's own fixture resources ---------------------------------------
 #
 # These three read `test://…` URIs. Agent GM serves exactly one resource
-# template, `agm://attachments/{attachment_id}` (section 8.2), so the fixture
-# URIs are a miss and always will be.
+# template, `agm://attachments/{attachment_id}` (section 8.2), offered only
+# under `messages:read`, so the fixture URIs are a miss and always will be.
 #
-# They are here for the FIXTURE only. The reporting difference that used to be
-# listed alongside it -- Agent GM answering an unknown resource with a section
-# 8.2 isError result rather than a JSON-RPC error -- was a real bug, found by
-# a reviewer driving the official TypeScript SDK against the binary, which
-# rejected the answer on schema before the client's own code ran. Section 8.2's
-# isError rule is about `tools/call`; a ReadResourceResult has no isError field
-# and must carry `contents`. `resources/read` now answers -32002 / -32600 /
-# -32603, and the conformance suite agrees with that half.
+# There is no reporting difference left to record here. `resources/read`
+# failures are JSON-RPC ERRORS — the SDK's `-32002 Resource not found`,
+# observed — and never `isError` results. Section 8.2's isError rule is about
+# `tools/call`; a ReadResourceResult has no isError field and must carry
+# `contents`. The conformance suite and Agent GM agree on that half; the three
+# entries below are the fixture and nothing else.
 - name: resources-read-text
-  reason: reads the reference server's `test://static-text`, which Agent GM does not serve
+  reason: '-32002 Resource not found: reads the reference server''s `test://static-text`, which Agent GM does not serve'
 - name: resources-read-binary
-  reason: reads the reference server's fixture resource
+  reason: '-32002 Resource not found: reads the reference server''s fixture binary resource'
 - name: resources-templates-read
-  reason: reads the reference server's fixture template
+  reason: '-32002 Resource not found: reads the reference server''s fixture template'
 
 # --- DNS rebinding ------------------------------------------------------------
 #
 # This scenario scopes itself, in its own text, to "localhost MCP servers
 # running without HTTPS and without authentication". Agent GM is neither: it
 # is authenticated on every request and it lives behind a tunnel at
-# AGENT_GM_PUBLIC_URL. Its half that matters PASSES -- a foreign `Origin` is
-# refused -- and the half that fails is the scenario requiring a `localhost`
-# Origin to be ACCEPTED, which section 8.1 deliberately refuses: `Origin`,
-# when present, must equal the public URL. Loosening that to satisfy the
-# scenario would weaken the exact check the scenario exists to test.
+# AGENT_GM_PUBLIC_URL. Its half that matters PASSES -- `localhost-host-rebinding-rejected`,
+# a foreign `Origin` refused 403 -- and the half that fails is
+# `localhost-host-valid-accepted`, which requires a `localhost` Origin on a
+# DIFFERENT port to be ACCEPTED. Section 8.1 deliberately refuses that:
+# `Origin`, when present, must equal the public URL, and the observed body says
+# so ("this endpoint may only be reached from http://127.0.0.1:PORT").
+# Loosening that to satisfy the scenario would weaken the exact check the
+# scenario exists to test.
 - name: dns-rebinding-protection
-  reason: requires a localhost Origin to be accepted; section 8.1 requires Origin to equal AGENT_GM_PUBLIC_URL, which is strictly stronger
+  reason: 'localhost-host-valid-accepted requires a localhost Origin on another port to be accepted; section 8.1 requires Origin to equal AGENT_GM_PUBLIC_URL, which is strictly stronger. Its other check, localhost-host-rebinding-rejected, passes'
