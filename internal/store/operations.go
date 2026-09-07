@@ -112,7 +112,7 @@ type Operation struct {
 	// echo of our own media does not carry it (migration 0005).
 	MediaSizeBytes int64
 	CreatedAtMS    int64
-	UpdatedAtMS        int64
+	UpdatedAtMS    int64
 }
 
 const operationColumns = `id, account_id, kind, authorization_id, idempotency_key,

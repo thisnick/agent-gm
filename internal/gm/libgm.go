@@ -438,6 +438,25 @@ func (b *LibGM) DownloadAvatar(ctx context.Context, url string) ([]byte, error) 
 // second CREATE_RCS is reported to the caller as such, and core maps it to
 // google_error.
 func (b *LibGM) ResolveConversation(ctx context.Context, numbers []string, groupName string) (ResolveResult, error) {
+	return resolveConversation(ctx, b.client, numbers, groupName)
+}
+
+// conversationCreator is the one libgm call resolveConversation makes.
+//
+// It exists so the D34 divergence is TESTABLE without a phone. The divergence
+// is invisible to every other test in this repository -- the fake takes a
+// name and a number list, not a request -- so putting `RCSGroupName` back on
+// the first call left the whole suite green while reintroducing the exact bug
+// the live gate found. A comment is not a test, and the "fix" a future reader
+// would reach for, seeing Agent GM omit a field upstream sets, is precisely
+// the revert.
+type conversationCreator interface {
+	GetOrCreateConversation(ctx context.Context,
+		req *gmproto.GetOrCreateConversationRequest) (*gmproto.GetOrCreateConversationResponse, error)
+}
+
+func resolveConversation(ctx context.Context, client conversationCreator,
+	numbers []string, groupName string) (ResolveResult, error) {
 	req := &gmproto.GetOrCreateConversationRequest{
 		Numbers: make([]*gmproto.ContactNumber, len(numbers)),
 	}
@@ -460,7 +479,7 @@ func (b *LibGM) ResolveConversation(ctx context.Context, numbers []string, group
 	// name goes on the retry, which is the call that actually creates one.
 	// That is where upstream puts it too when the first call comes back
 	// CREATE_RCS; the divergence is only about the first.
-	resp, err := b.client.GetOrCreateConversation(ctx, req)
+	resp, err := client.GetOrCreateConversation(ctx, req)
 	if err != nil {
 		return ResolveResult{}, Classify(translateError(err))
 	}
@@ -472,7 +491,7 @@ func (b *LibGM) ResolveConversation(ctx context.Context, numbers []string, group
 		req.RCSGroupName = &name
 		create := true
 		req.CreateRCSGroup = &create
-		resp, err = b.client.GetOrCreateConversation(ctx, req)
+		resp, err = client.GetOrCreateConversation(ctx, req)
 		if err != nil {
 			return ResolveResult{}, Classify(translateError(err))
 		}

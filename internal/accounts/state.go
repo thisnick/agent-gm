@@ -2,6 +2,7 @@ package accounts
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -167,6 +168,39 @@ type StateChange struct {
 	// stream is a JSON surface: a nanosecond timestamp here made the SSE
 	// feed the one place a client saw a different shape.
 	At time.Time `json:"at"`
+}
+
+// MarshalJSON renders an absent `from` and an absent `state_reason` as JSON
+// null rather than as "".
+//
+// Section 4.7 says state_reason is "a short machine-readable string ... or
+// null", and /v1/accounts already honours that. The SSE feed did not: a
+// transition with no reason served `"state_reason": ""`, and the opening
+// snapshot -- where `from` genuinely has no value, because the client held no
+// prior state -- served `"from": ""` as well. An empty string and "there is
+// none" are different, and a client branching on truthiness gets the same
+// answer for both only by accident.
+func (c StateChange) MarshalJSON() ([]byte, error) {
+	type wire struct {
+		AccountID string    `json:"account_id"`
+		From      *string   `json:"from"`
+		To        State     `json:"to"`
+		Reason    *string   `json:"state_reason"`
+		At        time.Time `json:"at"`
+	}
+	nullable := func(s string) *string {
+		if s == "" {
+			return nil
+		}
+		return &s
+	}
+	return json.Marshal(wire{
+		AccountID: c.AccountID,
+		From:      nullable(string(c.From)),
+		To:        c.To,
+		Reason:    nullable(string(c.Reason)),
+		At:        c.At,
+	})
 }
 
 // Subscription is one reader of the feed. Close it exactly once; a closed

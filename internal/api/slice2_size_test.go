@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"context"
 	"testing"
 )
 
@@ -15,8 +16,8 @@ import (
 // them (migration 0005).
 //
 // Plant: drop the SetOperationMediaSize call in core.SendMedia, or the fill
-// in correlateEcho, and this fails at "the outgoing attachment reports size
-// 0". Planted 2026-09-07.
+// in correlateEcho, or the COALESCE on size_bytes in UpsertAttachment, and
+// this fails at "the outgoing attachment reports size 0". Planted 2026-09-07.
 func TestSlice2_AnOutgoingAttachmentCarriesTheSizeTheReservationCounted(t *testing.T) {
 	s := newServer(t)
 	defer s.close()
@@ -46,6 +47,20 @@ func TestSlice2_AnOutgoingAttachmentCarriesTheSizeTheReservationCounted(t *testi
 
 	drainEcho(t, s, accountID)
 
+	// The message then walks a rung up the delivery ladder, and Google
+	// replays the thread the way it does on a reconnect: the same message,
+	// now carrying `sent`, marked old (section 5.4) and -- like every echo of
+	// our own media -- carrying no size. The status moved, so this replay is
+	// not a no-op: applyParts upserts the attachment from a sizeless
+	// MediaContent. And a replay suppresses side effects, so the correlation
+	// that filled the size in the first place does not run again.
+	//
+	// Without the COALESCE in section 4.2 the size is right until the first
+	// reconnect and null forever after, which is worse than never having had
+	// it: it appears once and then goes.
+	s.backend(accountID).StepDelivery()
+	replayThread(t, s, accountID, "conv-size")
+
 	messages := s.call("GET", "/v1/messages", nil).ok(t, 200)
 	seen := 0
 	for _, item := range messages.items() {
@@ -65,5 +80,26 @@ func TestSlice2_AnOutgoingAttachmentCarriesTheSizeTheReservationCounted(t *testi
 	}
 	if seen != 1 {
 		t.Fatalf("the send produced %d attachment rows, want exactly 1", seen)
+	}
+}
+
+// replayThread re-ingests every message Google would hand back for a thread,
+// marked old, through the same Ingester the event loop uses for a replayed
+// event (internal/accounts/supervisor.go, `e.IsOld`).
+func replayThread(t *testing.T, s *server, accountID, conversationSourceID string) {
+	t.Helper()
+	ctx := context.Background()
+	msgs, _, err := s.backend(accountID).ListMessages(ctx, conversationSourceID, 50, nil)
+	if err != nil {
+		t.Fatalf("listing the thread: %v", err)
+	}
+	if len(msgs) == 0 {
+		t.Fatal("the thread is empty, so the replay proves nothing")
+	}
+	in := s.engine(accountID).Ingest()
+	for _, m := range msgs {
+		if _, err := in.IngestMessage(ctx, m, true, true); err != nil {
+			t.Fatalf("replaying the thread: %v", err)
+		}
 	}
 }

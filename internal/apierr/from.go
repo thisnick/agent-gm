@@ -40,8 +40,7 @@ func From(err error) *Error {
 //
 // **This is the join that makes section 7.2 reachable at all.** Almost every
 // code in that table -- `phone_not_responding`, `not_default_sms_app`,
-// `config_version_stale`, `google_undocumented_status`, `disconnected`, every
-// `pairing_*` -- is produced by `gm.Classify` and by nothing else. Without a
+// `google_undocumented_status`, `disconnected`, every `pairing_*` -- is produced by `gm.Classify` and by nothing else. Without a
 // translation here they all arrive at a caller as `internal_error` 500, which
 // is not merely a wrong code: `phone_not_responding` served as a retryable
 // 500 looks exactly like the thing a client should retry, and retrying it is

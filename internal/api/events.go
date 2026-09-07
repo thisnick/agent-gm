@@ -132,8 +132,10 @@ func (d *HandlerDeps) stream(r *Request, accountID string) *Response {
 // currentStates is the opening snapshot of the SSE stream: every account in
 // scope, with the state it holds right now.
 //
-// It is deliberately the same shape as a change, with From empty, so a client
-// parses one kind of frame rather than two.
+// It is deliberately the same shape as a change, with `from` and
+// `state_reason` null -- a client that has just connected held no prior
+// state, so there is no `from`, and null is how section 4.7 says an absent
+// one is written. A client parses one kind of frame rather than two.
 func (d *HandlerDeps) currentStates(ctx context.Context, accountID string) []accounts.StateChange {
 	rows, err := d.Store.Accounts(ctx)
 	if err != nil {

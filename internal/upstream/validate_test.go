@@ -662,6 +662,45 @@ func TestAssertion20_CookieRefreshWithoutRepair(t *testing.T) {
 	mustContain(t, src, "SetCookies(nil)", "restore on failure")
 }
 
+// Assertion 21: upstream sets RCSGroupName on the FIRST
+// GetOrCreateConversation and CreateRCSGroup (plus a non-nil name) on the
+// CREATE_RCS retry. D34 is a deliberate divergence from exactly that, and a
+// divergence is only meaningful while the thing it diverges from is still
+// true: if a later pin moved the name off the first call by itself, the
+// divergence would be gone and the comment in internal/gm/libgm.go would be
+// describing upstream code that no longer exists.
+//
+// This asserts BOTH halves, because D34 keeps the second one.
+func TestAssertion21_UpstreamNamesTheGroupOnTheFirstCall(t *testing.T) {
+	dir := upstreamDir(t)
+	src := read(t, dir, "pkg", "connector", "startchat.go")
+
+	// The first request literal carries the name (startchat.go:186-189 at
+	// be48a58): the struct literal, then RCSGroupName inside it.
+	first := "reqData := &gmproto.GetOrCreateConversationRequest{"
+	i := strings.Index(src, first)
+	if i < 0 {
+		t.Fatalf("the GetOrCreateConversationRequest literal is gone from the pin; " +
+			"D34 describes a divergence from code that no longer exists")
+	}
+	end := strings.Index(src[i:], "\n\t}")
+	if end < 0 {
+		t.Fatal("cannot find the end of the request literal")
+	}
+	if !strings.Contains(src[i:i+end], "RCSGroupName:") {
+		t.Error("upstream no longer sets RCSGroupName on the FIRST " +
+			"GetOrCreateConversation. D34 exists to diverge from that; re-read the " +
+			"decision before carrying it forward")
+	}
+
+	// And the retry still sets CreateRCSGroup with a non-nil name
+	// (startchat.go:214-218 at be48a58), which D34 does NOT diverge from --
+	// it is where Agent GM puts the name too.
+	mustContain(t, src, "GetOrCreateConversationResponse_CREATE_RCS", "the CREATE_RCS retry")
+	mustContain(t, src, "reqData.CreateRCSGroup = ptr.Ptr(true)", "CreateRCSGroup on the retry")
+	mustContain(t, src, "reqData.RCSGroupName = ptr.Ptr(\"\")", "a non-nil name on the retry")
+}
+
 func assertEnum(t *testing.T, what string, got, want map[string]int32) {
 	t.Helper()
 	if len(got) != len(want) {

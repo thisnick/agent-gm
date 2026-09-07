@@ -41,7 +41,7 @@ jobs:
           enable-cache: "true"
       - run: devbox run pin-consistency
 
-  # The twenty assertions of spec section 13.4, against a fresh clone of the
+  # The twenty-one assertions of spec section 13.4, against a fresh clone of the
   # pinned upstream tree -- not against Agent GM's own code.
   fixture-validation:
     runs-on: ubuntu-latest

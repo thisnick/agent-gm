@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # fixture-validation -- spec section 13.4.
 #
-# Clones mautrix-gmessages at the pinned commit and asserts the twenty claims
+# Clones mautrix-gmessages at the pinned commit and asserts the twenty-one claims
 # of section 13.4 against THAT tree, not against Agent GM's own code. A test
 # that only asserts Agent GM's own serialisation round-trips is not
 # compatibility evidence.
