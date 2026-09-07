@@ -217,5 +217,13 @@ jobs:
         run: |
           set -euo pipefail
           base="${{ github.event.pull_request.base.sha }}"
-          git diff --name-only "$base" "${{ github.event.pull_request.head.sha }}" \
+          head="${{ github.event.pull_request.head.sha }}"
+          # Three dots, so the question is "what did this branch change"
+          # rather than "how does it differ from main today": a two-dot diff
+          # also shows everything merged into main since the branch started,
+          # inverted, and would demand a changeset from a docs-only pull
+          # request on a busy day. --no-renames because git collapses a rename
+          # to its destination, and a rename of code into `docs/` would
+          # otherwise classify as documentation.
+          git diff --no-renames --name-only "${base}...${head}" \
             | ./scripts/changeset-check.sh

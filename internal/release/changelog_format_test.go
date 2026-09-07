@@ -143,6 +143,44 @@ func TestTheVersionEntryLandsInTheHouseFormat(t *testing.T) {
 	}
 }
 
+// V-5. Anything a maintainer wrote under [Unreleased] by hand describes
+// something that has not shipped, and this is the release that ships it, so it
+// is carried into the entry rather than deleted. Emptying the section silently
+// lost a note somebody wrote on purpose.
+func TestHandWrittenUnreleasedNotesSurviveIntoTheEntry(t *testing.T) {
+	const note = "- a hand written note that must survive"
+	root := strings.Replace(fixtureChangelog,
+		"- something that was never released", note, 1)
+
+	code, log, got := runFormat(t, root, fixtureWritten)
+	if code != 0 {
+		t.Fatalf("changelog-format failed:\n%s", log)
+	}
+	if !strings.Contains(got, note) {
+		t.Fatalf("the hand-written note was deleted:\n%s", got)
+	}
+
+	// In the entry for this version, above the generated bullets -- not left
+	// behind under [Unreleased], which would publish it again next time.
+	iNew := strings.Index(got, "## [1.0.2]")
+	iOld := strings.Index(got, "## [1.0.1]")
+	iNote := strings.Index(got, note)
+	if iNote < iNew || iNote > iOld {
+		t.Errorf("the note is not inside the 1.0.2 entry (note %d, 1.0.2 %d, 1.0.1 %d):\n%s",
+			iNote, iNew, iOld, got)
+	}
+	if iNote > strings.Index(got, "- Versions are managed with changesets") {
+		t.Errorf("the hand-written note was filed below the generated bullets:\n%s", got)
+	}
+	if strings.Contains(got[strings.Index(got, "## [Unreleased]"):iNew], note) {
+		t.Errorf("the note was left under [Unreleased] as well:\n%s", got)
+	}
+	// The placeholder is recognised as a placeholder and not carried.
+	if strings.Count(got, "Nothing yet.") != 1 {
+		t.Errorf("the `Nothing yet.` placeholder was carried into the entry:\n%s", got)
+	}
+}
+
 // A prerelease is filed the same way, because `changeset pre enter rc` is a
 // mode of the same flow and not a separate one.
 func TestAPrereleaseEntryIsFiledTheSameWay(t *testing.T) {

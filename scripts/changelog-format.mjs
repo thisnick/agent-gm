@@ -76,8 +76,6 @@ const body = block
   .replace(/\n{3,}/g, "\n\n")
   .trim();
 
-const entry = `## [${version}] — ${today}\n\n${body}\n`;
-
 let out = src;
 
 // Where it belongs: under `## [Unreleased]`, above the previous release.
@@ -93,6 +91,21 @@ if (!following) {
   process.exit(1);
 }
 const at = unreleased.index + unreleased[0].length + following.index;
+
+// Anything a maintainer wrote under `[Unreleased]` by hand is part of THIS
+// release: it describes something that has not shipped, and this is the
+// release that ships it. So it is carried into the entry, above the bullets
+// changesets generated, rather than deleted -- the placeholder is recognised
+// and dropped, and nothing else is. Silently emptying the section was a way to
+// lose a note that somebody wrote on purpose.
+const carried = out
+  .slice(unreleased.index + unreleased[0].length, at)
+  .split("\n")
+  .filter((l) => l.trim() !== "Nothing yet.")
+  .join("\n")
+  .trim();
+
+const entry = `## [${version}] — ${today}\n\n${carried ? carried + "\n\n" : ""}${body}\n`;
 
 // `[Unreleased]` is emptied by the release that just consumed it. Leaving the
 // entries in both places would publish the same sentence twice.

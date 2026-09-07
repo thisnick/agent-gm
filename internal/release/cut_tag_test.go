@@ -68,13 +68,30 @@ func TestAnOrdinaryPushToMainCutsNoTag(t *testing.T) {
 func TestCutTagRefusesAVersionThatIsAlreadyTagged(t *testing.T) {
 	const taken = "0.0.0-cuttagtest.1"
 	withManifestVersion(t, taken)
+	withChangelogEntry(t, taken)
 
 	root := repoRoot(t)
 	tag := "v" + taken
+
+	// A commit this history does not contain: an orphan built from HEAD's own
+	// tree, so it exists as an object and is reachable from nothing. That is
+	// the dangerous shape -- the same version, cut from somewhere else -- and
+	// it is the one that must refuse.
+	orphan := exec.Command("git", "-C", root, "commit-tree", "HEAD^{tree}", "-m", "cut-tag test")
+	orphan.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=cut-tag test", "GIT_AUTHOR_EMAIL=cut-tag@invalid",
+		"GIT_COMMITTER_NAME=cut-tag test", "GIT_COMMITTER_EMAIL=cut-tag@invalid",
+	)
+	sha, err := orphan.Output()
+	if err != nil {
+		t.Fatalf("creating an unreachable commit: %v", err)
+	}
+	elsewhere := strings.TrimSpace(string(sha))
+
 	// Lightweight, not annotated: an annotated tag needs a committer identity
 	// and a CI runner has none, which failed the whole suite rather than this
 	// one line. `cut-tag.sh` asks whether the ref exists, and both kinds do.
-	if out, err := exec.Command("git", "-C", root, "tag", tag).CombinedOutput(); err != nil {
+	if out, err := exec.Command("git", "-C", root, "tag", tag, elsewhere).CombinedOutput(); err != nil {
 		t.Fatalf("creating the local tag %s: %v\n%s", tag, err, out)
 	}
 	t.Cleanup(func() {
@@ -85,10 +102,10 @@ func TestCutTagRefusesAVersionThatIsAlreadyTagged(t *testing.T) {
 
 	code, out := runCutTag(t, "0.0.0-cuttagtest.0") // the version "moved"
 	if code == 0 {
-		t.Fatalf("cut-tag.sh accepted %s, which is already tagged:\n%s", tag, out)
+		t.Fatalf("cut-tag.sh accepted %s, which is already tagged elsewhere:\n%s", tag, out)
 	}
-	if !strings.Contains(out, "already exists") {
-		t.Errorf("the refusal does not say the tag exists:\n%s", out)
+	if !strings.Contains(out, "already exists") || !strings.Contains(out, "NOT in this history") {
+		t.Errorf("the refusal does not say the tag exists on another commit:\n%s", out)
 	}
 	if strings.Contains(out, "release=1") {
 		t.Errorf("cut-tag.sh said release=1 before refusing; the workflow reads that line:\n%s", out)
@@ -103,6 +120,104 @@ func TestCutTagRefusesAVersionThatIsAlreadyTagged(t *testing.T) {
 	}
 	if !strings.Contains(out, "release=1") {
 		t.Errorf("cut-tag.sh did not answer release=1 for a moved version with a free tag:\n%s", out)
+	}
+}
+
+// V-1. The same version, tagged at a commit this history CONTAINS, is not a
+// fault: it is already released, so there is nothing to cut and the push is
+// ordinary. This is exactly what the first push through this machinery looks
+// like -- the manifest moves from a placeholder to the version that is already
+// out -- and a `die` there would redden main on the one merge that introduces
+// the flow, with no recovery but knowing it was expected.
+func TestAVersionAlreadyTaggedInThisHistoryCutsNothingAndPasses(t *testing.T) {
+	const taken = "0.0.0-cuttagtest.2"
+	withManifestVersion(t, taken)
+	withChangelogEntry(t, taken)
+
+	root := repoRoot(t)
+	tag := "v" + taken
+	if out, err := exec.Command("git", "-C", root, "tag", tag).CombinedOutput(); err != nil {
+		t.Fatalf("creating the local tag %s: %v\n%s", tag, err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command("git", "-C", root, "tag", "-d", tag).Run() })
+
+	code, out := runCutTag(t, "0.0.0-placeholder")
+	if code != 0 {
+		t.Fatalf("cut-tag.sh failed on a version that is already released in this history:\n%s", out)
+	}
+	if !strings.Contains(out, "release=0") || strings.Contains(out, "release=1") {
+		t.Errorf("cut-tag.sh did not answer release=0:\n%s", out)
+	}
+	if !strings.Contains(out, "already released") {
+		t.Errorf("the note does not say why nothing was cut:\n%s", out)
+	}
+}
+
+// V-2. The guard that makes "changesets moves the version" enforced rather
+// than asserted. Without it a hand-edited manifest passes every downstream
+// check -- the tag matches, the commit is on main, ci is green, the digest
+// resolves -- and cuts a signed, public, unwithdrawable release for a version
+// CHANGELOG.md has never heard of.
+func TestCutTagRefusesAVersionTheChangelogDoesNotMention(t *testing.T) {
+	withManifestVersion(t, "9.9.9") // no tag, no changelog entry
+	code, out := runCutTag(t, "1.0.0")
+	if code == 0 {
+		t.Fatalf("cut-tag.sh cut a tag for a version with no changelog entry:\n%s", out)
+	}
+	if !strings.Contains(out, "CHANGELOG.md has no entry for 9.9.9") {
+		t.Errorf("the refusal does not name the missing entry:\n%s", out)
+	}
+	if strings.Contains(out, "release=1") {
+		t.Errorf("cut-tag.sh said release=1 before refusing:\n%s", out)
+	}
+
+	// With the entry, and nothing else changed, it cuts.
+	withChangelogEntry(t, "9.9.9")
+	code, out = runCutTag(t, "1.0.0")
+	if code != 0 {
+		t.Fatalf("cut-tag.sh refused a version the changelog does mention:\n%s", out)
+	}
+	if !strings.Contains(out, "release=1") {
+		t.Errorf("cut-tag.sh did not answer release=1:\n%s", out)
+	}
+}
+
+// And the manual path, which is where a hand-set version would actually be
+// typed. `release.sh` refuses to sign or publish it.
+func TestReleaseScriptRefusesATagTheChangelogDoesNotMention(t *testing.T) {
+	withManifestVersion(t, "9.9.9")
+	for _, mode := range []string{"sign", "publish", "npm-publish"} {
+		code, out := runRelease(t, []string{
+			"GITHUB_REF_TYPE=tag",
+			"GITHUB_REF_NAME=v9.9.9",
+		}, mode)
+		if code == 0 {
+			t.Fatalf("release.sh %s accepted a version with no changelog entry:\n%s", mode, out)
+		}
+		if !strings.Contains(out, "CHANGELOG.md has no entry for 9.9.9") {
+			t.Errorf("%s's refusal does not name the missing entry:\n%s", mode, out)
+		}
+	}
+}
+
+// withChangelogEntry gives CHANGELOG.md a heading for one version for the
+// duration of one test, so that the changelog guard is satisfied and whatever
+// the test is really about is what decides.
+func withChangelogEntry(t *testing.T, version string) {
+	t.Helper()
+	path := filepath.Join(repoRoot(t), "CHANGELOG.md")
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.WriteFile(path, original, 0o644); err != nil {
+			t.Fatalf("restoring CHANGELOG.md: %v", err)
+		}
+	})
+	entry := "\n## [" + version + "] — 2026-01-01\n\n- a fixture entry\n"
+	if err := os.WriteFile(path, append(original, []byte(entry)...), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -160,6 +275,13 @@ func withManifestVersion(t *testing.T, version string) {
 func TestTheVersionWorkflowCutsTheTagAndDispatchesTheReleasePath(t *testing.T) {
 	wf := repoFile(t, ".github/workflows/version.yml")
 
+	// V-6. The one third-party action here with `contents: write` and
+	// `pull-requests: write` on the default branch is pinned by commit: a
+	// version tag is a label its owner can repoint.
+	if !strings.Contains(wf, "changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d") {
+		t.Error("changesets/action is not pinned by commit SHA, and it holds contents: write " +
+			"and pull-requests: write on main")
+	}
 	if !strings.Contains(wf, "changesets/action@") {
 		t.Error("version.yml does not run the changesets action, so no Version Packages pull " +
 			"request is ever opened and npm/package.json never moves")
@@ -242,6 +364,8 @@ func TestTheManualTagPathStillCarriesEveryGuard(t *testing.T) {
 // running `devbox run release` by hand off a tag.
 func TestReleaseScriptRefusesATagThatDisagreesWithTheManifest(t *testing.T) {
 	current := manifestVersion(t)
+	// The changelog guard sits after this one, so a manifest version the
+	// changelog knows about keeps this test about the mismatch.
 	for _, mode := range []string{"sign", "publish", "npm-publish"} {
 		code, out := runRelease(t, []string{
 			"GITHUB_REF_TYPE=tag",

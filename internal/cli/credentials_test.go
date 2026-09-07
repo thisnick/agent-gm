@@ -295,3 +295,28 @@ func TestNoServerConfiguredIsNine(t *testing.T) {
 		t.Fatalf("no configured server exited %d, want 9\nstderr: %s", got.code, got.stderr)
 	}
 }
+
+// A session that was not narrowed says so, once, on stderr. A machine that
+// only reads does not need `messages:write`, and the moment to narrow is the
+// mint: a refresh can never widen one.
+func TestAdminLoginSuggestsNarrowingWhenItGrantsAllFourScopes(t *testing.T) {
+	s := newStub(t)
+	dir := t.TempDir()
+
+	got := runCLI(t, s, map[string]string{
+		"AGENT_GM_CREDENTIALS_FILE": filepath.Join(dir, "credentials.json"),
+		"AGENT_GM_ACCESS_TOKEN":     "",
+	}, "a-fictional-admin-secret-at-least-43-characters-long\n",
+		"auth", "login", "--admin", "--secret-stdin", "--server", s.URL)
+	if got.code != 0 {
+		t.Fatalf("exited %d\nstderr: %s", got.code, got.stderr)
+	}
+	if !strings.Contains(got.stderr, "Narrow with --scopes") {
+		t.Errorf("a full-scope admin session printed no hint:\nstderr: %s", got.stderr)
+	}
+	// The hint is a hint: it goes to the transcript, not to stdout, and it
+	// does not change the exit code.
+	if strings.Contains(got.stdout, "Narrow with --scopes") {
+		t.Errorf("the hint was written to stdout, which is the data channel:\n%s", got.stdout)
+	}
+}

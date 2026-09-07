@@ -29,7 +29,10 @@ request that changes anything but documentation carries one: run
 `devbox run changeset`, pick patch, minor or major, write the one sentence
 that will appear in `CHANGELOG.md`, and commit the file it wrote under
 `.changeset/`. CI refuses a code pull request without one unless it is
-labelled `no-release`. Nobody edits `npm/package.json`'s version or
+labelled `no-release` — and `no-release` does not mean the change is held
+back: it merges and **ships in the next release, unmentioned in the
+changelog**. Use it only when there is genuinely nothing a reader of the
+changelog would want to know. Nobody edits `npm/package.json`'s version or
 `CHANGELOG.md` by hand: merging to main opens a **Version Packages** pull
 request that does both, and merging *that* cuts the release
 (`docs/operations.md`, "Cutting a release").

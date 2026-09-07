@@ -571,7 +571,10 @@ Four steps, three of which are ordinary review:
    bump, write the sentence that will appear in `CHANGELOG.md`, commit the
    file it wrote under `.changeset/`. CI refuses a pull request that changes
    what is shipped and carries no changeset, unless it is labelled
-   `no-release`; a documentation-only pull request needs none.
+   `no-release`; a documentation-only pull request needs none. **`no-release`
+   does not hold the change back** — it merges and ships in the next release,
+   unmentioned in the changelog. It is for a change a reader of the changelog
+   would not want to know about, and for nothing else.
 2. **Merge it.** On the push to main, `version.yml` opens or updates a single
    **Version Packages** pull request that bumps `npm/package.json` and files
    the entries under `[Unreleased]` in `CHANGELOG.md`. It publishes nothing.
@@ -593,6 +596,22 @@ human pushes a tag, rather than being rewritten around a workflow input.
 Afterwards, record the digest the release notes name in `CHANGELOG.md`, and
 deploy that digest.
 
+Two guards make the version authority real rather than conventional. A tag
+whose version has **no `## [X.Y.Z]` heading in `CHANGELOG.md`** is refused, by
+`cut-tag.sh` on the automated path and by `release.sh` on the manual one: a
+hand-edited manifest would otherwise cut a signed, public release for a version
+the changelog has never heard of. And a version whose tag **already exists and
+is in this history** is not a fault — it is already released, so nothing is cut
+and the run stays green; a tag that exists on a *different* commit still
+refuses.
+
+One consequence of D39 worth knowing: a dry run on main is stamped with the
+released version, so `dist/agent-gm_1.0.1_linux_amd64.tar.gz` from
+`devbox run release-dry-run` and from the real release share a filename. They
+are told apart by the image's `org.opencontainers.image.revision` label and by
+the commit in `agent-gm version`, not by the name. Nothing is published from a
+dry run.
+
 ### The emergency path
 
 Pushing a tag by hand still works and still cuts a release:
@@ -602,11 +621,11 @@ git tag -a v1.2.3 -m "agent-gm v1.2.3"
 git push origin v1.2.3
 ```
 
-It carries every guard above, including the new one: `v1.2.3` must be what
-`npm/package.json` says, so the manual path cannot release a version the
-binaries were not stamped with. Use it when the automation is broken, not to
-skip the changeset — the changelog entry comes from the changeset, and a
-release cut around it has an empty entry.
+It carries every guard above, including the two new ones: `v1.2.3` must be
+what `npm/package.json` says, and `CHANGELOG.md` must have a `## [1.2.3]`
+heading. So the manual path cannot release a version the binaries were not
+stamped with, and cannot release one nobody wrote an entry for. Use it when the
+automation is broken, not to skip the changeset.
 
 ### Release candidates
 
@@ -699,6 +718,32 @@ when it is used:
 
 Use it to diagnose a protocol problem, then unset it and rotate the logs it
 produced.
+
+## Admin sessions
+
+An admin session is minted by `agm auth login --admin`, which presents
+`AGENT_GM_ADMIN_SECRET` over stdin or a TTY prompt.
+
+**Narrow it by habit.** A machine that only administers or reads asks for what
+it uses:
+
+```bash
+agm auth login --admin --scopes admin,messages:read
+```
+
+With no `--scopes` the session carries all four scopes and the command prints a
+one-line hint saying so. A session is narrowed when it is minted and never
+afterwards: a refresh can never widen one.
+
+- **One session per machine.** Each machine logs in separately, so
+  `agm admin authorizations revoke <auth-id>` takes away one machine and leaves
+  every other session working.
+- **Changing `AGENT_GM_ADMIN_SECRET` revokes every admin session**, and only
+  those: OAuth tokens are unaffected. It is the way back when a machine is lost
+  and its authorization ID is unknown.
+- **Lifetimes.** By default an access token lives 15 minutes and `agm`
+  refreshes it automatically; a refresh token lives 30 days idle and 90 days
+  absolute.
 
 ## Rate limits and trusted proxies
 

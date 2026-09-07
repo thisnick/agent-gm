@@ -397,6 +397,23 @@ active, so nothing afterwards needs `--server`. See
 session; `admin` is refused at `--scopes` on the OAuth path and can only come
 from `--admin`.
 
+**Narrow the session by habit.** A machine that only administers or reads asks
+for what it uses:
+
+```console
+$ agm auth login --admin --scopes admin,messages:read
+```
+
+With no `--scopes` the session carries all four scopes and the command prints a
+one-line hint saying so. A session is narrowed when it is minted and never
+afterwards: **a refresh can never widen one.** Each machine logs in separately
+and gets its own session, so `agm admin authorizations revoke <auth-id>` takes
+away one machine and leaves the others. Changing `AGENT_GM_ADMIN_SECRET`
+revokes every admin session and only those — OAuth tokens are unaffected.
+
+An access token lives 15 minutes and `agm` refreshes it automatically; a
+refresh token lives 30 days idle and 90 days absolute.
+
 Without `--admin`, `agm auth login` performs the ordinary OAuth flow — the same
 one any MCP client performs — and needs an enrollment code from the owner and
 an approval. `--no-browser` prints the authorization URL instead of opening

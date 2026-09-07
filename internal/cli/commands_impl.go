@@ -507,6 +507,11 @@ func (r *runner) authLogin(inv *invocation) error {
 	if len(session.Scopes) > 0 {
 		r.out.Infof("Scopes: %s", strings.Join(session.Scopes, " "))
 	}
+	// A session is narrowed at the moment it is minted and never afterwards:
+	// a refresh cannot widen one.
+	if len(session.Scopes) == 4 {
+		r.out.Infof("Narrow with --scopes if this machine does not need writes.")
+	}
 	// The tokens are stored, not printed: stdout is a transcript, and a
 	// transcript is not where a bearer token belongs (spec section 12.1).
 	return r.out.Emit(&Response{

@@ -345,6 +345,19 @@ require_tag() {
         "$version, so the tag for it is $tag. The manifest is the version authority (D39):" \
         "merge the Version Packages pull request, or fix the tag -- do not fix the binaries."
   fi
+  # The changelog has an entry for it. Every artefact of a release is stamped
+  # from the manifest, and the manifest is supposed to move only through a
+  # Version Packages pull request -- which writes the entry in the same
+  # commit. That is a rule; this is the guard, and it is the one that stands
+  # between a hand-edited version and a signed, public, unwithdrawable release
+  # for a version CHANGELOG.md has never heard of. `cut-tag.sh` asks the same
+  # question on the automated path; this one covers the manual tag.
+  if ! grep -q "^## \[${version//./\\.}\]" CHANGELOG.md; then
+    die "refusing to $1 $tag: CHANGELOG.md has no entry for $version. A release page, a" \
+        "sigstore signature and an npm version are permanent, and a release nobody wrote" \
+        "an entry for is a release nobody can read. Merge the Version Packages pull" \
+        "request (D39) rather than setting the version by hand."
+  fi
   [ "$tagged" = 1 ] || die "refusing to $1 from $ref_type/$ref_name"
 }
 

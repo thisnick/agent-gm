@@ -67,7 +67,12 @@ jobs:
       # `agm` binary; the install is for `@changesets/cli` alone.
       - run: npm ci --ignore-scripts --no-audit --no-fund
 
-      - uses: changesets/action@v1
+      # Pinned by commit, not by the moving `v1` tag. Everything else in this
+      # repository uses a version tag, and this is the exception on purpose:
+      # it is the only third-party action here holding `contents: write` and
+      # `pull-requests: write` on the default branch, and `v1` is a label its
+      # owner can repoint at any commit.
+      - uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
         with:
           version: npm run version-packages
           title: "Version Packages"
