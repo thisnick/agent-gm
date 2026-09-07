@@ -518,3 +518,139 @@ holds: `refresh.go` and `profiles.go` say *profile* throughout, and `get_session
 account. `internal/gm/device.go` naming the phone's paired-devices entry "Agent GM 1.0" rather
 than "libgm" is the axis applied in the one place the owner reads it outside this product
 entirely, which is the right instinct.
+
+---
+
+# Second confirm pass — `0675a46`
+
+**Reviewed:** `df7cc62..0675a46` (1 commit) merged into `review/slice-3b`; the worktree is
+`0675a46` plus this file (`git diff --stat 0675a46 HEAD` = `REVIEW-slice-3b.md`).
+
+**Verdict: accept.** C-1, C-2 and C-3 are closed, each re-driven by re-planting the mutation that
+found it, and two of the three fixes are better than what I asked for. **Main may be
+fast-forwarded to `0675a46`, the image rebuilt from it, and the connector gate run on it.**
+
+One new finding, **D-1**, found by taking up the invitation to look at the new seams: it is not a
+hypothetical, the `internal/cli` test package **does not compile on Windows today**.
+
+```
+$ devbox run check                                     # 0675a46 + this file
+0 issues. ... no-real-numbers: clean ... no-deployment-host: clean
+EXIT=0
+
+$ CGO_ENABLED=1 go test ./... -count=1 -v
+toplevel=615  all=1316  SKIP=0  FAIL=0                 # matches the reported counts exactly
+```
+
+## The three, re-driven
+
+| | Re-planted mutation | Now |
+|---|---|---|
+| **C-1** | P14 again: in the OAuth half, `Begin()` after the exchange — spend, then discover the destination is unwritable | **killed** — `TestSlice3bAnUnwritableDestinationNeverSpendsAnOAuthRefreshToken`: *"the refresh token no longer works (400): it was spent even though nothing could be stored, so the credential is gone"*, with the server's `{"error":"invalid_grant"}` printed beside it. |
+| **C-2** | P16 again: leave `OnInvalidToken` installed across the refresh exchange | **killed in 13 seconds** (was 10 minutes): *"exited 9, want 3 — the credentials lock … could not be taken: another agm is holding it (waited 10s); if none is running, remove the lock file"*. |
+| **C-3** | remove the `defer` from `ew.finish()` | **killed** — `TestARefusalSurvivesAPanicWhileItIsBuffered`: *"after a panic while the refusal was buffered the client got 200, want 401 — an unwritten buffer is a closed connection"*. |
+
+**C-1's assertion is better than the one I proposed** and the reasoning is right. I suggested
+counting calls to `/oauth/token`; redeeming the stored refresh token afterwards and requiring
+`200` asserts the property (*the credential still works*) rather than a proxy for it, and it holds
+even against a future path that spends the token by some route nobody thought to count. Keeping
+the directory-at-the-lock-path trick from the admin test is also right: a `0500` directory would
+have been repaired by the `chmod` §11.5 requires, and the test would have proved nothing.
+
+**C-2 is a production fix, not a test fix,** which is what I hoped. `LOCK_EX|LOCK_NB` in a bounded
+retry, `LocalError` naming the lock, exit 9 with nothing spent
+(`internal/cli/lock_unix.go:44-58`); the message tells an operator both what is happening and what
+to do, which an unbounded wait never could.
+
+**The asymmetry is fixed rather than documented** — a demoted JSON-RPC error now sets
+`X-Request-Id` and writes `mcp jsonrpc error` with the request ID and status
+(`handler.go:574-582`). Two observations, neither blocking:
+
+- **It is untested.** I deleted the whole block and `./internal/mcp/...` stayed green. Worth two
+  lines in `TestAJSONRPCErrorDoesNotEndTheSession`, which already has the response in hand.
+- **It is half a fix, for a reason outside your control.** The ID is on the wire, but a reference
+  client builds its `McpError` from the JSON-RPC error object and does not surface response
+  headers — so the operator being handed "MCP error -32602" by a connector still has no ID to
+  quote. The log line is a real gain on its own (correlate by time and status), and putting the ID
+  where the client *would* surface it means writing into the SDK's `error.data`, which would break
+  the "the error object is passed through unchanged" rule. I would keep the current trade and say
+  so in `docs/mcp.md` rather than change it.
+
+## New finding
+
+### D-1 — `LockWait` and `LockFileForTest` are `!windows`-only, so `internal/cli`'s tests do not build on Windows (**medium**)
+
+You asked me to eye the seams. `LockWait` (`lock_unix.go:27`) and `LockFileForTest`
+(`lock_unix.go:68`) are declared in a file constrained `//go:build !windows`.
+`internal/cli/refresh_test.go` has **no** build constraint and references both. Driven:
+
+```
+$ GOOS=windows go vet ./internal/cli/
+vet: internal/cli/refresh_test.go:349:17: undefined: cli.LockWait
+
+$ /tmp/rs3b/cross.sh
+windows/amd64  production build: ok     cli test package: FAIL -> undefined: cli.LockWait
+darwin/arm64   production build: ok     cli test package: ok
+linux/arm64    production build: ok     cli test package: ok
+```
+
+The production binary cross-compiles cleanly on all four platforms of §13.6 — this is the **test**
+package only. It is invisible today because CI builds and tests on Linux and `devbox run
+build-matrix` is still the Slice 4 stub that exits 2, so the first thing to notice will be Slice
+4's build matrix, on a slice that has nothing to do with locking.
+
+The irony is worth stating plainly: the platform where the test will not build is the one platform
+where `lockFile` is a **no-op** (`lock_windows.go:11`), so §11.5's rule has neither an
+implementation nor a test there.
+
+**Fix, smallest first:** put `//go:build !windows` on the new test. **Better:** declare `LockWait`
+and `LockFileForTest` in a platform-neutral file and let the Windows `lockFile` ignore the wait —
+then the deadline test compiles everywhere and only the assertion about *waiting* is skipped, and
+Slice 4 inherits a test that already says what Windows does instead of one that never ran.
+
+Add `GOOS=windows go vet ./...` to `devbox run vet`, or a `cross-compile` script beside
+`pin-consistency`. It is two seconds and it is the only thing that would have caught this before
+Slice 4.
+
+## The two seams, read adversarially
+
+Both are used exactly once, from a test, and `internal/cli` and `internal/mcp` have **no**
+`t.Parallel()` anywhere — so neither is a race today. What I would change is the shape, because
+both are the kind of thing that is correct until it is convenient:
+
+- **`LockWait`** is an exported, mutable package var read inside `lockFile` on every acquisition.
+  The test restores it with `t.Cleanup`, correctly. The failure mode of misuse is asymmetric and
+  worth knowing: setting it *small* fails closed (the first `LOCK_NB` still runs, and a refusal
+  spends nothing), while setting it *large* restores exactly the hang C-2 removed. If it became a
+  field on `Store`, set at construction, it could not be mutated after a `lockFile` call is
+  possible and the Windows problem above would go with it.
+- **`FaultAfterChainForTest`** writes `h.faultAfterChain` with no synchronisation against the read
+  in `ServeHTTP`, so it is safe only while it is installed before the handler serves anything —
+  which the one caller does, and which the doc comment does not say. A `Config` field consumed by
+  `New` would make that structural rather than conventional, and `Config` is already the place this
+  package puts "everything the handler collaborates with, explicit so a test can build one". The
+  `...ForTest` name and the `BeforeRefreshTx` precedent are both right; it is only the mutability
+  I would take away.
+
+Neither is a finding. I record them because you asked, and because "fine until someone reaches for
+it" is exactly what D-1 turned out to be one file over.
+
+## Second-confirm plants
+
+| # | Mutation | file:line | Result |
+|---|---|---|---|
+| P14x | OAuth refresh: spend, then prove the destination writable | `internal/cli/refresh.go:136-146` | **killed** — `TestSlice3bAnUnwritableDestinationNeverSpendsAnOAuthRefreshToken` |
+| P16x | leave `OnInvalidToken` installed across the refresh exchange | `internal/cli/refresh.go:150-154` | **killed in 13s** — `TestARefusedProfileRefreshIsThreeAndIsNotRetried` |
+| C3x | un-defer `ew.finish()` | `internal/mcp/handler.go:178` | **killed** — `TestARefusalSurvivesAPanicWhileItIsBuffered` |
+| C4x | delete the `X-Request-Id` and log line from the demote path | `internal/mcp/handler.go:574-582` | **SURVIVED** — untested; see above |
+| D1x | `GOOS=windows go vet ./internal/cli/` at `0675a46`, unmutated | — | **FAILS** → **D-1** |
+
+Reverted; the worktree differs from `0675a46` only by this file.
+
+## Standing verdict
+
+Slice 3b is done as far as this review can take it. Every invariant the Slice 3 review recorded
+still holds behind the SDK, driven against the binary with both official clients; the four gaps I
+found in the first pass and the three in the second are closed with tests that fail for the right
+reason and say the right thing. **D-1 is Slice 4's to fix at the latest** — it costs nothing now
+and it costs a confusing morning then.
