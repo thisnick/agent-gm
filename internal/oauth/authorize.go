@@ -100,8 +100,13 @@ func (s *Server) authorizeGet(w http.ResponseWriter, r *http.Request) {
 
 	// Every later failure redirects to the VERIFIED callback carrying error,
 	// state and the RFC 9207 iss.
-	if code, desc := s.validateAuthorize(&p); code != "" {
-		s.redirectError(w, p, code, desc)
+	// `errCode` rather than `code`: in this package a bare `code` is an
+	// authorization CODE, and the comparison audit of section 12.1 treats
+	// that name as secret-derived. Naming an OAuth error string `code` here
+	// would make the audit either wrong or noisy, and a noisy audit is one
+	// somebody eventually silences.
+	if errCode, desc := s.validateAuthorize(&p); errCode != "" {
+		s.redirectError(w, p, errCode, desc)
 		return
 	}
 

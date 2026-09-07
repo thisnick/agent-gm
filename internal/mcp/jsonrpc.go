@@ -67,6 +67,20 @@ const (
 	codeMethodNotFound = -32601
 	codeInvalidParams  = -32602
 	codeInternalError  = -32603
+
+	// codeResourceNotFound is MCP's own -32002, which `resources/read`
+	// answers for a URI this server does not serve.
+	//
+	// It is a JSON-RPC error rather than an isError RESULT, and that is not
+	// an exception to the rule above -- it is the rule's scope. Section
+	// 8.2's isError paragraph is about `tools/call`, whose result type has an
+	// `isError` field. A ReadResourceResult has no such field and MUST carry
+	// `contents`, so a "result" reporting a failure is not a valid result at
+	// all: the official TypeScript SDK rejects it with a schema error before
+	// the client's code ever sees it, which is the exact opposite of the
+	// isError rule's purpose. A reviewer's run against the real binary found
+	// this; the conformance baseline records it too.
+	codeResourceNotFound = -32002
 )
 
 func rpcResult(id json.RawMessage, result any) jsonrpcResponse {

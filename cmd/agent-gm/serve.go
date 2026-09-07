@@ -646,7 +646,10 @@ func buildCommit() string {
 	if v := vcsSetting("vcs.revision"); v != "" {
 		return v
 	}
-	return "unknown"
+	// The one string api.SourceURL recognises as "there is no commit to
+	// name", so that /v1/health and serverInfo fall back to the repository
+	// root rather than offering a dead <repo>/tree/unknown link.
+	return api.UnknownCommit
 }
 
 func vcsSetting(key string) string {

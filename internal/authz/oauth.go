@@ -24,6 +24,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -435,6 +436,21 @@ func (s *Service) RevokeToken(ctx context.Context, presentedToken, clientID, sou
 	if err := s.Durable.Check(ctx, LimitOAuthToken, source); err != nil {
 		return err
 	}
+	// `client_id` is REQUIRED (spec section 9.6 names it), and its absence
+	// revokes nothing while still answering 200.
+	//
+	// A reviewer driving this endpoint found that an omitted client_id
+	// revoked whatever the token belonged to -- including an ADMIN BOOTSTRAP
+	// session, which no OAuth client owns and which this endpoint has no
+	// business touching. An unauthenticated endpoint that can end the
+	// owner's own session on a guessed value is a bigger hole than the
+	// oracle the silence was protecting against.
+	if strings.TrimSpace(clientID) == "" {
+		if _, err := s.Durable.RecordFailure(ctx, LimitOAuthToken, source); err != nil {
+			return err
+		}
+		return nil
+	}
 
 	// A presented value may be either kind, and the caller does not say
 	// which. Both hashes are computed and both are looked up, read-only,
@@ -458,10 +474,16 @@ func (s *Service) RevokeToken(ctx context.Context, presentedToken, clientID, sou
 			}
 			return err
 		}
+		// Only an OAuth grant is revocable here. An admin bootstrap session
+		// belongs to no client and is ended by `/v1/auth/logout` or by the
+		// owner, never by an unauthenticated caller presenting a value.
+		if auth.Kind != store.AuthKindOAuth {
+			continue
+		}
 		// Another client's token is ignored in silence. Returning an error
 		// here -- or even taking a different amount of work -- would confirm
 		// that the value exists.
-		if clientID != "" && auth.Client != clientID {
+		if auth.Client != clientID {
 			continue
 		}
 		if auth.Revoked() {

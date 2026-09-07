@@ -198,7 +198,13 @@ async function mintTokenThroughTheWholeFlow() {
   step("completion");
   const completed = await fetchNoRedirect(`${SERVER}/oauth/requests/${requestID}/complete`, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: cookie },
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Cookie: cookie,
+      // Section 9.5 requires a PRESENT same-origin Origin here. A browser
+      // sends one; this harness plays the browser, so it sends one too.
+      Origin: SERVER,
+    },
     body: formBody({ form_token: fields.form_token }),
   });
   if (completed.status !== 303) {

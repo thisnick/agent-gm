@@ -94,6 +94,19 @@ type Service struct {
 	// audience is AGENT_GM_PUBLIC_URL + "/mcp", mixed into every token hash.
 	audience string
 
+	// BeforeRefreshTx is a FAULT SEAM, nil in production, and it is placed
+	// exactly where the window is rather than anywhere convenient.
+	//
+	// Between the read-only lookup of a presented refresh token and the
+	// transaction that rotates it there is a window in which another caller
+	// can spend the same token. The transaction re-reads the row and treats
+	// a spent one as reuse; nothing else does, and no concurrent test can
+	// reliably land inside a window this narrow -- a reviewer's plant
+	// removing the re-read survived the whole suite. This hook lets a test
+	// stand in that window on purpose, which is the same argument
+	// HandlerDeps.AfterErase makes for the erasure crash window.
+	BeforeRefreshTx func()
+
 	Sources   *SourceResolver
 	Buckets   *TokenBuckets
 	Durable   *DurableLimiter
@@ -478,6 +491,9 @@ func (s *Service) refreshSession(ctx context.Context, p refreshParams) (*Session
 	}
 
 	var raced bool
+	if s.BeforeRefreshTx != nil {
+		s.BeforeRefreshTx()
+	}
 	// One transaction: the rotation, its audit record, and -- if the re-read
 	// finds the row spent underneath us -- the family revocation.
 	err = s.st.AuthzTx(ctx, func(t *store.AuthzTx) error {

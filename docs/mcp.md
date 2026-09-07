@@ -381,6 +381,16 @@ Only four things are JSON-RPC errors:
 | an unknown method | `-32601` |
 | an unknown tool name | `-32602` |
 | an authorization failure at the transport | answered as an HTTP status, before any JSON-RPC frame exists |
+| any `resources/read` failure | `-32002` for a URI this server does not serve, `-32600` for a scope refusal, `-32603` otherwise |
+
+**The `isError` rule is about `tools/call`, and `resources/read` is the
+boundary of its scope.** A `CallToolResult` has an `isError` field, and
+reporting a domain failure there keeps the fact in front of the model. A
+`ReadResourceResult` has no such field and *must* carry `contents`, so a
+"result" reporting a failure is not a valid result at all: the official
+TypeScript SDK rejects it on schema before the client's own code ever runs.
+The model learns nothing either way — bytes never reach it — so the only thing
+at stake is whether the client gets a readable refusal or a parse error.
 
 Read the error and correct the call rather than repeating it.
 `invalid_request` names the parameter you got wrong in `details.parameter` or
@@ -398,6 +408,7 @@ fetch them without putting them through the model's context.
 |---|---|
 | `resources/templates/list` | one template, `agm://attachments/{attachment_id}`, offered only to a caller holding `messages:read` |
 | `resources/list` | **empty, on purpose.** Attachments are addressed by template, not enumerated |
+| `resources/read` on an unknown URI or a missing attachment | `-32002`, a JSON-RPC error, for the reason above |
 | `resources/read` | the bytes of one attachment, under `messages:read`, with the same media limit and cache path as `GET /v1/attachments/{id}/content`. Text media comes back as `text`; everything else as a base64 `blob` |
 
 `get_attachment` decides its content form by **size and type, not

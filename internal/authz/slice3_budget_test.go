@@ -25,6 +25,9 @@ import (
 // do (section 13.1). Here the clock is injected and the "restart" is real: the
 // store is closed and reopened over the same file.
 
+// adminSecretForBudgetTests is the one these tests mint with.
+const adminSecretForBudgetTests = "a-test-admin-secret-well-over-the-43-character-minimum-0123456789"
+
 func newBudgetService(t *testing.T, dir string, clk clock.Clock) (*store.Store, *authz.Service) {
 	t.Helper()
 	st, err := store.Open(dir, clk)
@@ -32,7 +35,7 @@ func newBudgetService(t *testing.T, dir string, clk clock.Clock) (*store.Store, 
 		t.Fatal(err)
 	}
 	svc, err := authz.New(st, clk, authz.NewMemorySettings(), nil, authz.Config{
-		AdminSecret: "a-test-admin-secret-well-over-the-43-character-minimum-0123456789",
+		AdminSecret: adminSecretForBudgetTests,
 		PublicURL:   "https://gm.agent-wx.app",
 	})
 	if err != nil {

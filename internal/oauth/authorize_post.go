@@ -337,6 +337,18 @@ func (s *Server) checkOrigin(r *http.Request) *oauthError {
 	return nil
 }
 
+// requireSameOrigin is checkOrigin plus the requirement that the header be
+// there at all. It guards `POST /oauth/requests/{id}/complete`, which section
+// 9.5 says takes a same-origin Origin -- and a check that accepted its
+// absence would be satisfied by any client that simply omitted it.
+func (s *Server) requireSameOrigin(r *http.Request) *oauthError {
+	if r.Header.Get("Origin") == "" {
+		return statusError(http.StatusForbidden, ErrInvalidRequest,
+			"this form may only be submitted from "+s.Issuer()+", and carries no Origin")
+	}
+	return s.checkOrigin(r)
+}
+
 func (s *Server) source(r *http.Request) string {
 	return s.cfg.Authz.Sources.Resolve(r.RemoteAddr, r.Header).Value
 }

@@ -130,7 +130,13 @@ func (s *Server) requestComplete(w http.ResponseWriter, r *http.Request) {
 		s.writeNotFound(w)
 		return
 	}
-	if oerr := s.checkOrigin(r); oerr != nil {
+	// A PRESENT same-origin Origin, not merely a non-foreign one (spec
+	// section 9.5). This endpoint is only ever reached by the waiting page's
+	// own form, and every browser sends `Origin` on a cross-site-capable
+	// POST -- so an absent one means the request did not come from that page.
+	// `POST /oauth/authorize` is deliberately laxer, because `agm auth login`
+	// prints a URL an owner may open in something that is not a browser.
+	if oerr := s.requireSameOrigin(r); oerr != nil {
 		s.writeOAuthError(w, oerr)
 		return
 	}

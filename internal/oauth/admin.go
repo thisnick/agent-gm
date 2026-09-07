@@ -366,6 +366,16 @@ func (s *Server) Approve(ctx context.Context, id string, scopes []string, source
 		return nil, apierr.New(apierr.CodeInternalError, "the request's scopes are unreadable")
 	}
 	granted := selected
+	// An EXPLICITLY empty list is invalid_request, and an absent one is "do
+	// not narrow" (spec section 9.5). The two are different requests and the
+	// difference matters: `{"scopes": []}` is somebody asking to grant
+	// nothing, which is a denial written as an approval, and treating it as
+	// "no narrowing" would grant everything the browser selected instead --
+	// the exact opposite of what was asked.
+	if scopes != nil && len(scopes) == 0 {
+		return nil, invalidRequest("scopes",
+			"an empty scope list grants nothing; deny the request instead")
+	}
 	if len(scopes) > 0 {
 		requested, perr := authz.ParseScopes(scopes)
 		if perr != nil {

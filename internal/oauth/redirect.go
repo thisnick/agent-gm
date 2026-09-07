@@ -132,8 +132,11 @@ func IsLoopbackRedirect(raw string) bool {
 // Note what is NOT relaxed: the token endpoint still requires `redirect_uri`
 // to equal the one bound to the code exactly (section 9.3), so the port a
 // client authorized on is the port it must present at exchange.
-func RedirectMatches(registered, presented string) bool {
-	if registered == presented {
+func RedirectMatches(registered, offered string) bool {
+	// `offered` rather than `presented`: a redirect URI is public, and the
+	// comparison audit of section 12.1 reserves `presented` for a value
+	// whose comparison must be constant-time.
+	if registered == offered {
 		return true
 	}
 	if !IsLoopbackRedirect(registered) {
@@ -143,7 +146,7 @@ func RedirectMatches(registered, presented string) bool {
 	if err != nil {
 		return false
 	}
-	pres, err := url.Parse(presented)
+	pres, err := url.Parse(offered)
 	if err != nil {
 		return false
 	}

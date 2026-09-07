@@ -78,24 +78,24 @@
 
 # --- the suite's own fixture resources, and one real disagreement ------------
 #
-# The first three read `test://…` URIs. Agent GM serves exactly one resource
-# template, `agm://attachments/{attachment_id}` (section 8.2), so an unknown
-# URI is a miss however it is reported.
+# These three read `test://…` URIs. Agent GM serves exactly one resource
+# template, `agm://attachments/{attachment_id}` (section 8.2), so the fixture
+# URIs are a miss and always will be.
 #
-# HOW it is reported is the disagreement, and it is worth stating plainly
-# because it may matter to a real client. Section 8.2 says a domain failure is
-# a RESULT with `isError: true`, and `not_found` is a domain failure; the
-# suite expects `resources/read` on an unknown URI to be a JSON-RPC error
-# carrying no `contents`. Agent GM follows its own spec. The consequence is
-# recorded here rather than quietly fixed, because changing it is a change to
-# a public contract and belongs to the owner, not to an implementer chasing a
-# green line.
+# They are here for the FIXTURE only. The reporting difference that used to be
+# listed alongside it -- Agent GM answering an unknown resource with a section
+# 8.2 isError result rather than a JSON-RPC error -- was a real bug, found by
+# a reviewer driving the official TypeScript SDK against the binary, which
+# rejected the answer on schema before the client's own code ran. Section 8.2's
+# isError rule is about `tools/call`; a ReadResourceResult has no isError field
+# and must carry `contents`. `resources/read` now answers -32002 / -32600 /
+# -32603, and the conformance suite agrees with that half.
 - name: resources-read-text
-  reason: reads the reference server's `test://static-text`; and Agent GM answers an unknown resource with a section 8.2 isError RESULT rather than a JSON-RPC error
+  reason: reads the reference server's `test://static-text`, which Agent GM does not serve
 - name: resources-read-binary
-  reason: reads the reference server's fixture resource; same reporting difference
+  reason: reads the reference server's fixture resource
 - name: resources-templates-read
-  reason: reads the reference server's fixture template; same reporting difference
+  reason: reads the reference server's fixture template
 
 # --- DNS rebinding ------------------------------------------------------------
 #

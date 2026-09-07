@@ -51,6 +51,9 @@ type oauthHarness struct {
 	// dir is the data directory, so a test can stop the server and start a
 	// second one over the same database (section 16 Slice 3 test 11).
 	dir string
+	// issuer is AGENT_GM_PUBLIC_URL for this harness, which is what a
+	// same-origin `Origin` header has to carry.
+	issuer string
 	// cookie is the signed context cookie. It is carried by hand rather than
 	// by a cookie jar because the cookie is `Secure` and these tests speak
 	// plain HTTP to a loopback listener, so a jar would silently drop it --
@@ -81,7 +84,7 @@ func newOAuthHarnessIn(t *testing.T, dir string) *oauthHarness {
 		t.Fatalf("buildServer returned exit %d", code)
 	}
 	srv := httptest.NewServer(b.Handler)
-	h := &oauthHarness{t: t, b: b, http: srv, dir: dir}
+	h := &oauthHarness{t: t, b: b, http: srv, dir: dir, issuer: oauthTestIssuer}
 	t.Cleanup(func() {
 		srv.Close()
 		b.Close()
@@ -128,12 +131,20 @@ func newOAuthHarnessOnItsOwnURL(t *testing.T) *oauthHarness {
 	srv.Listener = ln
 	srv.Start()
 
-	h := &oauthHarness{t: t, b: b, http: srv, dir: dir}
+	h := &oauthHarness{t: t, b: b, http: srv, dir: dir, issuer: public}
 	t.Cleanup(func() {
 		srv.Close()
 		b.Close()
 	})
 	return h
+}
+
+// sameOrigin sets the `Origin` header POST /oauth/requests/{id}/complete
+// requires (spec section 9.5). It is a request option rather than something
+// the harness adds everywhere, because the tests that assert the requirement
+// need to be able to leave it off.
+func (h *oauthHarness) sameOrigin(req *http.Request) {
+	req.Header.Set("Origin", h.issuer)
 }
 
 // stop shuts the server down without removing the data directory, so a second
@@ -432,7 +443,7 @@ func (h *oauthHarness) fullFlow(redirect string, scopes ...string) flowResult {
 	_ = readBody(h.t, approve)
 
 	complete := h.postForm("/oauth/requests/"+requestID+"/complete",
-		url.Values{"form_token": {form.Get("form_token")}}, h.withCookie)
+		url.Values{"form_token": {form.Get("form_token")}}, h.withCookie, h.sameOrigin)
 	if complete.StatusCode != http.StatusSeeOther {
 		h.t.Fatalf("completing: %d\n%s", complete.StatusCode, readBody(h.t, complete))
 	}

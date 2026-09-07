@@ -238,6 +238,23 @@ func TestSlice3Test19IsErrorSemantics(t *testing.T) {
 	if malformed.Error.Code != -32700 {
 		t.Fatalf("a malformed body answered code %d, want -32700", malformed.Error.Code)
 	}
+
+	// And the boundary of the rule: `resources/read` is NOT a tools/call, so
+	// its failures are JSON-RPC errors. A ReadResourceResult has no isError
+	// field and must carry `contents`; a "result" reporting a failure is not
+	// a valid result, and the official TypeScript SDK rejects it on schema
+	// before the client's own code runs. The model learns nothing either
+	// way, so the only thing at stake is whether the CLIENT gets a readable
+	// refusal or a parse error.
+	answer = h.callWith(h.Token, "resources/read",
+		map[string]any{"uri": "agm://attachments/att_00000000-0000-0000-0000-000000000000"}, nil)
+	if answer.Error == nil {
+		t.Fatalf("a missing resource answered a result rather than a JSON-RPC error: %s",
+			answer.Raw)
+	}
+	if answer.Error.Code != -32002 {
+		t.Errorf("a missing resource answered code %d, want MCP's -32002", answer.Error.Code)
+	}
 }
 
 // TestSlice3Test21Transport is acceptance test 21 and the rest of section
@@ -631,22 +648,48 @@ func TestSlice3Resources(t *testing.T) {
 		}
 	})
 
+	// Every resources/read failure is a JSON-RPC ERROR, not an isError
+	// result. A ReadResourceResult has no isError field and MUST carry
+	// `contents`, so a "result" reporting a failure is not a valid result:
+	// the official TypeScript SDK rejects it on schema before the client's
+	// own code runs, which is the opposite of what the isError rule is for.
+	// Section 8.2's isError paragraph is about tools/call, and this is the
+	// boundary of its scope.
+	//
+	// Plant: return `rpcResult(req.ID, errorResult(...))` from any of the
+	// three refusals in resources.go and one of these fails. Planted
+	// 2026-09-07 after reviewer finding R-1.
 	t.Run("a resource read needs messages:read", func(t *testing.T) {
 		writeOnly := h.narrowToken("messages:write")
 		answer := h.callWith(writeOnly, "resources/read",
 			map[string]any{"uri": mcp.AttachmentURIPrefix + row.ID}, nil)
-		if answer.Error != nil {
-			t.Fatalf("a scope refusal came back as a JSON-RPC error: %v", answer.Error)
+		if answer.Error == nil {
+			t.Fatalf("a messages:write-only token read an attachment: %v", answer.Result)
 		}
-		if !isError(answer.Result) {
-			t.Fatal("a messages:write-only token read an attachment")
+		if answer.Result != nil {
+			t.Errorf("the refusal also carried a result: %v", answer.Result)
 		}
 	})
 
-	t.Run("an unknown URI scheme is not_found", func(t *testing.T) {
+	t.Run("an unknown URI scheme is a JSON-RPC resource-not-found", func(t *testing.T) {
 		answer := h.call("resources/read", map[string]any{"uri": "file:///etc/passwd"})
-		if !isError(answer.Result) {
-			t.Fatal("a file:// URI was served")
+		if answer.Error == nil {
+			t.Fatalf("a file:// URI was served: %v", answer.Result)
+		}
+		if answer.Error.Code != -32002 {
+			t.Errorf("the error code is %d, want MCP's -32002 resource-not-found",
+				answer.Error.Code)
+		}
+	})
+
+	t.Run("an unknown attachment is a JSON-RPC resource-not-found", func(t *testing.T) {
+		answer := h.call("resources/read",
+			map[string]any{"uri": mcp.AttachmentURIPrefix + "att_00000000-0000-0000-0000-000000000000"})
+		if answer.Error == nil {
+			t.Fatalf("an attachment that does not exist was served: %v", answer.Result)
+		}
+		if answer.Error.Code != -32002 {
+			t.Errorf("the error code is %d, want -32002", answer.Error.Code)
 		}
 	})
 }

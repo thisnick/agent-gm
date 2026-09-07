@@ -56,17 +56,31 @@ func (s *session) resourcesRead(req jsonrpcRequest) jsonrpcResponse {
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		return rpcFail(req.ID, codeInvalidParams, "the params of resources/read are malformed")
 	}
+	// Every failure below is a JSON-RPC ERROR, not an isError result.
+	//
+	// Section 8.2's isError rule is about `tools/call`: its result type has
+	// an `isError` field, and reporting a domain failure there keeps the fact
+	// in front of the model. `resources/read` answers a ReadResourceResult,
+	// which has no `isError` field and MUST carry `contents` -- so a
+	// "result" reporting a failure is not a valid result, and the official
+	// TypeScript SDK rejects it on schema before the client's own code runs.
+	// The model learns nothing either way; the only difference is whether the
+	// CLIENT gets a readable refusal or a parse error.
 	if s.auth == nil || !s.auth.Scopes.Has(authz.ScopeMessagesRead) {
-		return rpcResult(req.ID, errorResult(scopeRefusal(authz.ScopeMessagesRead)))
+		return rpcFail(req.ID, codeInvalidRequest,
+			"resources/read requires the messages:read scope")
 	}
 	id, ok := strings.CutPrefix(params.URI, AttachmentURIPrefix)
 	if !ok || id == "" {
-		return rpcResult(req.ID, errorResult(apierr.NotFound("resource")))
+		return rpcFail(req.ID, codeResourceNotFound, "no such resource: "+params.URI)
 	}
 
 	body, contentType, e := s.attachmentBytes(id)
 	if e != nil {
-		return rpcResult(req.ID, errorResult(e))
+		if e.Code == apierr.CodeNotFound {
+			return rpcFail(req.ID, codeResourceNotFound, "no such resource: "+params.URI)
+		}
+		return rpcFail(req.ID, codeInternalError, "the resource could not be read: "+string(e.Code))
 	}
 
 	contents := map[string]any{"uri": params.URI, "mimeType": contentType}

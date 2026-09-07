@@ -100,7 +100,7 @@ func TestSlice3AgmAuthLoginRunsTheWholeOAuthFlow(t *testing.T) {
 	_ = readBody(t, approve)
 
 	complete := h.postForm("/oauth/requests/"+requestID+"/complete",
-		url.Values{"form_token": {form.Get("form_token")}}, h.withCookie)
+		url.Values{"form_token": {form.Get("form_token")}}, h.withCookie, h.sameOrigin)
 	if complete.StatusCode != http.StatusSeeOther {
 		t.Fatalf("completing answered %d\n%s", complete.StatusCode, readBody(t, complete))
 	}

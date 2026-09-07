@@ -124,12 +124,27 @@ func (d *HandlerDeps) health(r *Request) (*Response, error) {
 // caught exactly that: `/v1/health` computed the tree URL and `serverInfo`
 // served the bare repository link.
 //
-// An unstamped build returns "" on BOTH surfaces rather than a bare
-// repository link, because a link to `main` is a link to code that is not
-// what answered you, which is worse than admitting there is none.
+// An unstamped build falls back to the repository ROOT rather than pointing
+// at `/tree/unknown`, which is a 404 -- and a 404 is worse than a link to the
+// repository, because the AGPL section 13 obligation is to offer the source
+// and a dead link offers nothing. It is only ever the repository root when
+// there is genuinely no commit to name: `unknown` is what `buildCommit`
+// returns for a build with neither an ldflag nor a VCS stamp, and a reviewer
+// driving such a build found the dead link.
+//
+// With no repository configured at all there is no honest answer, so the
+// field is empty on both surfaces rather than invented.
 func (d *HandlerDeps) SourceURL() string {
-	if d.SourceURLBase == "" || d.Commit == "" {
+	if d.SourceURLBase == "" {
 		return ""
+	}
+	if d.Commit == "" || d.Commit == UnknownCommit {
+		return d.SourceURLBase
 	}
 	return d.SourceURLBase + "/tree/" + d.Commit
 }
+
+// UnknownCommit is what a build with neither a link-time stamp nor a VCS
+// stamp reports. It is declared here, next to the one place that has to
+// recognise it, so the string cannot drift from the binary that produces it.
+const UnknownCommit = "unknown"

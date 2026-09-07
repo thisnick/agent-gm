@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/thisnick/agent-gm/internal/api"
 	"github.com/thisnick/agent-gm/internal/oauth"
 )
 
@@ -1057,8 +1058,50 @@ func TestSlice3Test28BothSurfacesReportTheSameSource(t *testing.T) {
 			"Section 1.4's AGPL obligation is not kept by two surfaces answering "+
 			"differently", source, restSource)
 	}
-	if restSource != "" && !strings.Contains(restSource, restCommit) {
+	// Two rows, and the second is the one a reviewer found broken. A STAMPED
+	// build names its commit; an UNSTAMPED one -- a test binary, a plain `go
+	// build` with no VCS metadata -- falls back to the repository ROOT rather
+	// than offering `<repo>/tree/unknown`, which is a 404. The AGPL section 13
+	// obligation is to offer the source, and a dead link offers nothing.
+	if restCommit == api.UnknownCommit {
+		if restSource != "https://github.com/thisnick/agent-gm" {
+			t.Errorf("an unstamped build reports source_url %q; it must be the repository "+
+				"root, never .../tree/unknown", restSource)
+		}
+	} else if !strings.Contains(restSource, restCommit) {
 		t.Errorf("source_url %q does not name the built commit %q; a link to `main` "+
 			"is a link to code that is not what answered you", restSource, restCommit)
+	}
+}
+
+// TestSlice3AnUnstampedBuildDoesNotOfferADeadLink pins both rows of
+// api.SourceURL directly, because the test binary can only ever exercise one
+// of them and the other is the one that ships.
+//
+// Plant: restore `return d.SourceURLBase + "/tree/" + d.Commit` unconditionally
+// and this fails naming the dead link. Planted 2026-09-07 after reviewer
+// finding R-9.
+func TestSlice3AnUnstampedBuildDoesNotOfferADeadLink(t *testing.T) {
+	const repo = "https://github.com/thisnick/agent-gm"
+	cases := []struct {
+		name, commit, want string
+	}{
+		{"a stamped build names its commit", "abc123", repo + "/tree/abc123"},
+		{"an unstamped build falls back to the root", api.UnknownCommit, repo},
+		{"an empty commit falls back to the root", "", repo},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			deps := &api.HandlerDeps{SourceURLBase: repo, Commit: c.commit}
+			if got := deps.SourceURL(); got != c.want {
+				t.Errorf("SourceURL() is %q, want %q", got, c.want)
+			}
+		})
+	}
+	// With no repository configured there is no honest answer, so the field
+	// is empty rather than invented.
+	empty := &api.HandlerDeps{Commit: "abc123"}
+	if got := empty.SourceURL(); got != "" {
+		t.Errorf("with no repository SourceURL() is %q, want empty", got)
 	}
 }
