@@ -614,3 +614,63 @@ discharge:
    not execution. Cut `v1.0.0` watching the run, not from a phone.
 2. **§16 Slice 4 test 6**, the owner's Mac CLI gate, remains outstanding and
    is the coordinator's.
+
+---
+
+# Addendum 3 — `f8dde90`, R-12 confirmed
+
+Verified anyway, because the tip moved after a sign-off the coordinator holds:
+a sign-off names a SHA, and `f8dde90` is not the SHA I signed off.
+
+`devbox run check` at `f8dde90`: **EXIT=0**, clean. `internal/release`: 25
+tests, 25 passing. The diff `9f1b646..f8dde90` is two files
+(`tag_guards_test.go`, `scripts/release.sh`) and touches neither of my test
+files — zero deleted lines in both.
+
+**Both of my survivors are dead.** Re-planted at `f8dde90`:
+
+| # | Mutation | At `9f1b646` | At `f8dde90` |
+|---|---|---|---|
+| Q6b | ancestry check aimed at `origin/any-branch` | SURVIVED | **killed** — `TestTheReleaseWorkflowGatesTheTagOnMainAndOnGreen` |
+| Q6p | `if false && ! git merge-base …` | SURVIVED | **killed** — same |
+| Q11 | delete `git fetch --no-tags origin main` | n/a (new guard) | **killed** — same |
+| Q12 | `digest_shape='.'` | n/a (new variable) | **killed** — `TestPublishRefusesADigestThatIsAbsentOrMalformed` |
+
+Q11 and Q12 are worth noting because they are the risks the fix itself
+introduced and the implementer covered both unprompted: extracting a constant
+creates a new single point of failure, and asserting the whole `if` line makes
+the check depend on a `git fetch` that could be removed separately.
+
+**The refactor did not change behaviour.** Driven, not read:
+
+```
+sha256:zzz…zzz   → not a sha256:<64 lowercase hex> digest
+sha256:AAA…AAA   → not a … digest        (uppercase)
+63 hex chars     → not a … digest
+65 hex chars     → not a … digest
+64 hex chars     → proceeds to resolve on the registry
+v01.0.0          → refused by require_tag
+```
+
+The 63/65-character cases are now refused precisely rather than by wildcard
+count, which the `?`-glob form could never have got right.
+
+**One honest note on my own test.** `TestPublishRefusesToRecordAnUnknownImageDigest`
+asserts `strings.Contains(pub, "sha256:")` over `do_publish`. After R-12 the
+literal regexp is gone from that function and the substring now comes from the
+*die message*. It still passes, and Q12 proves the behaviour is covered by
+`TestPublishRefusesADigestThatIsAbsentOrMalformed`, which executes the script
+— so the coverage is real and mine is now the weaker of the two. If anyone
+tidies these, delete mine rather than patching it: a text assertion that
+survives because of an error string is the thing this whole slice has been
+about.
+
+**Sign-off stands, now at `f8dde90`.** Strictly additive to `9f1b646`, and I
+agree with landing it before the merge rather than after: a survivor I planted
+and watched live is a survivor that ships, and this one shipped into the guard
+that stops a tag on an unreviewed commit.
+
+The two coordinator items are unchanged. The first tag is itself a live gate —
+no GitHub release, cosign signature, npm version or `ci`→`release` digest
+handshake has ever executed. And §16 Slice 4 test 6, the owner's Mac CLI gate,
+is outstanding.
