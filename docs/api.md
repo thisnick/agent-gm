@@ -443,6 +443,7 @@ so `/v1/health` never blocks on a phone.
                         "error": 0, "signed_out": 1,
                         "backfill_complete": 2 },
   "accounts": [ { "account_id": "acct_01k4z0aa", "…": "the account object above" } ],
+  "pending_reprocess": null,
   "client_source": "100.64.0.7" }
 ```
 

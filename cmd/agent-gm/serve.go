@@ -455,10 +455,22 @@ func nextFakeAddress() string {
 // connects it and starts its ingest goroutine. It never pairs: pairing is a
 // physical act at the owner's browser and phone (spec section 11.4).
 //
-// A session that cannot be decrypted stops the start rather than being
-// skipped. Section 15.4's first runbook row is exactly this, and it says the
-// fix is to restore the original key -- so carrying on with the account
-// silently signed out would hide the one thing the operator needs to know.
+// **One account that cannot be resumed is that account's problem, not the
+// server's, and not the NEXT account's.** This used to `return` on the first
+// undecryptable session, which made sense while the caller treated that
+// return as fatal. It no longer is -- startAccounts runs behind the listener
+// and logs the error -- so the return stopped stopping anything and merely
+// abandoned the loop: every account after the failing one in row order never
+// resumed, held no client, refused writes as `not_signed_in`, and said
+// nothing about why, because nothing had touched its row. Which of three
+// accounts worked depended on which one had the bad session file.
+//
+// So each failure is recorded on ITS account and the walk continues, exactly
+// as a failed `sup.Start` already did three lines below. The account is
+// marked `signed_out` with `credentials` (section 4.7), which is what
+// section 15.4's runbook row promises an undecryptable key leaves behind, the
+// error is logged loudly and returned to the caller joined with any others,
+// and the operator's fix is unchanged: restore the original data key.
 func resumeAccounts(
 	ctx context.Context,
 	cfg config.Config,
@@ -472,6 +484,17 @@ func resumeAccounts(
 		return 0, err
 	}
 	resumed := 0
+	var failures []error
+	// unresumable records the failure on the account it belongs to and lets
+	// the walk carry on to the next one.
+	unresumable := func(row store.Account, err error) {
+		failures = append(failures, err)
+		fmt.Fprintf(os.Stderr, "agent-gm: %s could not be resumed: %v\n", row.ID, err)
+		if markErr := sup.MarkUnresumable(ctx, row.ID, accounts.ReasonCredentials); markErr != nil {
+			fmt.Fprintf(os.Stderr, "agent-gm: %s could not be marked signed out: %v\n",
+				row.ID, markErr)
+		}
+	}
 	for _, row := range rows {
 		if !row.SessionPresent {
 			continue
@@ -479,23 +502,28 @@ func resumeAccounts(
 		blob, err := sessions.Load(row.ID)
 		if err != nil {
 			if errors.Is(err, store.ErrSessionUndecryptable) {
-				return resumed, fmt.Errorf("%s: session envelope cannot be decrypted; the data "+
+				err = fmt.Errorf("%s: session envelope cannot be decrypted; the data "+
 					"key differs from the one that sealed it. Restore the original "+
 					"AGENT_GM_DATA_KEY -- there is no in-place rotation (spec 15.4)", row.ID)
+			} else {
+				err = fmt.Errorf("%s: %w", row.ID, err)
 			}
-			return resumed, fmt.Errorf("%s: %w", row.ID, err)
+			unresumable(row, err)
+			continue
 		}
 		var backend gm.Backend
 		if cfg.Backend == config.BackendFake {
 			f := fake.New("")
 			if err := f.LoadSession(blob); err != nil {
-				return resumed, fmt.Errorf("%s: %w", row.ID, err)
+				unresumable(row, fmt.Errorf("%s: %w", row.ID, err))
+				continue
 			}
 			backend = f
 		} else {
 			b, err := gm.NewFromSession(blob, libLog)
 			if err != nil {
-				return resumed, fmt.Errorf("%s: %w", row.ID, err)
+				unresumable(row, fmt.Errorf("%s: %w", row.ID, err))
+				continue
 			}
 			backend = b
 		}
@@ -509,7 +537,7 @@ func resumeAccounts(
 		}
 		resumed++
 	}
-	return resumed, nil
+	return resumed, errors.Join(failures...)
 }
 
 // sourceURLBase is where this program's source lives. GET /v1/health serves

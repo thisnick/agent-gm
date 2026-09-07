@@ -2,6 +2,7 @@ package api
 
 import (
 	"github.com/thisnick/agent-gm/internal/accounts"
+	"github.com/thisnick/agent-gm/internal/core"
 	"github.com/thisnick/agent-gm/internal/store"
 	"net/http"
 )
@@ -45,7 +46,16 @@ type healthDTO struct {
 	UpstreamCommit        string                   `json:"upstream_commit"`
 	AccountsSummary       accountsSummaryDTO       `json:"accounts_summary"`
 	Accounts              []accounts.AccountHealth `json:"accounts"`
-	ClientSource          string                   `json:"client_source"`
+	// PendingReprocess names the section 4.3 task a migration deferred, while
+	// it is still outstanding, and is null the rest of the time -- which is
+	// almost always. It is here because the task now runs BEHIND the
+	// listener (core.RunPendingReprocess): a caller during that one window
+	// can read a query filtered on a derived value -- `sender=me` is the one
+	// that matters -- and get fewer rows than it will a moment later. Without
+	// this field that window is invisible, and "the page was short once" has
+	// no explanation an operator could reach.
+	PendingReprocess *string `json:"pending_reprocess"`
+	ClientSource     string  `json:"client_source"`
 }
 
 // health is `GET /v1/health`.
@@ -86,6 +96,10 @@ func (d *HandlerDeps) health(r *Request) (*Response, error) {
 			summary.BackfillComplete++
 		}
 	}
+	var pending *string
+	if task, ok, err := d.Store.Meta(r.Ctx, core.PendingReprocessKey); err == nil && ok && task != "" {
+		pending = &task
+	}
 	return &Response{Data: healthDTO{
 		Status:                "ok",
 		Version:               d.Version,
@@ -95,6 +109,7 @@ func (d *HandlerDeps) health(r *Request) (*Response, error) {
 		UpstreamCommit:        d.UpstreamCommit,
 		AccountsSummary:       summary,
 		Accounts:              list,
+		PendingReprocess:      pending,
 		ClientSource:          r.Source,
 	}}, nil
 }

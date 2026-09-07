@@ -175,7 +175,7 @@ There are two health endpoints and they answer different questions.
 | Endpoint | Scope | Question it answers |
 |---|---|---|
 | `GET /healthz` | none | *Is the process serving?* Returns `200 {"status":"ok"}` whenever it is. Never touches SQLite, so it is safe as a container liveness probe |
-| `GET /v1/health` | `messages:read` | *What is the state of everything?* `version`, `commit`, `source_url`, `config_version_compiled`, `upstream_commit`, an `accounts_summary` of totals by state, an `accounts[]` array with per-account detail, and the `client_source` this request resolved to |
+| `GET /v1/health` | `messages:read` | *What is the state of everything?* `version`, `commit`, `source_url`, `config_version_compiled`, `upstream_commit`, an `accounts_summary` of totals by state, an `accounts[]` array with per-account detail, `pending_reprocess`, and the `client_source` this request resolved to |
 
 Each entry in `accounts[]` carries that account's `state`, `state_reason`,
 `phone_responding`, a `google` block (`config_version_live`,
@@ -184,6 +184,13 @@ Each entry in `accounts[]` carries that account's `state`, `state_reason`,
 `connected`; its values are cached from the last config fetch and refreshed
 on connect and every `ingest.sweep_interval`, so `/v1/health` never blocks on
 a phone.
+
+`pending_reprocess` names the one-off task a migration deferred, while it is
+still running, and is `null` the rest of the time — which is almost always. It
+runs behind the listener, so on the one start after such an upgrade a query
+filtered on a value it is still rebuilding (`sender=me` is the one that
+matters) can return fewer rows than it will a moment later. If a page looks
+short right after an upgrade, read this field before reading anything else.
 
 **`status` describes the server, not the accounts.** This is the single most
 important thing to know about monitoring Agent GM:
@@ -219,7 +226,7 @@ are diagnosable without reading logs.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `session envelope cannot be decrypted` at startup | `AGENT_GM_DATA_KEY` differs from the key that sealed `sessions/*.enc` | Restore the original key. **There is no in-place rotation.** Without it, every account is `signed_out` with its history intact |
+| `session envelope cannot be decrypted` at startup | `AGENT_GM_DATA_KEY` differs from the key that sealed `sessions/*.enc` | Restore the original key. **There is no in-place rotation.** The server still starts and still serves: each account whose session will not open is marked `signed_out` / `credentials`, with its history intact, and the rest resume normally |
 | Every write is `not_paired` | There are **no accounts at all** | `agm pair`. A server with zero accounts is healthy; it just cannot send |
 | A write is refused `unsupported_capability` / `not_signed_in` | **That one account** is not usable; the rest may be fine | Read the account's `state` in `agm accounts list` and follow the matching row below |
 | An account goes to `error` with `RevokePairData` in the audit log | That phone revoked the pairing | `agm pair --account <acct-id>`; history resumes |

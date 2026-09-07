@@ -45,9 +45,23 @@ type Sweeper interface {
 // set for kept their raw IDs. A migration that hands work to a task nothing
 // runs has not deferred the work; it has dropped it.
 //
-// It runs BEFORE the listener binds, for the same reason crash recovery does
-// (section 6.6): a caller must not see a half-reconciled database and read an
-// empty `sender=me` page as an answer.
+// **It runs AFTER the listener binds**, on the goroutine that resumes the
+// accounts. That is a deliberate reversal: it used to run first, on the
+// reasoning that a caller must not see a half-reconciled database and read a
+// short `sender=me` page as an answer. On the owner's real deployment the
+// resume and the reprocess together took four minutes, and for those four
+// minutes `/healthz` did not answer at all -- so every watcher concluded the
+// service was down, which is a worse and much more frequent lie than a brief
+// partial page.
+//
+// So the window is accepted and named: on the ONE start after an upgrade
+// whose migration deferred work, a query filtered on a derived value -- the
+// `sender=me` page is the one that matters -- can return fewer rows than it
+// will a moment later, until this finishes and clears the key.
+// `GET /v1/health` reports the task while it runs, so the state is visible
+// rather than merely brief. What does NOT wait is anything that settles the
+// database itself: migrations (section 4.3) and crash recovery (section 6.6)
+// both complete before the socket is bound.
 //
 // **The key is cleared only when every account ROW was reconciled**, not
 // merely every account that resumed. `accountIDs` is the set with a live

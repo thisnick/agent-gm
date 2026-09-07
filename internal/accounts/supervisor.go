@@ -763,6 +763,25 @@ func (a *Account) setState(ctx context.Context, st State, reason Reason) {
 	}
 }
 
+// MarkUnresumable records on the row that an account could not be brought up
+// at startup, so the state and state_reason say so instead of the row sitting
+// at whatever it held when the process last stopped.
+//
+// It exists because the only two ways an account's state changed were "the
+// supervisor is driving it" and "the owner acted", and there is a third: a
+// session file the process cannot open. That account has no client, so every
+// write naming it is refused -- and until this existed the refusal came with
+// a state and a reason describing the LAST run, which is the one thing an
+// operator reads to find out what is wrong now.
+//
+// `signed_out` is the state, not `error`: `error` means the supervisor is
+// retrying with backoff, and nothing is retrying here. Section 15.4's runbook
+// row already says an undecryptable data key leaves "every account
+// `signed_out` with its history intact", which is exactly what this writes.
+func (s *Supervisor) MarkUnresumable(ctx context.Context, accountID string, reason Reason) error {
+	return s.transition(ctx, accountID, StateSignedOut, reason)
+}
+
 // transition moves one account's state and, when the state or the reason
 // actually changed, writes account.state_changed and publishes to the feed.
 //

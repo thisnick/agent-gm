@@ -1439,7 +1439,18 @@ download or an open ticket is not evicted underneath itself.
   listener binds.
 - A migration needing derived data recomputed sets
   `server_meta.pending_reprocess = <task name>`; the process runs that task
-  once after startup and clears the key.
+  once after startup and clears the key. **The task runs behind the
+  listener**, on the same goroutine that resumes the accounts, because it
+  talks to phones and can take minutes — and a `/healthz` that does not answer
+  for minutes is a worse lie than a brief partial answer (§7.5: `status`
+  describes the server). The window this accepts is named rather than hidden:
+  on the one start after such an upgrade, a query filtered on a value the task
+  is still rebuilding — `sender=me` is the one that matters — may return fewer
+  rows than it will a moment later. `GET /v1/health` carries
+  `pending_reprocess` while it is outstanding, and null the rest of the time,
+  so an operator can see the window rather than infer it. What does **not**
+  wait is the database itself: the migrations above, and crash recovery
+  (§6.6), both finish before the socket is bound.
 - `PRAGMA foreign_key_check` runs after every migration in tests and must be
   empty (§13.2).
 - **Audit rows are never rewritten by a migration.** An audit row records what
@@ -1517,9 +1528,22 @@ and the data directory move together, always. If the key is lost: delete
 because it
 is not encrypted at rest; cached media and the session do not.
 
-Refusing to start with `session envelope cannot be decrypted` means the key
-differs from the one that sealed the session. Restore the original key; there
-is no in-place rotation.
+`session envelope cannot be decrypted` at startup means the key differs from
+the one that sealed that session. Restore the original key; there is no
+in-place rotation.
+
+**It does not refuse to start, and it does not stop at the first one.** An
+earlier draft of this section said the process refuses to start; the resume
+loop implemented that by returning on the first failure, and once the resume
+moved behind the listener (§4.3) that return stopped refusing anything and
+merely abandoned the walk — so whether an account came up depended on whether
+its row came before or after the bad one. Each account that cannot be resumed
+is marked `signed_out` with `state_reason: "credentials"` (§4.7), the error is
+logged naming that account, and the walk continues. That is the same rule as
+an account that will not connect, and it is the one §15.4's runbook row has
+always described: without the original key, *every* account is `signed_out`
+with its history intact — which is a state an operator can read, unlike a
+process that will not come up at all.
 
 **What is *not* encrypted at rest, stated plainly because the omission is
 load-bearing.** Message text, subjects, conversation names, participant
@@ -2246,6 +2270,7 @@ global scopes, and it is what the authorization screen discloses (§9.4).
       "last_event_at": "2026-09-05T21:02:11.000Z",
       "google": null, "backfill": { "state": "complete", … }, … }
   ],
+  "pending_reprocess": null,
   "client_source": "100.64.0.7" }
 ```
 
@@ -4561,7 +4586,7 @@ every account's.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `session envelope cannot be decrypted` at startup | `AGENT_GM_DATA_KEY` differs from the key that sealed `sessions/*.enc` | restore the original key. **There is no in-place rotation.** Without it, every account is `signed_out` with its history intact |
+| `session envelope cannot be decrypted` at startup | `AGENT_GM_DATA_KEY` differs from the key that sealed `sessions/*.enc` | restore the original key. **There is no in-place rotation.** The server still starts and serves: each account whose session will not open is marked `signed_out` / `credentials` with its history intact, and the rest resume (§4.5) |
 | every write is `not_paired` | there are **no accounts at all** | `agm pair`. A server with zero accounts is healthy (§7.5), it just cannot send |
 | a write is refused `unsupported_capability` / `not_signed_in` | that one account is not usable; the rest may be fine | see the account's `state` in `agm accounts list` |
 | an account goes to `error` with `RevokePairData` in the audit log | that phone revoked the pairing | `agm pair --account <id>`; history resumes (§4.7) |
