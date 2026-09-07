@@ -81,6 +81,16 @@ func TestEveryArtefactCarriesTheOneVersion(t *testing.T) {
 	host := runtime.GOOS + ":" + runtime.GOARCH
 	code, out := runRelease(t, []string{
 		"AGENT_GM_RELEASE_TARGETS=agent-gm:" + host + " agm:" + host,
+		// This build is not a release build, said out loud rather than
+		// inherited. `ci.yml` also runs on a `vX.Y.Z` tag, so on that run the
+		// environment carries GITHUB_REF_TYPE=tag -- and release.sh refuses
+		// to narrow the matrix on a tag, exactly as it should, which turned
+		// every tag's `ci` run red the first time one happened (v1.0.2, run
+		// 34169055217). The refusal is right and stays; what was wrong was a
+		// test taking the ref from whatever ran it, when the ref has nothing
+		// to do with what it asserts.
+		"GITHUB_REF_TYPE=branch",
+		"GITHUB_REF_NAME=one-version-test",
 	}, "build")
 	if code != 0 {
 		t.Fatalf("release.sh build failed:\n%s", out)
@@ -333,4 +343,26 @@ func healthVersion(t *testing.T, server string) string {
 		t.Fatalf("decoding /v1/health: %v", err)
 	}
 	return body.Data.Version
+}
+
+// The guard the test above says "branch" to get past, asserted directly so
+// that nobody makes a tag's `ci` run green by weakening it instead.
+//
+// `AGENT_GM_RELEASE_TARGETS` exists so a test can build one platform rather
+// than six. On a tag it is refused, because section 14.3 lists six archives
+// and a release that published five of them would be missing a platform on
+// the release page with everything else looking normal.
+func TestTheMatrixNarrowingIsRefusedOnATag(t *testing.T) {
+	host := runtime.GOOS + ":" + runtime.GOARCH
+	code, out := runRelease(t, []string{
+		"AGENT_GM_RELEASE_TARGETS=agm:" + host,
+		"GITHUB_REF_TYPE=tag",
+		"GITHUB_REF_NAME=v" + manifestVersion(t),
+	}, "build")
+	if code == 0 {
+		t.Fatalf("release.sh built a narrowed matrix on a tag:\n%s", out)
+	}
+	if !strings.Contains(out, "refused on a tag") {
+		t.Errorf("the refusal does not say why:\n%s", out)
+	}
 }
