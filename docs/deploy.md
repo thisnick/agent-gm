@@ -2,6 +2,13 @@
 
 Serves spec §14.1, §14.2, §15.1 and §15.2, and the AGPL consequence of §1.4.
 
+Two binaries, two names: **`agent-gm`** is the server (the thing in the
+container: `agent-gm serve`, `agent-gm healthcheck`), and **`agm`** is the
+command-line client you run from anywhere (`agm auth login`, `agm admin
+backup`), shipped separately as the `@agent-gm/cli` npm package. Every
+`agent-gm …` command on this page runs inside the container; every `agm …`
+command runs wherever you are.
+
 This page is for a **generic host**: one machine, Docker, a public HTTPS URL
 in front. It says what the repository ships, what the host must supply, and
 what to pin. Configuration knobs, the runtime settings table, backup mechanics
