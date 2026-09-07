@@ -14,6 +14,7 @@ serves, so a claim can be traced back to the clause it comes from.
 | [`oauth.md`](oauth.md) | Discovery, dynamic client registration, the authorization screen, enrollment codes, owner approval, tokens, revocation, and the budgets on unauthenticated endpoints |
 | [`deploy.md`](deploy.md) | The image, the Compose example, pinning by digest, the healthcheck, `/data`, and release artefacts |
 | [`operations.md`](operations.md) | The environment and settings tables, backup and restore, health and diagnosis, the runbook, the pin policy and the release procedure |
+| [`upstream-pin.md`](upstream-pin.md) | Every pinned dependency, why it is that revision, and what a bump records |
 
 Two things live outside this directory and are looked for here often enough to
 be worth naming: `../CHANGELOG.md`, which records each release with its GHCR
