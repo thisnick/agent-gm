@@ -71,7 +71,10 @@ func TestCutTagRefusesAVersionThatIsAlreadyTagged(t *testing.T) {
 
 	root := repoRoot(t)
 	tag := "v" + taken
-	if out, err := exec.Command("git", "-C", root, "tag", "-a", tag, "-m", tag).CombinedOutput(); err != nil {
+	// Lightweight, not annotated: an annotated tag needs a committer identity
+	// and a CI runner has none, which failed the whole suite rather than this
+	// one line. `cut-tag.sh` asks whether the ref exists, and both kinds do.
+	if out, err := exec.Command("git", "-C", root, "tag", tag).CombinedOutput(); err != nil {
 		t.Fatalf("creating the local tag %s: %v\n%s", tag, err, out)
 	}
 	t.Cleanup(func() {
