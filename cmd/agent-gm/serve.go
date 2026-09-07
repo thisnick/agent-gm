@@ -217,6 +217,15 @@ func buildServer(ctx context.Context, addrOverride string) (*built, int) {
 	}
 
 	sup := accounts.New(st, sessions, clk, nil)
+	// The supervisor is where account.paired, account.resumed,
+	// account.signed_out, account.pair_failed and account.state_changed are
+	// written from (spec section 12.4). Leaving its Auditor nil is the same
+	// class of mistake as leaving Sweep and Backfill nil below: every one of
+	// those kinds passed its tests against an injected recorder, and the
+	// shipped binary wrote none of them -- a Slice 3 review found no
+	// `account.*` row of any kind in a server that had paired twice and
+	// resumed three times.
+	sup.Audit = audit.NewFieldsAppender(aud, "server")
 	deps := &api.HandlerDeps{
 		Store:      st,
 		Sessions:   sessions,

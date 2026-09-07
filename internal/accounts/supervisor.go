@@ -319,7 +319,19 @@ func (s *Supervisor) PairAs(ctx context.Context, expectedID string, backend gm.B
 		// duplicated history (spec section 4.7).
 		kind = AuditResumed
 	}
-	s.audit(ctx, kind, map[string]any{"account_id": id, "phone_id": dev.PhoneID})
+	// The payload names the device by INDEX and not by phone ID. A backend's
+	// phone ID embeds the Google account address (the fake's is
+	// `<address>/<index>`, and libgm's is derived the same way), and section
+	// 12.2 forbids that address in an audit payload -- so the redactor
+	// refuses it. It refuses the whole ROW, not the field: carrying the phone
+	// ID here meant that once `serve` finally had an Auditor at all, a
+	// pairing still wrote nothing and said so only in a warning.
+	s.audit(ctx, kind, map[string]any{
+		"account_id":   id,
+		"device_index": dev.DeviceIndex,
+		"device_count": dev.DeviceCount,
+		"resumed":      resumed,
+	})
 
 	a := s.register(id, address, backend)
 	if err := a.PersistSession(ctx); err != nil {

@@ -111,11 +111,20 @@ var GoogleCookieNames = []string{
 // like. Their values are hashed rather than refused: the whole point of the
 // section 12.2 rule is that a phone number can still be *correlated* across
 // rows, just never read.
+//
+// `from` and `to` are deliberately NOT in this list, and the reason is
+// section 12.4's own wording: `account.state_changed` carries "(from, to,
+// state_reason)", where both values are state names. Hashing them
+// unconditionally would turn every state change into a pair of salted digests
+// -- a row that records that something changed and then refuses to say what
+// to. A phone number under either key is still hashed, by scrubString, which
+// recognises one by its shape; what is given up is only the hashing of a
+// phone number that does not look like one under those two keys.
 var phoneKeys = func() map[string]bool {
 	m := map[string]bool{}
 	for _, n := range []string{
 		"phone", "phone_number", "number", "msisdn", "e164", "participant_address",
-		"address", "recipient", "sender", "to", "from", "destination", "caller",
+		"address", "recipient", "sender", "destination", "caller",
 	} {
 		m[normaliseKey(n)] = true
 	}
