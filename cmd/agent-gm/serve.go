@@ -193,6 +193,11 @@ func buildServer(ctx context.Context, addrOverride string) (*built, int) {
 			Msg("settled operations left running by a previous process; nothing was resent")
 	}
 
+	// Name this build in the phone's paired-devices list, before anything can
+	// pair. Left alone, libgm tells the phone it is "libgm" and the owner
+	// sees the library rather than the thing they paired (section 3.2).
+	gm.SetDeviceIdentity(buildVersion())
+
 	authzSvc, err := authz.New(st, clk, settingsAdapter{set}, nil, authz.Config{
 		AdminSecret:       cfg.AdminSecret,
 		PublicURL:         cfg.PublicURL,
@@ -673,7 +678,6 @@ func vcsSetting(key string) string {
 	}
 	return ""
 }
-
 
 // mountOAuth serves spec section 9.1's public routes from the authorization
 // server and everything else from the REST surface.

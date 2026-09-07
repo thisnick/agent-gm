@@ -731,3 +731,45 @@ func parseUUID(s string) (string, error) {
 	}
 	return s, nil
 }
+
+// Assertion 22: `BrowserDetails.OS` is the name the phone shows in its
+// paired-devices list, it defaults to `"libgm"`, and it is what the gaia
+// pairing request carries.
+//
+// Agent GM overrides it (`internal/gm/device.go`) so the owner's phone lists
+// "Agent GM" rather than the library. That override is a mutation of an
+// upstream package-level variable, so every one of its premises is a claim
+// about the pinned tree, and this is where such claims are asserted rather
+// than assumed. A pin bump that renames the field, moves the default, or stops
+// sending it through `sendGaiaPairingMessage` fails here instead of failing
+// silently on the owner's phone, where nobody would look.
+func TestAssertion22_DeviceNameIsBrowserDetailsOS(t *testing.T) {
+	dir := upstreamDir(t)
+
+	// The field exists, is exported and package-level, and defaults to the
+	// library's own name -- which is the thing being replaced.
+	config := read(t, dir, "pkg", "libgm", "util", "config.go")
+	mustContain(t, config, "var BrowserDetailsMessage = &gmproto.BrowserDetails{",
+		"BrowserDetailsMessage is an exported package-level variable")
+	mustContain(t, config, `OS:          "libgm"`,
+		`BrowserDetails.OS defaults to "libgm"`)
+
+	// Upstream says, in its own words, that this field is what the phone
+	// displays. This is the whole basis for choosing OS over UserAgent,
+	// BrowserType or DeviceType, so it is quoted rather than paraphrased.
+	mustContain(t, read(t, dir, "pkg", "connector", "example-config.yaml"),
+		"This is the name that shows up in the paired devices list",
+		"upstream documents BrowserDetails.OS as the paired-devices name")
+
+	// And upstream's own connector sets that exact field to rename itself,
+	// which is the pattern Agent GM follows instead of forking.
+	mustContain(t, read(t, dir, "pkg", "connector", "connector.go"),
+		"util.BrowserDetailsMessage.OS = gc.Config.DeviceMeta.OS",
+		"upstream renames itself by assigning BrowserDetailsMessage.OS")
+
+	// The gaia pairing request -- the flow Agent GM uses -- carries it. If
+	// this stops being true the override compiles, runs, and does nothing.
+	mustContain(t, read(t, dir, "pkg", "libgm", "pair_google.go"),
+		"BrowserDetails:   util.BrowserDetailsMessage,",
+		"the gaia pairing request carries BrowserDetailsMessage")
+}
