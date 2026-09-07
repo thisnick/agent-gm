@@ -3491,8 +3491,13 @@ directly, so anything the CLI can do an agent can do too, and vice versa.
 ### 11.1 Global flags
 
 ```text
---server <url>        Override the configured server.
---profile <name>      Select a saved server and authorization profile.
+--server <url>        Select a stored profile by its server. It does not
+                      override anything and it cannot introduce a new server:
+                      on any command but `agm auth login` a URL no profile
+                      holds is refused (§11.5).
+--profile <name>      Select a stored profile by name, for THIS invocation
+                      only. It does not change which profile is active.
+--credentials-file    Where profiles are read and written (§11.5).
 --json                Emit one stable JSON value on stdout.
 --output <format>     table (default) | json | jsonl. It is a FORMAT on every
                       command, without exception -- `agm attachments download`
@@ -3610,10 +3615,14 @@ agm operations list [--account] [--kind|--status|--terminal|--after|--before|--a
 agm operations show <op-id>
 agm operations wait <op-id> [--for sent|delivered|read|terminal] [--timeout 60s]
 
-agm auth login [--admin] [--server <url>] [--scopes ...] [--no-browser]
-               [--secret-stdin]
+agm auth login [--admin] [--server <url>] [--profile <name>] [--scopes ...]
+               [--no-browser] [--secret-stdin]
 agm auth logout
 agm auth whoami
+
+agm profiles list                  # every stored profile; the active one marked
+agm profiles use <name>            # make one the active profile
+agm profiles remove <name>         # forget one locally
 
 agm admin settings list
 agm admin settings get <key>
@@ -3940,7 +3949,7 @@ Precedence:
 
 | Source | Use |
 |---|---|
-| `--server`, else `AGENT_GM_URL`, else the profile's server | which server a command talks to |
+| `--server`, else `AGENT_GM_URL`, else the **active** profile's server | which server a command talks to. None of the three resolving is **exit 9** naming `agm auth login --server <url>`: there is no built-in hostname to fall back to |
 | `AGENT_GM_ACCESS_TOKEN` | one access token, used as given, not refreshable |
 | `AGENT_GM_REFRESH_TOKEN_FILE` + `AGENT_GM_CLIENT_ID` | automation. Every invocation exchanges the token and rewrites the file with the rotated value, atomically, at mode `0600` |
 | the stored profile | the ordinary case, written by `agm auth login`. **Refreshed exactly like the refresh-file path** — see below |
@@ -3957,10 +3966,14 @@ an expiry, and both are used:
   then is any remaining failure reported.
 - An admin session refreshes at `POST /v1/auth/refresh` and an OAuth profile at
   `/oauth/token`. The two paths do not cross (§9.6).
-- A profile with no refresh token, or one whose `expires_at` is absent or
-  unreadable — an older build wrote it, or it was hand-edited — falls back to
-  the on-`401` path rather than refusing to run or refreshing on every
+- A profile with no refresh token, or no recorded expiry, or one whose expiry
+  is unreadable — an older build wrote it, or it was hand-edited — falls back
+  to the on-`401` path rather than refusing to run or refreshing on every
   invocation.
+- The expiry the CLI records is the server's **`access_token_expires_at`**.
+  Naming the field is not pedantry: a build that decoded `expires_at` instead
+  recorded no expiry at all on any admin profile, so the proactive half of
+  this rule silently did nothing and only the `401` path ever fired.
 
 > This is stated because it was absent, and the absence cost an hour. The
 > stored profile was the one credential source the CLI did **not** refresh; an
@@ -3988,8 +4001,33 @@ carrying no `iss` at all**, because the server's metadata advertises
 refused there and is issued only by `agm auth login --admin`, which exchanges
 `AGENT_GM_ADMIN_SECRET` over `--secret-stdin` or a TTY prompt.
 
-Each profile is bound to an exact server issuer and resource. Changing
-`--server` selects credentials for that server; it never forwards one
+**Profiles are explicit and named for their server; there is no "default".**
+`agm auth login --server <url>` creates a profile whose name is the server's
+**host** (`gm.example.test`), or whatever `--profile` says, and records it as
+`active_profile` in `credentials.json`. Every later command uses the active
+profile and needs no `--server`. `agm profiles list|use|remove` manage them —
+`list` marks the active one, and `remove` never leaves `active_profile` naming
+a profile that is gone. `--profile <name>` and `AGENT_GM_PROFILE` select one
+for a single invocation without changing which is active.
+
+`--server` on a command **other than** `agm auth login` must name a server a
+stored profile already holds. One that does not is `invalid_request` naming
+`agm auth login --server`, because the alternative is a command that appears
+to work while presenting one server's token to another.
+
+A `credentials.json` carrying a profile literally named `default` is migrated
+on read: it is renamed to its server's host and becomes the active profile,
+idempotently and preserving every other field. A file with no `active_profile`
+and exactly one profile treats that one as active.
+
+> There is no built-in server anywhere in the CLI. A hostname compiled in is a
+> default that is right for one deployment and silently wrong for every other,
+> and it is how a command ends up talking to somebody else's server without
+> saying so. With nothing configured, `agm` fails and names
+> `agm auth login --server`.
+
+Each profile is bound to an exact server issuer and resource. Selecting a
+different profile selects credentials for that server; it never forwards one
 profile's token to a new origin.
 
 ---
