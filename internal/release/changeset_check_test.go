@@ -167,17 +167,25 @@ func TestTheChangesetCheckIsAJobOnEveryPullRequest(t *testing.T) {
 		t.Error("the changeset job does not diff against the pull request's base, so it is " +
 			"asking about the wrong set of files")
 	}
-	// V-3. Without this, `git mv internal/a.go docs/a.md` reports `docs/a.md`
-	// alone and the check calls a deleted Go file documentation.
-	if !strings.Contains(ci, "--no-renames") {
-		t.Error("the changeset job does not pass --no-renames, so git collapses a rename to " +
-			"its destination: moving code under docs/ would classify as documentation-only")
-	}
-	// V-4. Three dots, the merge base -- the query the script documents and
-	// the one these tests describe. A two-dot diff also carries everything
-	// merged into main since the branch started.
-	if !strings.Contains(ci, `"${base}...${head}"`) {
-		t.Error("the changeset job uses a two-dot diff; it asks how the branch differs from " +
-			"main today rather than what the branch changed")
+	// V-3 and V-4, as ONE assertion on the INVOCATION. Asserting the flag
+	// alone was satisfied by the comment above the command that explains the
+	// flag: the reviewer deleted `--no-renames` from the command itself and
+	// all 52 tests stayed green, which is a guard that has stopped working
+	// while still reading like one. The whole command line occurs once, and
+	// no comment can satisfy it.
+	//
+	// --no-renames: git collapses a rename to its destination, so
+	// `git mv internal/a.go docs/a.md` reports `docs/a.md` alone and the
+	// check would call a deleted Go file documentation.
+	// Three dots: the merge base -- what this branch changed, rather than how
+	// it differs from main today, which also carries everything merged into
+	// main since it started.
+	const invocation = `git diff --no-renames --name-only "${base}...${head}"`
+	if !strings.Contains(ci, invocation) {
+		t.Error("the changeset job does not run, exactly:\n  " + invocation + "\n" +
+			"Without --no-renames a rename of code into docs/ classifies as " +
+			"documentation-only; with a two-dot diff it asks the wrong question. Both " +
+			"halves are asserted here as one line, because a flag named in a comment " +
+			"satisfied a check for the flag alone")
 	}
 }

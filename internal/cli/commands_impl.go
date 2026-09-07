@@ -509,7 +509,7 @@ func (r *runner) authLogin(inv *invocation) error {
 	}
 	// A session is narrowed at the moment it is minted and never afterwards:
 	// a refresh cannot widen one.
-	if len(session.Scopes) == 4 {
+	if grantsEveryAdminScope(session.Scopes) {
 		r.out.Infof("Narrow with --scopes if this machine does not need writes.")
 	}
 	// The tokens are stored, not printed: stdout is a transcript, and a
@@ -520,6 +520,31 @@ func (r *runner) authLogin(inv *invocation) error {
 		Warnings:  resp.Warnings,
 		RequestID: resp.RequestID,
 	})
+}
+
+// adminBootstrapScopes is what POST /v1/auth/admin-session mints when nothing
+// is asked for (spec section 9.7). It is the server's `AdminBootstrapScopes`,
+// written out here because `agm` is a REST client and imports no server
+// package -- so it is compared as a SET rather than counted: a count says
+// "four scopes" and would go on being true of a narrowed four out of five.
+var adminBootstrapScopes = []string{"admin", "messages:read", "messages:write", "messages:delete"}
+
+// grantsEveryAdminScope reports whether a session came back un-narrowed, which
+// is the only case the narrowing hint is addressed to.
+func grantsEveryAdminScope(granted []string) bool {
+	if len(granted) != len(adminBootstrapScopes) {
+		return false
+	}
+	have := make(map[string]bool, len(granted))
+	for _, s := range granted {
+		have[s] = true
+	}
+	for _, want := range adminBootstrapScopes {
+		if !have[want] {
+			return false
+		}
+	}
+	return true
 }
 
 // readSecret reads AGENT_GM_ADMIN_SECRET from stdin or a prompt. It is never

@@ -103,6 +103,23 @@ func TestTheVersionEntryLandsInTheHouseFormat(t *testing.T) {
 		t.Errorf("an entry was dropped:\n%s", got)
 	}
 
+	// A changeset committed in an earlier pull request comes back from the
+	// generator with its short commit in front of the sentence, and one added
+	// in this pull request does not -- two shapes in one list, and a commit is
+	// not what this file is for.
+	withHash := strings.Replace(fixtureWritten,
+		"- Versions are managed", "- 7fae2a9: Versions are managed", 1)
+	code, log, got = runFormat(t, fixtureChangelog, withHash)
+	if code != 0 {
+		t.Fatalf("changelog-format failed:\n%s", log)
+	}
+	if strings.Contains(got, "7fae2a9") {
+		t.Errorf("a bullet kept its commit prefix:\n%s", got)
+	}
+	if !strings.Contains(got, "- Versions are managed with changesets") {
+		t.Errorf("stripping the commit prefix damaged the sentence:\n%s", got)
+	}
+
 	// Order: [Unreleased], then the new release, then the previous one. The
 	// action inserts its entry after the FIRST LINE of the file, which is
 	// above the preamble and above [Unreleased] -- so getting this wrong is
