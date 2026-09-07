@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 )
 
@@ -81,6 +82,58 @@ func (s *Store) AppendAudit(ctx context.Context, e AuditEvent) (AuditEvent, erro
 		return err
 	})
 	return e, err
+}
+
+// AppendAuditOnce appends one audit row unless a row of the same kind about
+// the same target is already there, and reports whether this call was the one
+// that wrote it.
+//
+// It exists for the two `*.expired` kinds of section 12.4. Expiry is derived
+// at read time rather than swept (see internal/oauth's StatusExpired), so the
+// moment it becomes true is the first read that observes it -- and every
+// later read observes it again. Without a condition, "audit the expiry" would
+// mean one row per poll of the waiting page.
+//
+// This is still append-only: the guard is a WHERE NOT EXISTS on the INSERT,
+// not an UPDATE. Nothing here rewrites a row, and the whole statement runs on
+// the single writer, so two concurrent observers cannot both win.
+//
+// TargetType and TargetID are the identity of the thing that expired and are
+// required: they are what makes "already recorded" a question with an answer.
+func (s *Store) AppendAuditOnce(ctx context.Context, e AuditEvent) (bool, error) {
+	if e.TargetType == "" || e.TargetID == "" {
+		return false, errors.New("store: AppendAuditOnce needs a target_type and a target_id")
+	}
+	if e.ID == "" {
+		e.ID = AuditID()
+	}
+	if e.Result == "" {
+		e.Result = AuditOK
+	}
+	if e.PayloadJSON == "" {
+		e.PayloadJSON = "{}"
+	}
+	e.CreatedAtMS = s.clock.Now().UnixMilli()
+	var wrote bool
+	err := s.Write(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `
+			INSERT INTO audit_events (`+auditColumns+`)
+			SELECT ?,?,?,?,?,?,?,?,?,?
+			 WHERE NOT EXISTS (
+			     SELECT 1 FROM audit_events
+			      WHERE kind = ? AND target_type = ? AND target_id = ?)`,
+			e.ID, e.Kind, nullString(e.AccountID), nullString(e.AuthorizationID),
+			e.TargetType, e.TargetID, e.Result,
+			nullString(e.Source), e.PayloadJSON, e.CreatedAtMS,
+			e.Kind, e.TargetType, e.TargetID)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		wrote = n == 1
+		return err
+	})
+	return wrote, err
 }
 
 // AuditQuery is the filter set of GET /v1/admin/audit and

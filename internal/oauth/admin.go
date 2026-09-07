@@ -197,6 +197,11 @@ func (s *Server) ListEnrollmentCodes(ctx context.Context) ([]EnrollmentCode, *ap
 	}
 	out := make([]EnrollmentCode, 0, len(rows))
 	for _, row := range rows {
+		// The owner's listing is a derived read of the same expiry the
+		// submission path derives, so it records it on the same terms
+		// (section 12.4). AppendAuditOnce means listing twice is still one
+		// row.
+		s.noteEnrollmentExpired(ctx, row)
 		out = append(out, enrollmentDTO(row))
 	}
 	return out, nil
@@ -211,6 +216,7 @@ func (s *Server) GetEnrollmentCode(ctx context.Context, id string) (*EnrollmentC
 		}
 		return nil, apierr.New(apierr.CodeInternalError, "the code could not be read")
 	}
+	s.noteEnrollmentExpired(ctx, row)
 	out := enrollmentDTO(row)
 	return &out, nil
 }
@@ -472,7 +478,7 @@ func (s *Server) requestDTO(ctx context.Context, row store.AuthorizationRequest)
 		RequestedScopes: store.SplitScopes(row.RequestedScopes),
 		SelectedScopes:  store.SplitScopes(row.SelectedScopes),
 		GrantedScopes:   store.SplitScopes(row.GrantedScopes),
-		Status:          s.effectiveStatus(row),
+		Status:          s.effectiveStatus(ctx, row),
 		DenyReason:      row.DenyReason,
 		Source:          row.Source,
 		ExpiresAt:       msTime(row.ExpiresAtMS),

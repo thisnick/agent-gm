@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"time"
@@ -49,12 +50,72 @@ func (s *Server) resolveRequest(r *http.Request) (store.AuthorizationRequest, bo
 	return req, true
 }
 
-// effectiveStatus folds expiry into the stored status.
-func (s *Server) effectiveStatus(req store.AuthorizationRequest) string {
+// effectiveStatus folds expiry into the stored status, and records the expiry
+// the first time it is observed.
+//
+// Section 12.4 names "authorization request creation, approval, denial and
+// expiry" among the things `audit_events` records. Expiry is not a decision
+// anybody takes, so there is no handler to write the row from: the moment it
+// becomes true is the first read that sees a pending request past its
+// deadline. That read writes `authorization.expired`, once, through
+// AppendAuditOnce -- so a waiting page polling every two seconds produces one
+// row and not one per poll, and no row is ever rewritten.
+//
+// The audit failure is deliberately not returned. Every caller of this is
+// rendering a status; failing the render because a metadata row could not be
+// written would make the audit log an availability dependency of the page.
+func (s *Server) effectiveStatus(ctx context.Context, req store.AuthorizationRequest) string {
 	if req.Status == store.AuthRequestPending && s.now().UnixMilli() >= req.ExpiresAtMS {
+		s.noteRequestExpired(ctx, req)
 		return StatusExpired
 	}
 	return req.Status
+}
+
+// noteRequestExpired writes the one `authorization.expired` row for a request.
+// The payload carries IDs only: no code, no token, no cookie (section 12.4).
+func (s *Server) noteRequestExpired(ctx context.Context, req store.AuthorizationRequest) {
+	_, err := s.st.AppendAuditOnce(ctx, store.AuditEvent{
+		Kind:       "authorization.expired",
+		TargetType: "authorization_request",
+		TargetID:   req.ID,
+		Result:     store.AuditOK,
+		Source:     req.Source,
+		PayloadJSON: mustJSON(map[string]any{
+			"request_id": req.ID,
+			"client_id":  req.ClientID,
+			"outcome":    "expired_before_approval",
+		}),
+	})
+	if err != nil {
+		s.logf("recording an authorization request expiry failed", "request_id", req.ID, "error", err)
+	}
+}
+
+// noteEnrollmentExpired writes the one `enrollment.expired` row for a code
+// that was still live -- neither consumed nor revoked -- when its deadline
+// passed. Like the request row above it is written by the first read that
+// observes the expiry and by no later one.
+func (s *Server) noteEnrollmentExpired(ctx context.Context, code store.EnrollmentCode) {
+	if code.Consumed() || code.Revoked() || code.ExpiresAtMS == 0 {
+		return
+	}
+	if s.now().UnixMilli() < code.ExpiresAtMS {
+		return
+	}
+	_, err := s.st.AppendAuditOnce(ctx, store.AuditEvent{
+		Kind:       "enrollment.expired",
+		TargetType: "enrollment_code",
+		TargetID:   code.ID,
+		Result:     store.AuditOK,
+		PayloadJSON: mustJSON(map[string]any{
+			"enrollment_code_id": code.ID,
+			"outcome":            "expired_unconsumed",
+		}),
+	})
+	if err != nil {
+		s.logf("recording an enrollment code expiry failed", "enrollment_code_id", code.ID, "error", err)
+	}
 }
 
 // requestPage is `GET /oauth/requests/{id}`. It answers 200 for EVERY state
@@ -68,7 +129,7 @@ func (s *Server) requestPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	handle, _ := s.contextHandle(r)
-	status := s.effectiveStatus(req)
+	status := s.effectiveStatus(r.Context(), req)
 	data := waitingPageData{
 		RequestID: req.ID,
 		Status:    status,
@@ -109,7 +170,7 @@ func (s *Server) requestStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	s.writeJSON(w, http.StatusOK, statusDTO{
 		RequestID:           req.ID,
-		Status:              s.effectiveStatus(req),
+		Status:              s.effectiveStatus(r.Context(), req),
 		ExpiresInSeconds:    remaining,
 		PollIntervalSeconds: defaultPollInterval,
 	})
@@ -150,7 +211,7 @@ func (s *Server) requestComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch s.effectiveStatus(req) {
+	switch s.effectiveStatus(r.Context(), req) {
 	case store.AuthRequestDenied:
 		s.clearContextCookie(w)
 		s.redirectTo(w, req.RedirectURI, url.Values{

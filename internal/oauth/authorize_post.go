@@ -162,6 +162,14 @@ func (s *Server) authorizePost(w http.ResponseWriter, r *http.Request) {
 				"the code could not be checked"))
 			return
 		}
+		// The code the caller presented is not named to them, but an
+		// expiry that has just been observed is recorded for the owner
+		// (section 12.4). noteEnrollmentExpired is a no-op for a code that
+		// was revoked, consumed or simply unknown, so this stays one
+		// indistinguishable refusal.
+		if cerr == nil {
+			s.noteEnrollmentExpired(r.Context(), code)
+		}
 		// ONE generic message, byte-identical for unknown, expired, revoked
 		// and consumed. No pending request is created and nothing is
 		// consumed (section 9.4, test 5).
