@@ -218,25 +218,20 @@ func TestTheDocsAndTheNotesAgreeOnTheCosignIdentity(t *testing.T) {
 
 // --- the reviewer's two plants, un-skipped as R-1 and R-2 landed --------------
 
-// PLANT (reviewer, slice 4). `do_notes` defaults AGENT_GM_IMAGE_DIGEST to the
-// literal string "unknown" and `do_publish` publishes it without complaint, so
-// `devbox run release` -- build, sign, npm-pack, publish, which is the
-// documented local release path and sets no digest -- writes a release note
-// telling every deployment to pin `ghcr.io/thisnick/agent-gm@unknown`. The
-// workflow's own comment says "a release note that says @unknown is worse than
-// a release that waits", but that judgement lives in a YAML step and not in
-// the script the note comes from.
+// REMOVED, at the reviewer's own request and on his own reasoning:
+// TestPublishRefusesToRecordAnUnknownImageDigest.
 //
-// Unblocked by: `do_publish` refusing when the digest is absent or not a
-// `sha256:` digest. Wire assumption: the variable stays AGENT_GM_IMAGE_DIGEST.
-func TestPublishRefusesToRecordAnUnknownImageDigest(t *testing.T) {
-	sh := repoFile(t, "scripts/release.sh")
-	pub := regexp.MustCompile(`(?s)do_publish\(\) \{.*?\n\}`).FindString(sh)
-	if !strings.Contains(pub, "AGENT_GM_IMAGE_DIGEST") || !strings.Contains(pub, "sha256:") {
-		t.Error("do_publish does not refuse an absent or malformed image digest; a release " +
-			"note that pins @unknown is a deployment instruction nobody can follow")
-	}
-}
+// It asserted `Contains(do_publish, "sha256:")`. R-12 moved that literal into
+// `$digest_shape`, so the substring came from the die MESSAGE rather than
+// from any check -- the test passed because of an error string, which is
+// precisely the failure mode these rounds have been about.
+//
+// Not taken on his word. A do_publish with the guard replaced by
+// `if false; then die "AGENT_GM_IMAGE_DIGEST is not a sha256: digest"; fi`
+// leaves it GREEN, while
+// `TestPublishRefusesADigestThatIsAbsentOrMalformed` -- which runs the script
+// -- fails all six subtests. The behaviour is covered; it was the assertion
+// that had stopped meaning anything.
 
 // PLANT (reviewer, slice 4). `require_tag` only checks that the ref is a tag
 // beginning with `v`, while every comment in the file says "only a vX.Y.Z tag
