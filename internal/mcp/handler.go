@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -306,10 +307,17 @@ func (h *Handler) verifyToken(ctx context.Context, token string, r *http.Request
 	return &sdkauth.TokenInfo{
 		Scopes: auth.Scopes.Strings(),
 		// UserID is the SDK's session-hijacking guard: it refuses a request
-		// that continues a session established by a different user. Keying it
-		// on the authorization means a second connector's token can never
-		// pick up the first one's session, which is the property section 8.1
-		// used to get for free by having no sessions at all.
+		// that continues a session established by a different user.
+		//
+		// **It is inert here and there is no test for it**, because the
+		// transport is stateless (see the Stateless option above) and a
+		// stateless transport has no session to hijack: the SDK reads this
+		// field only in `serveStateful` (mcp/streamable.go:569,713). It is
+		// set anyway, and said to be inert rather than quietly dropped,
+		// because it costs one field and it is the property section 8.1 used
+		// to get for free by having no sessions at all -- so the day
+		// `Stateless` is reconsidered, the guard is already keyed on the
+		// authorization rather than being remembered.
 		UserID:     auth.ID,
 		Expiration: auth.ExpiresAt,
 		Extra: map[string]any{
@@ -628,8 +636,29 @@ func setSecurityHeaders(w http.ResponseWriter) {
 	h.Set("X-Frame-Options", "DENY")
 }
 
-// sameOrigin compares an `Origin` header with the configured public URL. The
-// comparison is on scheme and host only, because that is all an `Origin` is.
+// sameOrigin compares an `Origin` header with the configured public URL on
+// **scheme, host and port, and nothing else**, because that is all an origin
+// is (RFC 6454).
+//
+// It used to compare the trimmed strings, which read the same and was not:
+// AGENT_GM_PUBLIC_URL is allowed to carry a path -- `loadPublicURL` refuses
+// only a query or a fragment -- and an `Origin` header never carries one. So a
+// deployment at `https://example.test/gm` answered `403` to every browser
+// client on its own correct origin, which is the one case the check exists to
+// let through. `https://gm.agent-wx.app` has no path and was never affected,
+// which is exactly why it survived a slice.
 func sameOrigin(origin, publicURL string) bool {
-	return strings.EqualFold(strings.TrimRight(origin, "/"), strings.TrimRight(publicURL, "/"))
+	o, err := url.Parse(origin)
+	if err != nil || o.Scheme == "" || o.Host == "" {
+		// `null` and anything unparseable are not this origin. A browser
+		// sends `Origin: null` from a sandboxed or redirected context, and
+		// treating it as a match would admit the case the header exists to
+		// mark as untrusted.
+		return false
+	}
+	p, err := url.Parse(publicURL)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(o.Scheme, p.Scheme) && strings.EqualFold(o.Host, p.Host)
 }

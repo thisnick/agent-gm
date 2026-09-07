@@ -202,14 +202,29 @@ func (bl *Blocker) park() {
 	<-bl.release
 }
 
-// WaitFor blocks until n calls are parked. It has no timeout: the test's own
-// deadline is the timeout, and a bounded wait here would turn "the budget is
-// broken" into "the budget is flaky".
-func (bl *Blocker) WaitFor(n int) {
-	for range n {
-		<-bl.arrived
+// WaitFor blocks until n calls are parked, or reports that they never
+// arrived.
+//
+// The bound is the point. Without it a test that is waiting for a refusal
+// that a broken budget will never send hangs until the package timeout, and a
+// regression then reports as "panic: test timed out after 10m0s" rather than
+// as a named assertion -- ten minutes of CI spent saying nothing about the
+// budget. The wait is long enough that a loaded machine cannot trip it and
+// short enough that a failure is a failure.
+func (bl *Blocker) WaitFor(n int) error {
+	deadline := time.After(BlockerWait)
+	for i := range n {
+		select {
+		case <-bl.arrived:
+		case <-deadline:
+			return fmt.Errorf("only %d of %d calls reached the backend within %s", i, n, BlockerWait)
+		}
 	}
+	return nil
 }
+
+// BlockerWait bounds WaitFor.
+const BlockerWait = 30 * time.Second
 
 // Release lets every parked call, and every later one, through.
 func (bl *Blocker) Release() { bl.once.Do(func() { close(bl.release) }) }

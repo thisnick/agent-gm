@@ -215,8 +215,22 @@ func TestTest25ConcurrencyBudget(t *testing.T) {
 	// is broken reports "timeout", which says nothing about the budget.
 	t.Cleanup(blocker.Release)
 
+	// The loop count is a LITERAL, not the constant under test.
+	//
+	// Deriving it from `mcp.MaxInFlightPerAuthorization` is how the reviewer's
+	// plant -- multiplying both limits by a thousand -- cost ten minutes and
+	// reported as a package timeout instead of as an assertion: the test
+	// obligingly fired eight thousand goroutines and waited for them. A test
+	// that scales with the thing it is checking cannot fail quickly, so the
+	// number is written down and the constant is checked against it.
+	const inFlight = 8
+	if mcp.MaxInFlightPerAuthorization != inFlight {
+		t.Fatalf("section 8.1's per-authorization budget is %d, and this test is written "+
+			"for %d; change both deliberately", mcp.MaxInFlightPerAuthorization, inFlight)
+	}
+
 	var wg sync.WaitGroup
-	for i := range mcp.MaxInFlightPerAuthorization {
+	for i := range inFlight {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -232,12 +246,14 @@ func TestTest25ConcurrencyBudget(t *testing.T) {
 	}
 	// Every one of the eight is now inside the backend, which means every one
 	// of them holds a slot.
-	blocker.WaitFor(mcp.MaxInFlightPerAuthorization)
+	if err := blocker.WaitFor(inFlight); err != nil {
+		t.Fatalf("the calls that were supposed to fill the budget never got there: %v", err)
+	}
 
 	ninth := h.rawCall(h.Token, "ping", nil)
 	if ninth.Status != http.StatusTooManyRequests {
 		t.Fatalf("with %d calls in flight the next one answered %d, want 429",
-			mcp.MaxInFlightPerAuthorization, ninth.Status)
+			inFlight, ninth.Status)
 	}
 	if retry := ninth.Headers.Get("Retry-After"); retry == "" {
 		t.Error("the 429 carries no Retry-After; a client with no delay to obey guesses, " +
@@ -261,5 +277,48 @@ func TestTest25ConcurrencyBudget(t *testing.T) {
 	if after := h.rawCall(h.Token, "ping", nil); after.Status != http.StatusOK {
 		t.Errorf("after the held calls settled, a new call answered %d, want 200 -- "+
 			"the budget must be released, not spent", after.Status)
+	}
+}
+
+// TestSameOriginComparesTheOriginAndNotTheURL is review finding B-7.
+//
+// An `Origin` is a scheme, a host and a port, and never a path (RFC 6454).
+// `AGENT_GM_PUBLIC_URL` is allowed to carry one. The check used to compare the
+// two trimmed strings, so a deployment under a path answered `403` to every
+// browser client on its own correct origin -- the one case the check exists to
+// let through -- while `https://gm.agent-wx.app`, which has no path, was
+// unaffected. That is why it survived a slice: the deployment we have is the
+// one shape that hides it.
+func TestSameOriginComparesTheOriginAndNotTheURL(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		publicURL string
+		origin    string
+		want      int
+	}{
+		{"the exact origin", "https://gm.example.test", "https://gm.example.test", http.StatusOK},
+		{"a trailing slash on the origin", "https://gm.example.test", "https://gm.example.test/", http.StatusOK},
+		{"a public URL under a path", "https://gm.example.test/gm", "https://gm.example.test", http.StatusOK},
+		{"a public URL with a trailing slash", "https://gm.example.test/", "https://gm.example.test", http.StatusOK},
+		{"another host", "https://gm.example.test", "https://evil.example", http.StatusForbidden},
+		{"another scheme", "https://gm.example.test", "http://gm.example.test", http.StatusForbidden},
+		{"another port", "https://gm.example.test", "https://gm.example.test:8443", http.StatusForbidden},
+		// A browser sends `Origin: null` from a sandboxed or a
+		// cross-origin-redirected context. It is the header saying "do not
+		// trust this", so it must not match.
+		{"null", "https://gm.example.test", "null", http.StatusForbidden},
+		{"a bare host with no scheme", "https://gm.example.test", "gm.example.test", http.StatusForbidden},
+		// A host that merely CONTAINS ours. String comparison got this right
+		// by accident; parsing must get it right on purpose.
+		{"a look-alike host", "https://gm.example.test", "https://gm.example.test.evil.example", http.StatusForbidden},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newHarnessAt(t, c.publicURL)
+			answer := h.rawCallWith(h.Token, "ping", nil, map[string]string{"Origin": c.origin})
+			if answer.Status != c.want {
+				t.Fatalf("public URL %q with Origin %q answered %d, want %d",
+					c.publicURL, c.origin, answer.Status, c.want)
+			}
+		})
 	}
 }

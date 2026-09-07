@@ -88,6 +88,14 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
+	return newHarnessAt(t, publicURL)
+}
+
+// newHarnessAt builds the harness with a chosen AGENT_GM_PUBLIC_URL, for the
+// tests that are about what that URL's SHAPE does -- a path on it, a trailing
+// slash on it -- rather than about its value.
+func newHarnessAt(t *testing.T, publicURL string) *harness {
+	t.Helper()
 	ctx := context.Background()
 	dir := t.TempDir()
 	clk := clock.NewFake()

@@ -454,25 +454,72 @@ func TestSlice3Test21Transport(t *testing.T) {
 func TestSlice3ProtocolRevisions(t *testing.T) {
 	h := newHarness(t)
 
-	// The current revision, asserted through the OFFICIAL SDK client, which
-	// asks for the newest it knows. This is the test that fails loudly if a
-	// future SDK bump changes the rule that `2026-07-28` needs a stateless
-	// transport (mcp/streamable.go:871): the negotiation would silently drop
-	// to `2025-11-25` and this would catch it.
-	negotiated := h.session(h.Token).InitializeResult().ProtocolVersion
-	if negotiated != mcp.ProtocolVersion {
-		t.Fatalf("the reference client negotiated %q, want section 8.1's %q", negotiated, mcp.ProtocolVersion)
+	// `2026-07-28` is reached through `server/discover`, and only through it.
+	//
+	// `initialize` is deprecated at that revision, so the SDK caps it at
+	// `2025-11-25` -- asserted below. Driving `server/discover` by hand,
+	// rather than only reading what the SDK client negotiated, is what makes
+	// this an assertion about the SERVER: the client's own answer would still
+	// look right if it had negotiated with itself.
+	discover := h.rawCallWith(h.Token, "server/discover", map[string]any{
+		"_meta": map[string]any{
+			"io.modelcontextprotocol/protocolVersion":    mcp.ProtocolVersion,
+			"io.modelcontextprotocol/clientCapabilities": map[string]any{},
+			"io.modelcontextprotocol/clientInfo": map[string]any{
+				"name": "test", "version": "0",
+			},
+		},
+	}, atProtocol(mcp.ProtocolVersion))
+	if discover.Result == nil {
+		t.Fatalf("server/discover answered no result: %s", discover.Raw)
+	}
+	supported, _ := discover.Result["supportedVersions"].([]any)
+	if !containsString(supported, mcp.ProtocolVersion) {
+		t.Fatalf("server/discover offers %v, which does not include section 8.1's %q",
+			supported, mcp.ProtocolVersion)
 	}
 
-	// And `2025-11-25` accepted for compatibility. No reference client will
-	// ask for an old revision, so this one is posted by hand.
-	answer := h.rawCall(h.Token, "initialize", initializeParams(mcp.ProtocolVersionCompat))
-	if answer.Result == nil {
-		t.Fatalf("initialize at %s answered no result: %s", mcp.ProtocolVersionCompat, answer.Raw)
+	// And the reference client, which uses that handshake, really lands on it.
+	negotiated := h.session(h.Token).InitializeResult().ProtocolVersion
+	if negotiated != mcp.ProtocolVersion {
+		t.Fatalf("the reference client negotiated %q, want section 8.1's %q",
+			negotiated, mcp.ProtocolVersion)
 	}
-	if got := answer.Result["protocolVersion"]; got != mcp.ProtocolVersionCompat {
-		t.Errorf("initialize at %s answered %v", mcp.ProtocolVersionCompat, got)
+
+	// `initialize` is CAPPED at `2025-11-25`, because the SDK will not
+	// negotiate a revision that deprecated the handshake being used. Above
+	// the cap it answers the cap; at or below it, ordinary negotiation, so it
+	// answers what was asked for. That is the SDK's rule and not a shortfall
+	// of this server, and it is asserted so that a reader who finds
+	// `2025-11-25` on the wire can see it was expected rather than a bug.
+	for asked, want := range map[string]string{
+		mcp.ProtocolVersion:       mcp.ProtocolVersionCompat,
+		mcp.ProtocolVersionCompat: mcp.ProtocolVersionCompat,
+		"2025-06-18":              "2025-06-18",
+	} {
+		// Plain `initialize` params: no SEP-2575 `_meta`, because that is
+		// what a client speaking the deprecated handshake sends.
+		answer := h.rawCall(h.Token, "initialize", map[string]any{
+			"protocolVersion": asked,
+			"capabilities":    map[string]any{},
+			"clientInfo":      map[string]any{"name": "test", "version": "0"},
+		})
+		if answer.Result == nil {
+			t.Fatalf("initialize at %s answered no result: %s", asked, answer.Raw)
+		}
+		if got := answer.Result["protocolVersion"]; got != want {
+			t.Errorf("initialize asking for %s answered %v, want %s", asked, got, want)
+		}
 	}
+}
+
+func containsString(values []any, want string) bool {
+	for _, v := range values {
+		if s, _ := v.(string); s == want {
+			return true
+		}
+	}
+	return false
 }
 
 // TestSlice3Test28ServerInfo is the MCP half of acceptance test 28.
