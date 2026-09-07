@@ -172,7 +172,7 @@ answers `2025-11-25` by the SDK's design and `2026-07-28` is reached through `se
 all an `Origin` is", and then compares the trimmed strings. `AGENT_GM_PUBLIC_URL` is allowed to
 carry a path (`internal/config/config.go:165-187` refuses only a query or a fragment), and with one
 every browser client on the *correct* origin is `403`ed, because an `Origin` header never carries a
-path. No impact on `https://gm.agent-wx.app`. **Fix:** parse both and compare
+path. No impact on the owner's deployment origin, which has no path. **Fix:** parse both and compare
 `scheme://host`, or refuse a path in `loadPublicURL`.
 
 ### Notes (not required)
@@ -354,3 +354,167 @@ the fake backend; §16 Slice 3 tests 2, 14–23, 25, 28; §18 D36 including the 
 **n/a this review:** §16 Slice 3 tests 26/27 (image and compose — unchanged by this slice and green
 in CI run 34082018394), test 29 (the live connector gate, the coordinator's), §3.6's libgm live
 gate (D36 explicitly does not need one), everything in §16 Slice 4.
+
+---
+
+# Confirm pass — `df7cc62`
+
+**Reviewed:** `efa7136..df7cc62` (12 commits) merged into `review/slice-3b`; the worktree is
+`df7cc62` plus this file and nothing else (`git diff --stat df7cc62 HEAD` = `REVIEW-slice-3b.md`).
+
+**Verdict: accept.** All seven of B-1…B-7 are closed, each one re-driven by re-planting the
+mutation that found it. **Main may be fast-forwarded to `df7cc62`, the production image rebuilt
+from it, and the connector gate run on it.** Two new findings below are both test gaps in the
+new CLI code — neither is a wrong answer on the wire, and neither blocks the gate.
+
+```
+$ devbox run check                      # df7cc62 + this file
+0 issues. ... no-real-numbers: clean ... no-deployment-host: clean
+EXIT=0
+
+$ CGO_ENABLED=1 go test ./... -count=1 -v
+toplevelPASS=612  allPASS=1313  SKIP=0  FAIL=0
+        # one more than the reported 611 / 1312; this file adds no Go test, so the difference
+        # is a count taken before the last commit. Nothing is missing either way.
+
+$ gh run view 34087412756 --json headSha,conclusion,jobs
+headSha df7cc62e580d…  conclusion success   # all EIGHT jobs green, no-deployment-host included
+```
+
+**A note on `devbox run check` at first attempt: it FAILED, on my own review file.**
+`no-deployment-host` caught `REVIEW-slice-3b.md:175` naming the owner's hostname. That is the new
+lint working on its first real encounter with an outsider's file, and it was right — CI runs on
+`branches: ["**"]`, so my review branch is in scope. I rewrote the line; the whole tree is clean.
+
+## The seven, re-driven
+
+| | Re-planted mutation | Now |
+|---|---|---|
+| **B-1** | P6 again: delete the whole `go-sdk` block from `scripts/pin-consistency.sh` | **killed** — `TestThePinGuardIsLoadBearing`: *"pin-consistency exited 0 with … desynchronised between go.mod and spec D36. Either the guard was removed or it stopped working; D36's promise that a bump is a deliberate slice rests entirely on it."* The meta-test copies four files into a temp tree, asserts the guard passes unmodified first (so a broken copy cannot masquerade as a pass), then desynchronises `go.mod` alone. Exactly the shape asked for. `TestSDKPinAgreesWithTheSpec` additionally puts the claim in `devbox run test`, so a developer who never runs the CI job still fails. |
+| **B-2** | P8b again: shorten `send_message.text`'s description | **killed** — `TestTheServedCatalogueMatchesItsGolden`, and the failure *names the tool* and prints the changed field, which is what makes a golden usable rather than merely strict. The golden (`testdata/served-catalogue.json`, 7311 lines) covers names, descriptions, annotations, every argument description, every enum's per-value descriptions and every output schema — wider than I asked for. `-update` regenerates and the comment tells the reader to read the diff. |
+| **B-3** | P11 again: blank `TokenInfo.UserID` | **survives, by agreement.** I offered two options and the implementer took the second: `handler.go:307-318` now says the field is inert under a stateless transport, cites where the SDK reads it (`mcp/streamable.go:569,713`), and says why it is set anyway. A comment that is true is worth more here than a test of an inert field. Closed. |
+| **B-4** | P13 again: multiply both budgets by 1000 | **killed in 1 second** (was 10 minutes): *"section 8.1's per-authorization budget is 8000, and this test is written for 8; change both deliberately"*. The loop count is a literal, the constant is checked against it, and `Blocker.WaitFor` now returns an error that the test reports. |
+| **B-5** | — | `docs/README.md` now says which pages exist. |
+| **B-6** | — | `sdk.go:521-556` states the two handshakes and the `initialize` cap correctly, and `TestSlice3ProtocolRevisions` drives `server/discover` by hand for `2026-07-28` and asserts the cap for three requested revisions. This is the finding I care most about being written down, because it is the one a future reader would otherwise "fix" in the wrong direction. |
+| **B-7** | — | `sameOrigin` parses both sides and compares scheme + host + port. `TestSameOriginComparesTheOriginAndNotTheURL` covers ten cases including the public-URL-under-a-path case that was the bug, `null`, a bare host, and the look-alike host that string comparison got right by luck. |
+
+## New findings
+
+### C-1 — §11.5's write-back safety is tested only on the admin path (**medium — test gap**)
+
+`internal/cli/refresh.go:136-146` proves the destination writable with `r.store.Begin()` **before**
+either exchange, and hands the open `pending` to `finishOAuthRefresh`. That is correct. But the
+only test of the rule, `TestAnUnwritableDestinationNeverSpendsAProfileRefreshToken`
+(`refresh_test.go`), builds a profile with **no `ClientID`** — so it exercises the admin path at
+`/v1/auth/refresh` and never the OAuth path at `/oauth/token`.
+
+Plant **P14**: move `Begin()` in the OAuth half to *after* the token exchange — spend the
+credential, then discover the directory is unwritable.
+
+```
+$ go test ./... -count=1        # 19 packages ok, 0 --- FAIL
+```
+
+**SURVIVED the full suite.** The production consequence of the regression it fails to catch: an
+owner with a read-only or badly-moded credentials directory loses an OAuth refresh token
+permanently — rotation makes it single-use, so the spent one is gone and the new one was never
+stored — and gets exit 9 instead of exit 9 *with the token still good*. That is precisely the
+distinction §11.5 exists to draw, and it is the connector-shaped path, not the automation one.
+
+**Fix:** a twin of that test with `ClientID` set, asserting `POST /oauth/token` was called **zero**
+times and the stored refresh token is unchanged. Both callers of `Begin()` then have a test.
+
+### C-2 — The credentials lock has no timeout; a re-entrant refresh deadlocks for ten minutes (**low**)
+
+Plant **P16**: leave `r.client.OnInvalidToken` installed across the refresh exchange — the one line
+`refresh.go:150-154` warns about.
+
+```
+panic: test timed out after 10m0s
+	TestARefusedProfileRefreshIsThreeAndIsNotRetried (9m58s)
+```
+
+Killed, but by the same 10-minute package timeout that B-4 was about, and for the same reason one
+layer down: `lockFile` is `syscall.Flock(fd, LOCK_EX)` (`internal/cli/lock_unix.go:16`) — blocking,
+no deadline, no context. The re-entrant refresh waits forever on the lock the outer one holds.
+
+This is not only a test shape. The lock is held **across the network exchange**
+(`Begin()` … `postTokenForm` … `Commit`), so two concurrent `agm` invocations against a slow or
+hung server leave the second one blocked indefinitely with no output and nothing to do but
+Ctrl-C. **Fix:** acquire with `LOCK_EX|LOCK_NB` in a bounded retry loop and fail with a
+`LocalError` naming the lock — which is exit 9, "nothing was spent", the right answer — and give
+the test a `-timeout` it can actually reach.
+
+*Not a finding:* P15 (delete the `p.ClientID` discriminator so an OAuth profile refreshes at
+`/v1/auth/refresh`) is **killed** by `TestSlice3bAnOAuthProfileRefreshesAtTheTokenEndpoint` in
+`cmd/agent-gm`. I record it because it first read as a survivor when I ran only `./internal/cli/...` —
+the wired-binary test is in the other package, which is where it belongs.
+
+### C-3 — `ew.finish()` is not deferred (**low — `internal/mcp/handler.go:174`**)
+
+```go
+h.chain.ServeHTTP(ew, r)
+ew.finish()
+```
+
+Everything at or above `400` is buffered and only written by `finish()`. If anything below panics
+while `capturing` is set, `finish()` never runs, nothing was ever written to the real
+`ResponseWriter`, and `net/http` closes the connection — so a refusal becomes a transport error for
+the connector. One character fixes it: `defer ew.finish()`.
+
+## `envelopeWriter`, read adversarially
+
+The one place the SDK is not the authority, as asked. I could not break it:
+
+- **Can a client make one of our own §7.1 refusals be demoted to 200?** No.
+  `isJSONRPCError` requires `jsonrpc == "2.0"` *and* a non-empty `error`; our envelope is
+  `{"error":…,"request_id":…}` and is `json.Encode`d from a struct that has no `jsonrpc` key, so no
+  input can add one. Driven: `401`, `403`, `413`, `429` and the `Origin` `403` all keep their status.
+- **Can a genuine transport refusal be demoted?** No. The SDK refuses with `http.Error`, which is
+  `text/plain`, and only `application/json` bodies are candidates. Driven: `GET`/`DELETE` stay
+  `405 Allow: POST`, a wrong `Content-Type` stays `415`, a one-media-type `Accept` stays `400`, a
+  malformed body stays `400` — while `-32602` and `-32601` come back at `200`. The line is in the
+  right place.
+- **Is the auth challenge reachable through the demote path?** No — that branch returns before the
+  `WWW-Authenticate` substitution, and it should: a JSON-RPC error is not an auth failure.
+- `Content-Length` is deleted only where the body is replaced; `Flush` is suppressed only while
+  capturing; `Unwrap` exposes the real writer for hijack and `ResponseController`; `WriteHeader` is
+  idempotent. `finish()` runs after `ServeHTTP` returns, so it does not race the SDK's writes, and
+  `PropagateRequestCancellation: true` means no handler goroutine outlives the request to write
+  later. The whole suite is race-clean including the SDK-client tests.
+- One asymmetry, deliberate as far as I can tell and worth knowing: a demoted JSON-RPC error
+  carries **no `X-Request-Id`** and writes **no log line**, unlike every §7.1 refusal. That is
+  consistent — a successful `200` carries neither either — but it means a connector reporting
+  "MCP error -32602" gives the operator nothing to grep for. Worth one line in `docs/mcp.md` if not
+  a change.
+
+*Note, pre-existing and out of scope:* `lockFile` is a no-op on Windows
+(`internal/cli/lock_windows.go:11`). The comment reasons it out and the atomic rename keeps the
+file consistent, but two concurrent `agm` processes there can still lose a rotation. §13.6 ships a
+Windows binary in Slice 4; worth a decision then, not now.
+
+## Confirm-pass plants
+
+| # | Mutation | file:line | Result |
+|---|---|---|---|
+| P6r | delete the `go-sdk` block from the pin guard | `scripts/pin-consistency.sh` | **killed** — `TestThePinGuardIsLoadBearing` |
+| P8br | shorten `send_message.text`'s description | `internal/mcp/tools.go:476` | **killed** — `TestTheServedCatalogueMatchesItsGolden` |
+| P11r | blank `TokenInfo.UserID` | `internal/mcp/handler.go:319` | survives — closed by comment, by agreement |
+| P13r | both concurrency budgets ×1000 | `internal/mcp/handler.go:35-37` | **killed in 1s** — `TestTest25ConcurrencyBudget` |
+| P14 | OAuth refresh: spend the token, *then* prove the destination writable | `internal/cli/refresh.go:136-146,213` | **SURVIVED** the full suite → **C-1** |
+| P15 | delete the OAuth/admin discriminator so the two paths cross | `internal/cli/refresh.go:144` | **killed** — `TestSlice3bAnOAuthProfileRefreshesAtTheTokenEndpoint` |
+| P16 | leave `OnInvalidToken` installed across the refresh exchange | `internal/cli/refresh.go:150-154` | **killed**, by a 10-minute deadlock → **C-2** |
+
+All reverted; the worktree differs from `df7cc62` only by this file.
+
+## Rubric — §18.1, still **2**
+
+The names this pass adds are the CLI's, and they are the owner's vocabulary rather than Google
+Messages': `agm profiles list` / `use` / `remove`, a profile named for its server, `--profile`, and
+exit 3 meaning "a refresh was refused, log in again". Each says what it does and none of them
+borrows a word that means something else in Messages. The one thing I checked hardest — that a
+profile is never called a *session*, which in this product is an account's connection to a phone —
+holds: `refresh.go` and `profiles.go` say *profile* throughout, and `get_session` still means the
+account. `internal/gm/device.go` naming the phone's paired-devices entry "Agent GM 1.0" rather
+than "libgm" is the axis applied in the one place the owner reads it outside this product
+entirely, which is the right instinct.
