@@ -138,7 +138,7 @@ func (d *HandlerDeps) uploadsCreate(r *Request) (*Response, error) {
 
 	expiresAt := d.now().Add(uploadTokenLife)
 
-	// `client_request_id` makes the reservation idempotent, and **each
+	// An `Idempotency-Key` makes the reservation idempotent, and **each
 	// attempt returns a fresh token**: the first token's value left the
 	// process and cannot be recovered. A token minted on a repeat never
 	// outlives the reservation it fills, which is what

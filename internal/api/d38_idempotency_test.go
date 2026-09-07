@@ -52,6 +52,29 @@ func TestD38AMutationWithNoIdempotencyKeyMintsAnOperationID(t *testing.T) {
 	}
 }
 
+// Two keyless upload reservations are two reservations. `uploads` already
+// stored NULL for an absent key, but its unique index is partial in the same
+// way `operations` now is, and a keyless reservation that collided with the
+// previous one would refuse a perfectly ordinary second attachment.
+func TestD38TwoKeylessUploadsAreTwoReservations(t *testing.T) {
+	s := newServer(t)
+	s.addAccount(addressA)
+
+	body := map[string]any{"filename": "a.jpg", "mime_type": "image/jpeg", "size_bytes": 3}
+	first := s.call("POST", "/v1/uploads", body).ok(t, 201)
+	second := s.call("POST", "/v1/uploads", body).ok(t, 201)
+
+	a, _ := first.Data["upload_id"].(string)
+	b, _ := second.Data["upload_id"].(string)
+	if a == "" || b == "" {
+		t.Fatalf("a reservation came back with no upload_id: %v / %v", first.Data, second.Data)
+	}
+	if a == b {
+		t.Fatal("two keyless reservations returned the same upl_ ID; the second attachment " +
+			"would be sent as the first")
+	}
+}
+
 // `client_request_id` in a body is now an unknown field like any other, on
 // every route that used to take it. This is the clause a caller written
 // against the old contract meets first, so the refusal has to name the field
