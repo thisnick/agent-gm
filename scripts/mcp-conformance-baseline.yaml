@@ -1,0 +1,111 @@
+# The MCP conformance baseline of spec section 8.4.
+#
+# Each entry is a scenario the pinned suite runs against Agent GM and that
+# Agent GM does not pass, with the reason. The file is checked in BOTH
+# directions by scripts/conformance-harness.mjs: a new failure fails the run,
+# and so does a listed scenario that starts passing. Without the second
+# direction this file rots into a list of excuses nobody revisits.
+#
+# Three kinds of entry appear below, and the distinction is the point:
+#
+#   1. **The suite's own fixtures.** `@modelcontextprotocol/conformance`
+#      tests a REFERENCE server: it calls tools named `test_error_handling`
+#      and reads resources at `test://static-text`. Agent GM serves one
+#      person's Google Messages and has neither, so these scenarios cannot
+#      pass and would not mean anything if they did.
+#   2. **Optional capabilities Agent GM does not offer.** Prompts, logging,
+#      completions, sampling, elicitation and resource subscriptions are all
+#      optional in MCP; `initialize` declares `tools` and `resources` and
+#      nothing else, and an undeclared method answers -32601, which is the
+#      correct answer. Offering them to make a suite green would be adding
+#      surface for the sake of a number.
+#   3. **One genuine disagreement, recorded rather than hidden.** See
+#      `resources-read-text` and `dns-rebinding-protection` below.
+#
+# Pinned suite: @modelcontextprotocol/conformance@0.1.16, run at spec revision
+# 2025-11-25 (the newest the suite knows; Agent GM's own revision is
+# 2026-07-28 and it accepts 2025-11-25 for compatibility, section 8.1).
+# 30 scenarios run, 5 pass, 25 are listed here.
+
+# --- the suite's own fixture tools -------------------------------------------
+# Every one of these calls a tool of the reference server (`test_simple_text`,
+# `test_error_handling`, and so on). Agent GM's twenty-one tools are the
+# messaging surface of section 8.2 and nothing else.
+- name: tools-call-simple-text
+  reason: calls the reference server's fixture tool, which Agent GM does not serve
+- name: tools-call-image
+  reason: calls the reference server's fixture tool
+- name: tools-call-audio
+  reason: calls the reference server's fixture tool; Agent GM serves no audio tool
+- name: tools-call-embedded-resource
+  reason: calls the reference server's fixture tool
+- name: tools-call-mixed-content
+  reason: calls the reference server's fixture tool
+- name: tools-call-with-logging
+  reason: calls the reference server's fixture tool and expects logging notifications
+- name: tools-call-error
+  reason: calls `test_error_handling`, which Agent GM does not serve
+- name: tools-call-with-progress
+  reason: calls the reference server's fixture tool and expects progress notifications
+- name: tools-call-sampling
+  reason: expects the server to request sampling; Agent GM never asks a client's model for anything
+- name: tools-call-elicitation
+  reason: expects the server to elicit input; Agent GM has no interactive tool
+
+# --- optional capabilities Agent GM does not declare -------------------------
+- name: prompts-list
+  reason: no prompts capability; `prompts/list` answers -32601, which is correct for an undeclared capability
+- name: prompts-get-simple
+  reason: no prompts capability
+- name: prompts-get-with-args
+  reason: no prompts capability
+- name: prompts-get-embedded-resource
+  reason: no prompts capability
+- name: prompts-get-with-image
+  reason: no prompts capability
+- name: logging-set-level
+  reason: no logging capability; the server's own logs are an operator's, not a client's (section 12.2)
+- name: completion-complete
+  reason: no completions capability
+- name: elicitation-sep1034-defaults
+  reason: no elicitation capability
+- name: elicitation-sep1330-enums
+  reason: no elicitation capability
+- name: resources-subscribe
+  reason: no resource subscriptions; attachments are immutable and addressed by template, so there is nothing to be notified about
+- name: resources-unsubscribe
+  reason: no resource subscriptions
+
+# --- the suite's own fixture resources, and one real disagreement ------------
+#
+# The first three read `test://…` URIs. Agent GM serves exactly one resource
+# template, `agm://attachments/{attachment_id}` (section 8.2), so an unknown
+# URI is a miss however it is reported.
+#
+# HOW it is reported is the disagreement, and it is worth stating plainly
+# because it may matter to a real client. Section 8.2 says a domain failure is
+# a RESULT with `isError: true`, and `not_found` is a domain failure; the
+# suite expects `resources/read` on an unknown URI to be a JSON-RPC error
+# carrying no `contents`. Agent GM follows its own spec. The consequence is
+# recorded here rather than quietly fixed, because changing it is a change to
+# a public contract and belongs to the owner, not to an implementer chasing a
+# green line.
+- name: resources-read-text
+  reason: reads the reference server's `test://static-text`; and Agent GM answers an unknown resource with a section 8.2 isError RESULT rather than a JSON-RPC error
+- name: resources-read-binary
+  reason: reads the reference server's fixture resource; same reporting difference
+- name: resources-templates-read
+  reason: reads the reference server's fixture template; same reporting difference
+
+# --- DNS rebinding ------------------------------------------------------------
+#
+# This scenario scopes itself, in its own text, to "localhost MCP servers
+# running without HTTPS and without authentication". Agent GM is neither: it
+# is authenticated on every request and it lives behind a tunnel at
+# AGENT_GM_PUBLIC_URL. Its half that matters PASSES -- a foreign `Origin` is
+# refused -- and the half that fails is the scenario requiring a `localhost`
+# Origin to be ACCEPTED, which section 8.1 deliberately refuses: `Origin`,
+# when present, must equal the public URL. Loosening that to satisfy the
+# scenario would weaken the exact check the scenario exists to test.
+- name: dns-rebinding-protection
+  reason: requires a localhost Origin to be accepted; section 8.1 requires Origin to equal AGENT_GM_PUBLIC_URL, which is strictly stronger

@@ -47,6 +47,7 @@
         "go vet ./...",
         "golangci-lint run ./...",
         "CGO_ENABLED=1 go test ./... -race -count=1",
+        "./scripts/lint-names.sh",
         "./scripts/no-real-numbers.sh"
       ],
       "tidy": [
@@ -59,12 +60,10 @@
         "openssl rand -hex 32"
       ],
       "conformance": [
-        "echo 'the MCP conformance run of spec 8.4 arrives in Slice 3; there is no script yet' >&2",
-        "exit 2"
+        "./scripts/conformance.sh"
       ],
       "lint-names": [
-        "echo 'the name lint of spec 13.5, which reads the served MCP catalogue arrives in Slice 3; there is no script yet' >&2",
-        "exit 2"
+        "./scripts/lint-names.sh"
       ],
       "no-real-numbers": [
         "./scripts/no-real-numbers.sh"

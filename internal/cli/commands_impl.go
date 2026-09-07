@@ -443,8 +443,13 @@ func parseServerDuration(s string) (time.Duration, error) {
 // credential lost.
 func (r *runner) authLogin(inv *invocation) error {
 	if !inv.boolean("--admin") {
-		return usageErr("Slice 2 has only the admin path: pass --admin. The OAuth flow that " +
-			"--no-browser belongs to arrives in Slice 3")
+		// The OAuth flow of spec section 11.5, which is the SAME flow any
+		// other MCP client performs. `agm` has no private path to a token.
+		return r.oauthLogin(inv)
+	}
+	if inv.boolean("--no-browser") {
+		return usageErr("--no-browser belongs to the OAuth path; --admin presents the " +
+			"admin secret and opens no browser")
 	}
 
 	secret, err := r.readSecret(inv)

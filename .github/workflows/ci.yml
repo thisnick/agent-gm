@@ -63,6 +63,34 @@ jobs:
           enable-cache: "true"
       - run: devbox run no-real-numbers
 
+  # The MCP conformance run of spec section 8.4, against the baseline in both
+  # directions. The token is minted through the WHOLE OAuth flow -- admin
+  # bootstrap, enrollment code, DCR, the authorization screen, owner approval,
+  # the token endpoint -- because a green run over an admin bootstrap token
+  # would leave the client-shaped path unmeasured. A revision that runs zero
+  # scenarios fails the job rather than passing it silently.
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jetify-com/devbox-install-action@v0.13.0
+        with:
+          enable-cache: "true"
+      - run: devbox run conformance
+
+  # The name lint of spec section 13.5: the Matrix vocabulary, asserted as a
+  # live contract over the catalogue the server actually serves and every page
+  # under docs/. It is also inside `devbox run check`, because it is cheap and
+  # it guards a contract a test suite cannot see.
+  lint-names:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jetify-com/devbox-install-action@v0.13.0
+        with:
+          enable-cache: "true"
+      - run: devbox run lint-names
+
   # The container image of spec sections 14.1 and 14.2. It builds for
   # linux/amd64 AND linux/arm64 on every run, and pushes to GHCR on a push to
   # `main` (tagged `sha-<short>` and `main`) and on a `vX.Y.Z` tag (tagged

@@ -14,10 +14,23 @@ import (
 // copy cannot drift into a lie.
 
 // OutputSchema builds the tool's declared output schema.
+//
+// It describes BOTH shapes a call can answer with, because both are results:
+// the success envelope, and the section 8.2 refusal that carries the REST
+// error in `error` and sets `isError: true`. A schema that described only the
+// success case would be a schema every refusal violated -- and a strict client
+// validates `structuredContent` against it, so it would turn a refusal a model
+// could have read into a client-side protocol failure. That is exactly the
+// outcome section 8.2's isError rule exists to prevent, so the schema has to
+// say the refusal is legitimate rather than merely the code doing it.
+//
+// The two are a `oneOf` rather than a union of optional keys, so that a result
+// carrying both, or neither, is invalid.
 func (t Tool) OutputSchema() *Schema {
 	return &Schema{
-		Type:        "object",
-		Description: "The result envelope. `data` is this tool's own object; `next_cursor` is non-null only when there is another page; `warnings` is always present and usually empty.",
+		Type: "object",
+		Description: "The result envelope. On success `data` is this tool's own object, `next_cursor` is non-null only when there is another page, and `warnings` is always present and usually empty. " +
+			"On a refusal the envelope carries `error` instead and `isError` is true.",
 		Properties: map[string]*Schema{
 			"data":        t.dataSchema(),
 			"next_cursor": t.cursorSchema(),
@@ -26,8 +39,35 @@ func (t Tool) OutputSchema() *Schema {
 				Items:       &Schema{Type: "string"},
 				Description: "Anything the server changed or wants the caller to know about this answer. Normalisation is never silent, so a cleaned value is reported here rather than quietly accepted.",
 			},
+			"error": errorSchema(),
 		},
-		Required:             []string{"data", "next_cursor", "warnings"},
+		OneOf: []*Schema{
+			{
+				Description: "A successful call.",
+				Required:    []string{"data", "next_cursor", "warnings"},
+			},
+			{
+				Description: "A refusal. The call answered `isError: true` and this is the same error a REST caller would have been served; read it and correct the call rather than repeating it.",
+				Required:    []string{"error"},
+			},
+		},
+		AdditionalProperties: boolPtr(false),
+	}
+}
+
+// errorSchema is the REST error envelope's error object, which a refusal
+// carries verbatim.
+func errorSchema() *Schema {
+	return &Schema{
+		Type:        "object",
+		Description: "The refusal, exactly as the REST surface reports it.",
+		Properties: map[string]*Schema{
+			"code":      {Type: "string", Description: "The error code, from the table this server shares with its REST surface: `not_found`, `invalid_request`, `unsupported_capability`, `insufficient_scope`, `phone_not_responding`, `rate_limited` and the rest."},
+			"message":   {Type: "string", Description: "A sentence naming what went wrong, written to be read."},
+			"retryable": {Type: "boolean", Description: "True only for the codes that are genuinely worth retrying: `phone_not_responding` and `rate_limited`, and almost nothing else."},
+			"details":   {Type: "object", Description: "What to fix. `parameter` or `field` names the argument that was wrong; `reason` says why an action cannot apply; `accounts` lists the accounts to choose between; `required_scope` names the scope a refused tool needs."},
+		},
+		Required:             []string{"code", "message", "retryable", "details"},
 		AdditionalProperties: boolPtr(false),
 	}
 }

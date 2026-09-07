@@ -354,7 +354,11 @@ func buildServer(ctx context.Context, addrOverride string) (*built, int) {
 		PublicURL: cfg.PublicURL,
 		Version:   buildVersion(),
 		Commit:    buildCommit(),
-		SourceURL: sourceURLBase,
+		// The SAME string /v1/health serves, from the one accessor, because
+		// the AGPL section 13 obligation of section 1.4 is not kept by two
+		// surfaces reporting two different answers (section 16 Slice 3
+		// test 28).
+		SourceURL: deps.SourceURL(),
 		Log: func(msg string, kv ...any) {
 			e := log.Debug()
 			for i := 0; i+1 < len(kv); i += 2 {

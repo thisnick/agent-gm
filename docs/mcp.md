@@ -173,7 +173,7 @@ authorization flow on a `403` would loop for ever, and one that gave up on a
 ```http
 WWW-Authenticate: Bearer realm="agent-gm",
   resource_metadata="https://gm.example.test/.well-known/oauth-protected-resource/mcp",
-  scope="messages:read messages:write messages:delete"
+  scope="messages:read messages:write"
 ```
 
 `serverInfo` carries `name: "agent-gm"`, the version, the built commit and

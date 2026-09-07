@@ -104,7 +104,7 @@ func (d *HandlerDeps) health(r *Request) (*Response, error) {
 		Status:                "ok",
 		Version:               d.Version,
 		Commit:                d.Commit,
-		SourceURL:             d.sourceURL(),
+		SourceURL:             d.SourceURL(),
 		ConfigVersionCompiled: d.ConfigVersionCompiled,
 		UpstreamCommit:        d.UpstreamCommit,
 		AccountsSummary:       summary,
@@ -114,9 +114,20 @@ func (d *HandlerDeps) health(r *Request) (*Response, error) {
 	}}, nil
 }
 
-// sourceURL points at the tree this build came from, so an owner reading
+// SourceURL points at the tree this build came from, so an owner reading
 // /v1/health can go and look at the code that answered them.
-func (d *HandlerDeps) sourceURL() string {
+//
+// It is EXPORTED because MCP's `serverInfo` has to report the same string
+// (spec sections 1.4, 8.1, section 16 Slice 3 test 28), and the two surfaces
+// serving different strings is not a cosmetic disagreement -- it is an AGPL
+// section 13 obligation half kept. A reviewer's run against the real binary
+// caught exactly that: `/v1/health` computed the tree URL and `serverInfo`
+// served the bare repository link.
+//
+// An unstamped build returns "" on BOTH surfaces rather than a bare
+// repository link, because a link to `main` is a link to code that is not
+// what answered you, which is worse than admitting there is none.
+func (d *HandlerDeps) SourceURL() string {
 	if d.SourceURLBase == "" || d.Commit == "" {
 		return ""
 	}

@@ -40,6 +40,11 @@ type Profile struct {
 	AuthorizationID string   `json:"authorization_id,omitempty"`
 	Issuer          string   `json:"issuer,omitempty"`
 	Resource        string   `json:"resource,omitempty"`
+	// ClientID is the dynamic registration this profile's tokens belong to.
+	// It is stored because the OAuth refresh grant requires it (spec section
+	// 9.6) and because a profile that could not name its client would have
+	// to register a second one on every refresh.
+	ClientID string `json:"client_id,omitempty"`
 }
 
 // Credentials is the whole file.

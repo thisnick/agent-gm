@@ -358,3 +358,69 @@ func tailOf(s string) string {
 }
 
 var _ = json.Marshal
+
+// TestSlice3OutputSchemaAdmitsARefusal is a regression test with a date.
+//
+// The official `@modelcontextprotocol/sdk` client validates a result's
+// `structuredContent` against the tool's declared `outputSchema` and RAISES a
+// JSON-RPC error when it does not match. Driving a real client against a real
+// server on 2026-09-06 turned every section 8.2 refusal -- which carries
+// `{error}` and no `data` -- into `MCP error -32602: Structured content does
+// not match the tool's output schema`.
+//
+// That is precisely the outcome the isError rule exists to prevent: the model
+// never sees the `not_found` it could have corrected itself from, because the
+// client turned it into a transport failure. So the schema names both shapes.
+func TestSlice3OutputSchemaAdmitsARefusal(t *testing.T) {
+	for _, tool := range mcp.Tools {
+		schema := tool.OutputSchema()
+		if len(schema.OneOf) != 2 {
+			t.Fatalf("%s's outputSchema does not offer both a success and a refusal shape", tool.Name)
+		}
+		if _, ok := schema.Properties["error"]; !ok {
+			t.Fatalf("%s's outputSchema has no `error` property, so a refusal violates it", tool.Name)
+		}
+		var sawSuccess, sawRefusal bool
+		for _, branch := range schema.OneOf {
+			sort.Strings(branch.Required)
+			if equalStrings(branch.Required, []string{"data", "next_cursor", "warnings"}) {
+				sawSuccess = true
+			}
+			if equalStrings(branch.Required, []string{"error"}) {
+				sawRefusal = true
+			}
+		}
+		if !sawSuccess || !sawRefusal {
+			t.Fatalf("%s's outputSchema branches are wrong: success=%v refusal=%v", tool.Name, sawSuccess, sawRefusal)
+		}
+	}
+}
+
+// TestSlice3ResultsSatisfyTheDeclaredOutputSchema checks the same claim from
+// the other end: a real success result and a real refusal, both from a running
+// server, carry exactly the keys one branch of the schema requires and no
+// others.
+func TestSlice3ResultsSatisfyTheDeclaredOutputSchema(t *testing.T) {
+	h := newHarness(t)
+	h.addAccount(addressA)
+
+	success := structured(t, h.tool("list_accounts", nil))
+	assertKeys(t, "a successful result", success, []string{"data", "next_cursor", "warnings"})
+
+	refusal := structured(t, h.tool("get_message", map[string]any{"message_id": "msg_nope"}))
+	assertKeys(t, "a refusal", refusal, []string{"error"})
+}
+
+func assertKeys(t *testing.T, what string, obj map[string]any, want []string) {
+	t.Helper()
+	var got []string
+	for k := range obj {
+		got = append(got, k)
+	}
+	sort.Strings(got)
+	sort.Strings(want)
+	if !equalStrings(got, want) {
+		t.Fatalf("%s carries %v, want exactly %v -- a strict client validates structuredContent against the outputSchema",
+			what, got, want)
+	}
+}

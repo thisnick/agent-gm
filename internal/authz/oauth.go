@@ -89,15 +89,20 @@ var LimitOAuthToken = DurableLimitSpec{
 }
 
 // LimitEnrollmentSource and LimitEnrollmentContext are section 9.4's
-// enrollment-code budget: the ELEVENTH failed attempt within 15 minutes is
-// 429, per source and per signed context alike. PerSource is therefore 11 --
-// the limiter trips ON reaching it, and the spec counts the eleventh failure
-// as the one that trips.
+// enrollment-code budget: **the eleventh failed attempt within 15 minutes is
+// 429**, per source and per signed context alike.
+//
+// PerSource is therefore 10, not 11. The limiter records a failure and then
+// refuses the NEXT request that arrives while the cooldown is running, so a
+// limit of 10 makes the tenth failure set the cooldown and the eleventh
+// attempt the one that is refused -- which is what section 9.4 asks for. A
+// limit of 11 would let the eleventh through and refuse the twelfth, and the
+// difference is exactly one free guess.
 var (
 	LimitEnrollmentSource = DurableLimitSpec{
 		Kind:         store.AttemptKindEnrollmentSource,
 		Surface:      "enrollment_code",
-		PerSource:    11,
+		PerSource:    10,
 		Global:       0,
 		Window:       15 * time.Minute,
 		BaseCooldown: time.Minute,
@@ -106,7 +111,7 @@ var (
 	LimitEnrollmentContext = DurableLimitSpec{
 		Kind:         store.AttemptKindEnrollmentContext,
 		Surface:      "enrollment_code",
-		PerSource:    11,
+		PerSource:    10,
 		Global:       0,
 		Window:       15 * time.Minute,
 		BaseCooldown: time.Minute,

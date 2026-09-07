@@ -242,14 +242,21 @@ func (h *Handler) acquire(authorizationID string) (release func(), ok bool) {
 // challenge itself is the same string, because it says the same thing to the
 // same reader: here is where to authorize, and here is what to ask for.
 //
-// It names all three messaging scopes rather than the two of the section 9.2
-// example, because `messages:delete` is a scope this resource issues and a
-// challenge that omitted it would send a client back for a credential it
-// could not use to delete.
+// It names `messages:read messages:write` and NOT `messages:delete`, which is
+// section 9.2's literal challenge and is asserted byte for byte by section 16
+// Slice 3 test 2.
+//
+// The omission is not an oversight in the spec. `scope` in a challenge is what
+// the client should ASK FOR, and section 9.4 makes exactly those two the
+// default an authorization request carries when the client names no scope. A
+// challenge that also asked for `messages:delete` would send every connector
+// to an approval screen offering to let a model delete the owner's threads,
+// for no better reason than that the scope exists. A client that wants it asks
+// for it; the discovery documents list all three under `scopes_supported`.
 func Challenge(publicURL string) string {
 	return `Bearer realm="` + apierr.AuthRealm + `", ` +
 		`resource_metadata="` + apierr.ResourceMetadataURL(publicURL) + `", ` +
-		`scope="messages:read messages:write messages:delete"`
+		`scope="messages:read messages:write"`
 }
 
 func (h *Handler) challenge(w http.ResponseWriter, r *http.Request, e *apierr.Error) {
