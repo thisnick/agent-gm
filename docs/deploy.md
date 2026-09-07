@@ -1,6 +1,6 @@
 # Deploying Agent GM
 
-Serves spec §14.1, §14.2, §15.1 and §15.2, and the AGPL consequence of §1.4.
+Serves spec §14.1, §14.2, §15.1, §15.2 and §1.4.
 
 Two binaries, two names: **`agent-gm`** is the server (the thing in the
 container: `agent-gm serve`, `agent-gm healthcheck`), and **`agm`** is the
@@ -15,10 +15,9 @@ what to pin. Configuration knobs, the runtime settings table, backup mechanics
 and the 3am runbook are in [operations.md](operations.md); this page points at
 them rather than repeating them.
 
-The owner's own deployment — a Compose service and a `cloudflared` sidecar in
-a private stack — is **not** in this repository, deliberately. A deployment is
-a fact about one machine. What this repository owes any host is a Dockerfile,
-a Compose example, an environment table and these docs.
+No particular deployment lives in this repository: a deployment is a fact about
+one machine. What the repository ships is a Dockerfile, a Compose example, an
+environment table and these docs.
 
 ## What Agent GM needs from a host
 
@@ -59,7 +58,7 @@ on the first start.
 
 Architectures: `linux/amd64` and `linux/arm64`, as one manifest list.
 
-### Tags, and why you should not deploy one
+### Tags
 
 | Tag | When it moves |
 |---|---|
@@ -80,9 +79,7 @@ build was made from (§3.6). `docker buildx imagetools inspect
 ghcr.io/thisnick/agent-gm:vX.Y.Z` prints the digest of a published tag, and
 `scripts/image.sh push` prints it at the end of a CI publish.
 
-The alternative is a deployment whose exact contents are a question rather
-than a fact: `:latest` silently changes what you are running, and an incident
-that begins "which build is this?" starts an hour behind.
+`:latest` silently changes what you are running; a digest does not.
 
 ### Building it yourself
 
@@ -94,9 +91,9 @@ devbox run image-smoke    # linux/amd64, loaded locally, then the assertions bel
 Both call [`../scripts/image.sh`](../scripts/image.sh), which is what CI runs,
 so the image CI publishes is the image you can build. `VERSION` and `COMMIT`
 are build arguments and reach the binary as `-X main.version` and
-`-X main.commit`: a container build has no `.git` and cannot read a VCS stamp,
-so without them the binary would report commit `unknown` — and the commit is
-an obligation, not a nicety (see "the source offer" below).
+`-X main.commit`. A container build has no `.git` and cannot read a VCS stamp,
+so without them the binary reports commit `unknown`, and the commit is part of
+the source offer below.
 
 ## Compose
 
@@ -155,9 +152,9 @@ a wildcard bind address is not a destination), and exits **0** on `200` and
 redirect away from `/healthz`. It follows no redirects: a probe asks one
 server one question.
 
-It exists because the runtime image has no shell and no `curl`, so a
-`HEALTHCHECK` there can only execute a binary, and the only binary in the
-image is this one. The `HEALTHCHECK` is declared in the Dockerfile and
+The runtime image has no shell and no `curl`, so a `HEALTHCHECK` there can
+only execute a binary, and this is the only binary in the image. The
+`HEALTHCHECK` is declared in the Dockerfile and
 repeated in the Compose example, so `docker compose up --wait` and
 `depends_on: condition: service_healthy` work.
 
@@ -196,6 +193,18 @@ carry into its own backup design:
    WAL-mode database without its log opens perfectly well and is quietly out
    of date. Use `agm admin backup`, which uses SQLite's own backup API and
    produces a snapshot with no `-wal` sidecar.
+
+`agm admin backup` writes into `/data/backups/` **inside the volume**, so a
+host-side backup job still has to copy it out — `docker cp` from the running
+container, or a throwaway container with the volume mounted read-only:
+
+```bash
+docker run --rm -v agent-gm-data:/data:ro -v "$PWD:/out" alpine:3 \
+  sh -c 'cp /data/backups/$(ls -1 /data/backups | tail -1) /out/ && cp -a /data/sessions /out/'
+```
+
+Store `AGENT_GM_DATA_KEY` somewhere else. Those two in one place are the whole
+Google account.
 
 ## Upgrading
 
@@ -237,11 +246,11 @@ cosign verify-blob checksums.txt \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-There is no private key anywhere in this repository and there is not meant to
-be one: the signature is keyless, and the identity it binds is the workflow
-file at the tag. That is what the `--certificate-identity-regexp` above is
-checking, and it is the part worth reading rather than pasting — a signature
-that verifies against the wrong identity has told you nothing.
+The signature is keyless, so there is no public key to fetch and no private
+key in this repository. The identity it binds is the workflow file at the tag,
+which is what `--certificate-identity-regexp` above checks — read that line
+rather than pasting it, because a signature that verifies against the wrong
+identity has told you nothing.
 
 **The release notes carry the GHCR digest** of the image built from the same
 commit, together with the `libgm` and `go-sdk` pins. Deploy the digest.
@@ -252,16 +261,15 @@ the npm tarball; see [cli.md](cli.md#installing).
 
 ## The source offer
 
-Agent GM is **AGPL-3.0-or-later**, and it is reachable over a network, so
-AGPL §13 applies: whoever interacts with it must be offered the corresponding
-source. Agent GM satisfies this itself. `GET /v1/health` reports `commit` and
+Agent GM is licensed under **AGPL-3.0-or-later** and is reachable over a
+network, so whoever interacts with it must be offered the corresponding source.
+Agent GM serves that offer itself. `GET /v1/health` reports `commit` and
 `source_url`; the MCP `serverInfo` reports the same two facts in the two fields
 the protocol has for them — the commit as **semver build metadata on
 `version`** (`0.1.0+abc1234`), and the source URL as `websiteUrl`. Both point
 at `https://github.com/thisnick/agent-gm` at the **exact built commit**.
 
-That is why `COMMIT` is a build argument and why a build that reports
-`unknown` is a defect and not a cosmetic one. Verify it on a deployed
+A build that reports `unknown` does not meet it. Verify on a deployed
 container:
 
 ```bash
