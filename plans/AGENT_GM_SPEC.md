@@ -3530,7 +3530,7 @@ code, and the mapping is exhaustive — §16 Slice 2 test 18 enumerates it:
 | §7.2 code | exit |
 |---|---|
 | `invalid_request`, `idempotency_conflict`, `payload_too_large`, `media_unsupported_type` | `2` |
-| `invalid_token` | `3` |
+| `invalid_token` | `3`, **after a refresh was attempted and refused** — see below |
 | `insufficient_scope` | `4` |
 | `not_found` | `5` |
 | `unsupported_capability`, including `not_signed_in` — an **account**-level condition, which is why the gloss above names the account | `6` |
@@ -3544,6 +3544,19 @@ was reused with a different body. A command that times out waiting returns `7`,
 prints the operation ID, and leaves it available to `agm operations wait`.
 `phone_not_responding` is exit `7`, **not** `8`, and the message says the
 operation is pending and must not be resent.
+
+**Exit `3` is narrower than "the server said `invalid_token`."** An access
+token that has merely expired is not a reason to send the operator anywhere:
+the CLI holds a refresh token for it and §11.5 makes it use one. So exit `3`
+means a refresh was **tried and refused** — a revoked or expired refresh
+token, or a server that refused the rotation — or that there was no refresh
+token to try. Reporting it for an expired access token, without attempting the
+refresh sitting next to it, is how an operator is told to log in again while
+holding a credential that would have worked.
+
+An unwritable credentials destination is exit `9` and the token is **unspent**
+(§11.5): a local storage failure must never cost the credential it failed to
+store.
 
 ### 11.3 Commands
 
@@ -3930,13 +3943,40 @@ Precedence:
 | `--server`, else `AGENT_GM_URL`, else the profile's server | which server a command talks to |
 | `AGENT_GM_ACCESS_TOKEN` | one access token, used as given, not refreshable |
 | `AGENT_GM_REFRESH_TOKEN_FILE` + `AGENT_GM_CLIENT_ID` | automation. Every invocation exchanges the token and rewrites the file with the rotated value, atomically, at mode `0600` |
-| the stored profile | the ordinary case, written by `agm auth login` |
+| the stored profile | the ordinary case, written by `agm auth login`. **Refreshed exactly like the refresh-file path** — see below |
+
+**A stored profile refreshes itself.** The profile holds a refresh token and
+an expiry, and both are used:
+
+- The CLI refreshes **proactively** when the access token is within 60 seconds
+  of its recorded expiry, and **on the first `401 invalid_token`** otherwise,
+  whichever comes first. **An access token is never presented past its known
+  expiry**: a command that can already see the token is dead does not spend a
+  round trip proving it.
+- The rotated value is written back atomically under the rule below, and only
+  then is any remaining failure reported.
+- An admin session refreshes at `POST /v1/auth/refresh` and an OAuth profile at
+  `/oauth/token`. The two paths do not cross (§9.6).
+- A profile with no refresh token, or one whose `expires_at` is absent or
+  unreadable — an older build wrote it, or it was hand-edited — falls back to
+  the on-`401` path rather than refusing to run or refreshing on every
+  invocation.
+
+> This is stated because it was absent, and the absence cost an hour. The
+> stored profile was the one credential source the CLI did **not** refresh; an
+> admin session, whose access TTL is 15 minutes, was therefore refused about
+> a quarter of an hour after it was minted, with a good refresh token sitting
+> unused in the same file. The refusal arrived shortly after an unrelated
+> restart and was read as the restart having ended the session, which it had
+> not: §9.6's sessions are durable and outlive the process. A credential path
+> that is refreshed in three places out of four is not a precedence table, it
+> is a trap.
 
 **Write-back safety.** The destination is proved writable *before* the token is
 spent — the temporary file that the write later renames into place is created
 first. An unwritable directory is **exit 9 while the token is still good**. A
-token the server has already refused is **exit 3** (log in again), never
-retried.
+token the server has refused **after a refresh was attempted** is **exit 3**
+(log in again), never retried.
 
 `agm auth login` performs the same OAuth flow as any other MCP client:
 discovery, dynamic registration, a loopback callback on `127.0.0.1`, PKCE
