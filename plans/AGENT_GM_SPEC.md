@@ -3226,6 +3226,24 @@ The credential that outranks everything else does not get a longer life than
 the ones it outranks. Admin refresh tokens rotate on every use and reuse of a
 spent one revokes the session, exactly as for OAuth (§9.6).
 
+**An admin session outlives the process.** It is a row in `authorizations`
+with rows in `tokens`, like every other credential (§4), so restarting the
+server does not end one and a redeploy does not log the operator out. The one
+thing that does end it is §12.1's rule: a start under a **different**
+`AGENT_GM_ADMIN_SECRET` revokes every admin bootstrap authorization minted
+under the old one, and **only** those — an OAuth grant is untouched, because
+only the admin path derives from the secret.
+
+> Recorded because the asymmetry reads as a fault. When the production
+> container restarted during Slice 3b, the operator's admin session was
+> refused while a connector's OAuth token kept working, which looks exactly
+> like admin sessions being process-bound and is not: it means the deployment
+> came up with a different secret. A deployment that generates its secret
+> rather than fixing it logs its operator out on every restart. The audit row
+> is `auth.admin_authorization_revoked` with reason `admin_secret_changed`,
+> and `agm` names this cause when it reports a refused token, because the
+> alternative is an hour spent looking at the wrong thing.
+
 **An admin refresh may never widen.** `POST /v1/auth/refresh` accepts an
 optional `scopes` that may only narrow further, relative to **the scopes the
 session was minted with**, which are recorded on the session row. Widening —
@@ -5290,6 +5308,25 @@ completion.
 it. An implementer never adds an account to the owner's deployment; the
 two-account tests of §16 run against two **fakes**, which is what §13.1's
 one-fake-per-account rule exists to make possible.
+
+**No agent enumerates processes, ever.** An agent that starts a server
+captures its PID at launch — `cmd & pid=$!` — signals only that variable, and
+signals nothing whose PID it did not capture itself. `pgrep`, `pkill` and
+`killall` are forbidden in **every** form, including `pkill -x` and `pgrep -x`:
+a name is not an identity. The production container shares the host PID
+namespace, so a `serve` process an agent did not start is the owner's
+deployment, and `pgrep -x agent-gm` returns it alongside the agent's own.
+
+> Recorded because it happened. In Slice 3b a documentation agent started a
+> throwaway server, then cleaned up by killing every PID `pgrep -x agent-gm`
+> returned — which included the production container's process. Docker's
+> restart policy brought it back within seconds and nothing was lost, but the
+> rule it followed said "no name **patterns**", and `pgrep -x` is not a
+> pattern. The rule is now about enumeration, not about patterns.
+
+**No agent binds ports 8080, 8081, 8090 or 8787.** They belong to the owner's
+running services. An agent that needs a listener picks one nobody has claimed
+and says which in its report.
 
 **Live sends are the coordinator's alone.** Neither the implementer nor the
 reviewer sends a message to a real phone number, ever, for any reason. An

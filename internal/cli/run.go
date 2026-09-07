@@ -120,7 +120,25 @@ func Run(env Env) int {
 			_, _ = fmt.Fprintln(stderr, "agm: the same idempotency key was presented with a different "+
 				"body. Fix the invocation; never retry it unchanged.")
 		case apierr.CodeInvalidToken:
-			_, _ = fmt.Fprintln(stderr, "agm: log in again with `agm auth login`.")
+			// Both causes, because this command cannot tell which credential
+			// it was using and a guess sends an operator to the wrong fix.
+			//
+			// The second sentence is here because of a real hour lost to it:
+			// after a container restart the operator's admin session was
+			// refused while a connector's OAuth token kept working, which
+			// reads like a server fault and is not one. A restart alone does
+			// NOT end an admin session -- the session lives in SQLite and
+			// outlives the process -- but a restart that comes up with a
+			// different AGENT_GM_ADMIN_SECRET revokes every admin session
+			// minted under the old one (section 12.1), and only those, which
+			// is exactly why the OAuth token survived. A deployment whose
+			// secret is generated rather than fixed does this on every
+			// restart.
+			_, _ = fmt.Fprintln(stderr, "agm: log in again -- `agm auth login`, "+
+				"or `agm auth login --admin` if this profile is an admin session.")
+			_, _ = fmt.Fprintln(stderr, "agm: an admin session is also refused if the server's "+
+				"AGENT_GM_ADMIN_SECRET changed since it was minted; a restart alone does not end "+
+				"one. Check `agm admin audit list --kind auth.admin_authorization_revoked`.")
 		}
 	}
 	return code

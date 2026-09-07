@@ -525,28 +525,6 @@ func atProtocol(version string) map[string]string {
 	return map[string]string{"MCP-Protocol-Version": version}
 }
 
-// initializeParams is a raw `initialize` at one revision.
-//
-// From 2026-07-28 the handshake carries the revision in `_meta` under
-// `io.modelcontextprotocol/protocolVersion` as well as in `protocolVersion`
-// (SEP-2575); the SDK refuses `initialize` without it. A reference client
-// does this for itself -- this exists only so a test can ask for a revision
-// of its choosing, which no reference client will do.
-func initializeParams(version string) map[string]any {
-	params := map[string]any{
-		"protocolVersion": version,
-		"capabilities":    map[string]any{},
-		"clientInfo":      map[string]any{"name": "test", "version": "0"},
-	}
-	if version >= mcp.ProtocolVersion {
-		params["_meta"] = map[string]any{
-			"io.modelcontextprotocol/protocolVersion":    version,
-			"io.modelcontextprotocol/clientCapabilities": map[string]any{},
-		}
-	}
-	return params
-}
-
 func (h *harness) rawCallWith(token, method string, params any, headers map[string]string) rpcAnswer {
 	h.t.Helper()
 	body := map[string]any{"jsonrpc": "2.0", "id": 1, "method": method}
