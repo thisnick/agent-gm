@@ -98,6 +98,10 @@ type Handler struct {
 	mu       sync.Mutex
 	inFlight int
 	perAuth  map[string]int
+
+	// faultAfterChain is a FAULT SEAM, nil in production. See
+	// FaultAfterChainForTest.
+	faultAfterChain func()
 }
 
 // New builds the handler.
@@ -171,9 +175,29 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// wrapper substitutes the envelope on a refusal and gets out of the way
 	// on a 2xx, so an SSE stream still streams.
 	ew := &envelopeWriter{ResponseWriter: w, log: h.cfg.Log, challenge: Challenge(h.cfg.PublicURL)}
+	// Deferred, because everything at 400 and above is BUFFERED and reaches
+	// the socket only from finish(). A panic below this line while capturing
+	// would otherwise write nothing at all, and net/http would close the
+	// connection -- turning a refusal a client could read into a transport
+	// error it cannot.
+	defer ew.finish()
 	h.chain.ServeHTTP(ew, r)
-	ew.finish()
+	if h.faultAfterChain != nil {
+		h.faultAfterChain()
+	}
 }
+
+// FaultAfterChainForTest installs a fault seam that runs after the chain and
+// before ServeHTTP returns, nil in production.
+//
+// It is here because the thing worth proving cannot be reached any other way:
+// a refusal at 400 or above is BUFFERED and reaches the socket only from the
+// deferred finish(), so the property is "a panic after the buffer is filled
+// still delivers it", and no client input can make the SDK panic on demand.
+// The repository already uses this idiom -- see authz's BeforeRefreshTx --
+// and a seam placed exactly where the window is beats a test that reaches
+// around the production path and proves nothing about it.
+func (h *Handler) FaultAfterChainForTest(fault func()) { h.faultAfterChain = fault }
 
 // checkOrigin is section 8.1's first check: `Origin`, when present, must equal
 // the configured public URL, and it is checked **before the transport parses
@@ -547,6 +571,15 @@ func (w *envelopeWriter) finish() {
 	// this is -- and only the transport status is demoted to 200, which is
 	// what every protocol before 2026-07-28 did and what the client survives.
 	if w.maybeJSONRPC && isJSONRPCError(w.buf.Bytes()) {
+		// A request ID and a log line, on this path too. A connector reports
+		// a demoted error to its operator as bare prose -- "MCP error
+		// -32602" -- and without an ID there is nothing to grep the server
+		// log for, which is the whole use an operator has for the log.
+		requestID := apierr.NewRequestID()
+		w.Header().Set("X-Request-Id", requestID)
+		if w.log != nil {
+			w.log("mcp jsonrpc error", "request_id", requestID, "status", w.status)
+		}
 		w.ResponseWriter.WriteHeader(http.StatusOK)
 		_, _ = w.ResponseWriter.Write(w.buf.Bytes())
 		return

@@ -322,3 +322,48 @@ func TestSameOriginComparesTheOriginAndNotTheURL(t *testing.T) {
 		})
 	}
 }
+
+// A panic while a refusal is buffered still produces the refusal (review
+// finding C-3).
+//
+// Everything at 400 and above is captured by envelopeWriter and reaches the
+// socket only from finish(). If finish() is not deferred, a panic anywhere
+// below it writes nothing at all to the real ResponseWriter, and net/http
+// closes the connection -- turning a refusal a client could read into a
+// transport error it cannot, which is the same failure the whole
+// demote-to-200 rule exists to avoid one layer up.
+func TestARefusalSurvivesAPanicWhileItIsBuffered(t *testing.T) {
+	h := newHarness(t)
+
+	h.MCP.FaultAfterChainForTest(func() { panic("a panic after the refusal was buffered") })
+
+	// A well-formed bearer whose token is invalid: the SDK refuses it with
+	// `http.Error`, which is text/plain, which is the case envelopeWriter
+	// CAPTURES. An Origin refusal would not do -- this package writes that
+	// one as JSON itself, so it goes straight through and never sits in the
+	// buffer this test is about.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, mcp.Path, strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Authorization", "Bearer a-well-formed-token-that-is-not-valid")
+
+	func() {
+		defer func() {
+			// The panic is expected; the response is the point.
+			_ = recover()
+		}()
+		h.MCP.ServeHTTP(rec, req)
+	}()
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("after a panic while the refusal was buffered the client got %d, want 401 -- "+
+			"an unwritten buffer is a closed connection", rec.Code)
+	}
+	if got := rec.Header().Get("WWW-Authenticate"); got != mcp.Challenge(publicURL) {
+		t.Errorf("the delivered refusal carries challenge %q", got)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "json") {
+		t.Errorf("the refusal is %q, not section 7.1's envelope", ct)
+	}
+}

@@ -329,3 +329,74 @@ func TestARotationDoesNotChangeWhichProfileIsActive(t *testing.T) {
 		t.Errorf("the rotation was not stored: %+v", after.Profiles[otherHost])
 	}
 }
+
+// The credentials lock has a deadline (review finding C-2).
+//
+// The lock is held across the network exchange on purpose -- the rotation and
+// the write-back are one operation, and a rotated refresh token is single-use,
+// so a second invocation must not interleave. But the wait for it used to be
+// an unbounded `LOCK_EX`, which turns "another agm is busy" into a hang with
+// no output: the operator learns nothing and has nothing to act on. It also
+// made a reviewer's plant fail by ten-minute deadlock rather than by
+// assertion, which is the same shape as the concurrency-budget test one layer
+// up.
+//
+// Bounded, it is exit 9 naming the lock, with nothing spent.
+func TestAHeldCredentialsLockFailsWithinItsDeadlineRatherThanHanging(t *testing.T) {
+	// Shortened, because the assertion is that the wait ENDS, not how long
+	// it is. Ten real seconds on every CI run to assert a constant would be
+	// paying for the wrong thing.
+	restore := cli.LockWait
+	cli.LockWait = 200 * time.Millisecond
+	t.Cleanup(func() { cli.LockWait = restore })
+
+	s := newStub(t)
+	now := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	credentials := profileFile(t, dir, s.URL, cli.Profile{
+		AccessToken:  "agm_at_stale",
+		RefreshToken: "agm_rt_good",
+		ExpiresAt:    now.Add(-time.Hour).Format(time.RFC3339),
+	})
+
+	// Another process holds the lock and never lets go.
+	held, err := os.OpenFile(filepath.Join(dir, cli.CredentialsLockName),
+		os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = held.Close() }()
+	if err := cli.LockFileForTest(held); err != nil {
+		t.Fatalf("taking the lock: %v", err)
+	}
+
+	done := make(chan struct{})
+	var got result
+	go func() {
+		defer close(done)
+		got = runCLIAt(t, s, noProfileEnv(credentials), fixedClock(now), "", "health")
+	}()
+
+	// Generously longer than LockWait, and far shorter than a package
+	// timeout: the assertion is that this RETURNS, not how fast.
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatalf("`agm` was still waiting for the credentials lock after 20s with a %s "+
+			"deadline configured; an unbounded wait is a hang with no output", cli.LockWait)
+	}
+
+	if got.code != 9 {
+		t.Errorf("a held lock exited %d, want 9\nstderr: %s", got.code, got.stderr)
+	}
+	if !strings.Contains(got.stderr, cli.CredentialsLockName) {
+		t.Errorf("the failure does not name the lock, so an operator cannot act on it:\n%s",
+			got.stderr)
+	}
+	if n := s.countOf("POST", "/v1/auth/refresh"); n != 0 {
+		t.Errorf("the refresh token was spent %d times while the lock was unavailable", n)
+	}
+	if stored := readCredentials(t, credentials).Profiles[hostOf(t, s.URL)]; stored.RefreshToken != "agm_rt_good" {
+		t.Errorf("the stored refresh token changed: %+v", stored)
+	}
+}
