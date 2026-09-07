@@ -78,22 +78,22 @@ $ curl -s -H "Authorization: Bearer $TOKEN" \
   "request_id": "req_01k4z2p8w2" }
 ```
 
-The reason for the strictness is that one line of JSON above: `?directon=incoming`
-is a typo for `direction`, and a server that ignored it would answer `200` with
-**every** message in the deployment. That looks exactly like a correct answer,
-it is the kind of mistake an agent makes silently, and the caller finds out
-when it has already acted on the wrong set. A refused request has no effect —
-no operation row, no send, no state change.
+`?directon=incoming` is a typo for `direction`, and a server that ignored it
+would answer `200` with **every** message in the deployment — an answer that
+looks correct. A refused request has no effect: no operation row, no send, no
+state change.
 
 The rule applies to `/v1` only. `/mcp`, `/oauth/*` and `/.well-known/*` keep
 their RFC behaviour and ignore what they do not recognise, because those are
 the surfaces third-party clients drive.
 
-## Authentication in Slice 2
+## Authentication
 
-Slice 2 has exactly one credential path: the **admin bootstrap**. OAuth,
-enrolment codes and per-client authorizations arrive in Slice 3 and are
-documented in `oauth.md` when they do.
+There are two credential paths. **OAuth 2.1** is how a connector or any other
+agent gets a token, and it has a page of its own ([oauth.md](oauth.md)). The
+**admin bootstrap** below is the owner's own path: it is the only way to hold
+the `admin` scope, and therefore the only way to reach `/v1/admin/*` and the
+pairing routes.
 
 ```console
 $ curl -s -X POST https://gm.example.test/v1/auth/admin-session \
@@ -111,9 +111,6 @@ $ curl -s -X POST https://gm.example.test/v1/auth/admin-session \
 ```
 
 **An admin session carries `admin` plus all three messaging scopes** (§9.7).
-The owner presenting `AGENT_GM_ADMIN_SECRET` is by definition the person the
-service belongs to, and a credential that could administer the server but not
-read a message would be useless.
 
 The secret goes **in the body**, never in a query string and never in a URL.
 Failures are rate-limited hard (5 per 15 minutes per source, 20 globally, with
@@ -134,8 +131,6 @@ full set after a narrowing: a session minted with all four scopes and refreshed
 down to `messages:read` cannot refresh back up. Widening is `invalid_scope` and
 **does not spend the presented token**. Getting the full set again means
 presenting `AGENT_GM_ADMIN_SECRET` at `POST /v1/auth/admin-session` again.
-Without that rule a narrowed session would be one refresh away from full
-privilege, and narrowing would be decoration.
 
 The two credential paths never cross: an OAuth refresh token at
 `/v1/auth/refresh` is `invalid_token`, and an admin refresh token at
@@ -155,12 +150,10 @@ callers get wrong, so it is stated in full.
 
 A single-account deployment never has to think about accounts at all.
 
-Reads and writes differ deliberately. "What came in today, across everything I
-own" is a useful default for a listing and a dangerous one for a send: a send
-that guessed an account would deliver a real message from an address the
-caller did not choose. So a write with more than one account and no
-`account_id` is refused — and the refusal carries the candidates, so the
-caller can retry without a second round trip:
+A write with more than one account and no `account_id` is refused, because a
+send that guessed an account would deliver a real message from an address the
+caller did not choose. The refusal carries the candidates, so the caller can
+retry without a second round trip:
 
 ```json
 { "error": { "code": "invalid_request",
@@ -189,15 +182,14 @@ Uploads are the exception, and [Media](#media) says why.
 
 ## Idempotency
 
-**An idempotency key is optional** (§6.3, D38). It has exactly one transport:
+**An idempotency key is optional** (§6.3). It has exactly one transport:
 
 - the `Idempotency-Key` request header.
 
 Send no header and the mutation is a new operation with a **server-minted
 id**, returned in the result. That is the ordinary case, and the one every
-agent uses: an agent regenerates its arguments on a retry and so cannot
-supply a stable key across one, which made the old mandatory
-`client_request_id` friction without protection.
+agent uses: an agent regenerates its arguments on a retry and so cannot supply
+a stable key across one.
 
 There is **no `client_request_id` body field** and no query-parameter form on
 any route. One presented as either is `invalid_request` naming it, like any
@@ -304,7 +296,7 @@ Agent GM with no accounts is a healthy Agent GM with no accounts.
 Note the consequence of global scopes: `GET /v1/accounts` and
 `GET /v1/health` are `messages:read` and both return every account's
 `google_account`, so a `messages:read` token enumerates all of the owner's
-Google addresses. That is what the Slice 3 authorization screen discloses.
+Google addresses. The authorization screen discloses that before the owner approves it.
 
 ### Reads
 
