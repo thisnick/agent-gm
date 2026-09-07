@@ -142,9 +142,21 @@ func (d *HandlerDeps) adminEnrollmentCodesRevoke(r *Request) (*Response, error) 
 	// `revoked: false` on a repeat, with a 200. A second revocation is not a
 	// failure; it is a no-longer-necessary act, and answering 404 or 409
 	// would make an idempotent script wrong (spec section 9.5).
+	//
+	// `changed` says which of the two happened, `revoked_at` says when the
+	// code actually stopped being redeemable -- on a repeat that is the
+	// FIRST revocation's stamp, not this call's -- and `effect` is the same
+	// sentence `agm` shows before it asks.
+	code, cerr := srv.GetEnrollmentCode(r.Ctx, r.Path["enrollment_code_id"])
+	if cerr != nil {
+		return nil, cerr
+	}
 	return &Response{Data: map[string]any{
-		"id":      r.Path["enrollment_code_id"],
-		"revoked": revoked,
+		"id":         code.ID,
+		"revoked":    true,
+		"changed":    revoked,
+		"revoked_at": code.RevokedAt,
+		"effect":     apierr.EffectEnrollmentCodeRevoke,
 	}}, nil
 }
 
@@ -230,9 +242,14 @@ func (d *HandlerDeps) adminAuthorizationRequestsDeny(r *Request) (*Response, err
 // no hash: the question this route answers is "what is allowed to talk to my
 // server, and can I stop it?".
 type authorizationDTO struct {
-	ID           string   `json:"id"`
-	Kind         string   `json:"kind"`
-	ClientID     string   `json:"client_id,omitempty"`
+	ID       string `json:"id"`
+	Kind     string `json:"kind"`
+	ClientID string `json:"client_id,omitempty"`
+	// ClientName is the name the client gave at registration. Without it an
+	// owner auditing their grants reads a list of UUIDs and has to go and
+	// look each one up before they can decide what to revoke, which is
+	// exactly the moment they are least inclined to.
+	ClientName   string   `json:"client_name,omitempty"`
 	Scopes       []string `json:"scopes"`
 	MintedScopes []string `json:"minted_scopes"`
 	Source       string   `json:"source,omitempty"`
@@ -270,7 +287,7 @@ func (d *HandlerDeps) adminAuthorizationsList(r *Request) (*Response, error) {
 	}
 	items := make([]authorizationDTO, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, authorizationFrom(row))
+		items = append(items, d.authorizationWithClientName(r, row))
 	}
 	return &Response{Data: map[string]any{"items": items}}, nil
 }
@@ -280,7 +297,21 @@ func (d *HandlerDeps) adminAuthorizationsGet(r *Request) (*Response, error) {
 	if err != nil {
 		return nil, apierr.NotFound("authorization")
 	}
-	return &Response{Data: authorizationFrom(row)}, nil
+	return &Response{Data: d.authorizationWithClientName(r, row)}, nil
+}
+
+// authorizationWithClientName fills in the registration's name for an OAuth
+// grant. An admin bootstrap session has no client and keeps the field empty,
+// which is the honest answer rather than a placeholder.
+func (d *HandlerDeps) authorizationWithClientName(r *Request, row store.Authorization) authorizationDTO {
+	out := authorizationFrom(row)
+	if row.Client == "" {
+		return out
+	}
+	if client, err := d.Store.OAuthClientByID(r.Ctx, row.Client); err == nil {
+		out.ClientName = client.Name
+	}
+	return out
 }
 
 // adminAuthorizationsRevoke is `DELETE /v1/admin/authorizations/{id}`, the
@@ -289,10 +320,28 @@ func (d *HandlerDeps) adminAuthorizationsGet(r *Request) (*Response, error) {
 // makes is a 401 rather than a slow degradation.
 func (d *HandlerDeps) adminAuthorizationsRevoke(r *Request) (*Response, error) {
 	id := r.Path["authorization_id"]
-	if err := d.Authz.RevokeAuthorization(r.Ctx, id, r.Query["reason"], r.Source); err != nil {
+	before, err := d.Store.Authorization(r.Ctx, id)
+	if err != nil {
 		return nil, apierr.NotFound("authorization")
 	}
-	return &Response{Data: map[string]any{"id": id, "revoked": true}}, nil
+	if !before.Revoked() {
+		if err := d.Authz.RevokeAuthorization(r.Ctx, id, r.Query["reason"], r.Source); err != nil {
+			return nil, apierr.NotFound("authorization")
+		}
+	}
+	after, err := d.Store.Authorization(r.Ctx, id)
+	if err != nil {
+		return nil, apierr.NotFound("authorization")
+	}
+	out := d.authorizationWithClientName(r, after)
+	return &Response{Data: map[string]any{
+		"id":         id,
+		"revoked":    true,
+		"changed":    !before.Revoked(),
+		"revoked_at": out.RevokedAt,
+		"status":     "revoked",
+		"effect":     apierr.EffectAuthorizationRevoke,
+	}}, nil
 }
 
 func (d *HandlerDeps) adminClientsList(r *Request) (*Response, error) {
@@ -331,6 +380,9 @@ func (d *HandlerDeps) adminClientsRevoke(r *Request) (*Response, error) {
 	return &Response{Data: map[string]any{
 		"id":                     r.Path["client_id"],
 		"revoked":                true,
+		"changed":                true,
+		"revoked_at":             wire.InstantPtr(d.now()),
 		"authorizations_revoked": revoked,
+		"effect":                 apierr.EffectClientRevoke,
 	}}, nil
 }

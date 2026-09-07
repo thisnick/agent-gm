@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/thisnick/agent-gm/internal/apierr"
 )
 
 // expireRegistration backdates one registration's expiry.
@@ -225,4 +227,171 @@ func TestSlice3ExpiredRegistrationsAreSwept(t *testing.T) {
 	if !strings.Contains(body, unused) {
 		t.Errorf("the sweep wrote no client.revoked audit row for %s:\n%s", unused, body)
 	}
+}
+
+// The owner-facing DTOs of spec section 9.5, as the live gate found them
+// wanting.
+//
+// Live gate 25 passed on 40387c4 with Codex CLI as the real MCP client, and
+// left three findings that no unit test had any reason to notice, because
+// every one of them is a field that is ABSENT rather than wrong: an OAuth
+// grant listed with no client name, an approval that did not say what it had
+// approved, and a revocation that did not say when. A missing field reads as
+// `null`, and `null` reads as "something went wrong" to the owner who is
+// trying to decide what to revoke at the moment they most need to be sure.
+func TestSlice3TheOwnerFacingDTOsSayEnoughToActOn(t *testing.T) {
+	h := newOAuthHarness(t)
+	admin := h.adminToken()
+	f := h.fullFlow("http://127.0.0.1:53211/callback")
+	tokens := tokenValues(t, h.exchange(f, nil))
+	access, _ := tokens["access_token"].(string)
+
+	t.Run("an authorization names the client that registered it", func(t *testing.T) {
+		list := dataOf(t, h.get("/v1/admin/authorizations", bearer(admin)))
+		items, _ := list["items"].([]any)
+		var oauthGrant map[string]any
+		for _, raw := range items {
+			row, _ := raw.(map[string]any)
+			if row["kind"] == "oauth" {
+				oauthGrant = row
+			}
+		}
+		if oauthGrant == nil {
+			t.Fatalf("no OAuth grant in %v", items)
+		}
+		if name, _ := oauthGrant["client_name"].(string); name != "a test client" {
+			t.Errorf("the OAuth grant's client_name is %v; an owner auditing their grants "+
+				"should not have to look up a UUID before they can decide what to revoke",
+				oauthGrant["client_name"])
+		}
+		// The admin bootstrap has no client, and says so by omission rather
+		// than by inventing a name.
+		for _, raw := range items {
+			row, _ := raw.(map[string]any)
+			if row["kind"] == "admin_bootstrap" {
+				if _, ok := row["client_name"]; ok {
+					t.Errorf("the admin bootstrap session carries a client_name: %v", row)
+				}
+			}
+		}
+	})
+
+	t.Run("a request says what it amounts to and what it minted", func(t *testing.T) {
+		req := dataOf(t, h.get("/v1/admin/authorization-requests/"+f.RequestID, bearer(admin)))
+		if req["status"] != "completed" {
+			t.Errorf("status is %v, want completed", req["status"])
+		}
+		scopes, _ := req["scopes"].([]any)
+		if len(scopes) == 0 {
+			t.Errorf("scopes is %v; a request that carries scopes must say so without "+
+				"making the reader compare three arrays", req["scopes"])
+		}
+		if id, _ := req["authorization_id"].(string); id == "" {
+			t.Error("authorization_id is empty on a COMPLETED request; it is what " +
+				"`agm admin authorizations revoke` is given to undo the whole thing")
+		}
+	})
+
+	t.Run("a pending request already carries its scopes", func(t *testing.T) {
+		// A second flow, stopped at the pending step.
+		_, codeValue := h.enrollmentCode(admin, nil)
+		clientID := h.register("http://127.0.0.1:53299/callback")
+		_, challenge := pkce(t)
+		page := h.authorizePage(authorizeParams{
+			ClientID: clientID, RedirectURI: "http://127.0.0.1:53299/callback",
+			State: "s", Challenge: challenge,
+		})
+		form := hiddenFields(t, page)
+		form.Add("scope_selected", "messages:read")
+		form.Set("enrollment_code", codeValue)
+		submitted := h.postForm("/oauth/authorize", form, h.withCookie)
+		if submitted.StatusCode != http.StatusSeeOther {
+			t.Fatalf("submitting: %d", submitted.StatusCode)
+		}
+		id := strings.TrimPrefix(submitted.Header.Get("Location"), "/oauth/requests/")
+		_ = readBody(t, submitted)
+
+		list := dataOf(t, h.get("/v1/admin/authorization-requests?status=pending", bearer(admin)))
+		items, _ := list["items"].([]any)
+		var pending map[string]any
+		for _, raw := range items {
+			row, _ := raw.(map[string]any)
+			if row["id"] == id {
+				pending = row
+			}
+		}
+		if pending == nil {
+			t.Fatalf("the pending request %s is not in the listing", id)
+		}
+		scopes, _ := pending["scopes"].([]any)
+		if len(scopes) != 1 || scopes[0] != "messages:read" {
+			t.Errorf("a PENDING request's scopes are %v; before a decision the effective "+
+				"set is what the browser selected", pending["scopes"])
+		}
+		if pending["authorization_id"] != nil {
+			t.Errorf("a pending request reports authorization_id %v; nothing is minted "+
+				"until the browser completes, and null says that where \"\" would say "+
+				"there is one and it is blank", pending["authorization_id"])
+		}
+	})
+
+	t.Run("a revocation says when, and in the words agm confirmed", func(t *testing.T) {
+		auth := dataOf(t, h.get("/v1/auth/whoami", bearer(access)))
+		id, _ := auth["authorization_id"].(string)
+
+		first := h.do(mustRequest(t, http.MethodDelete,
+			h.http.URL+"/v1/admin/authorizations/"+id+"?reason=live+gate", bearer(admin)))
+		data := dataOf(t, first)
+		if data["revoked"] != true || data["changed"] != true {
+			t.Errorf("the first revocation reports %v", data)
+		}
+		if at, _ := data["revoked_at"].(string); at == "" {
+			t.Error("the revocation does not say WHEN the authorization stopped working")
+		}
+		if data["effect"] != apierr.EffectAuthorizationRevoke {
+			t.Errorf("the effect sentence is %q; it must be the one `agm` shows before it "+
+				"asks, or a human confirms different words from the ones the server acted on",
+				data["effect"])
+		}
+
+		// Repeating it is not a failure, and it does not move the stamp.
+		second := h.do(mustRequest(t, http.MethodDelete,
+			h.http.URL+"/v1/admin/authorizations/"+id, bearer(admin)))
+		repeat := dataOf(t, second)
+		if repeat["revoked"] != true || repeat["changed"] != false {
+			t.Errorf("repeating the revocation reports %v, want revoked:true changed:false", repeat)
+		}
+		if repeat["revoked_at"] != data["revoked_at"] {
+			t.Errorf("the repeat moved revoked_at from %v to %v",
+				data["revoked_at"], repeat["revoked_at"])
+		}
+
+		// And the token really is dead.
+		if resp := h.get("/v1/auth/whoami", bearer(access)); resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("after revocation the token answered %d at whoami", resp.StatusCode)
+		}
+	})
+
+	t.Run("an enrollment revocation says when and in the same words", func(t *testing.T) {
+		id, _ := h.enrollmentCode(admin, nil)
+		first := dataOf(t, h.do(mustRequest(t, http.MethodDelete,
+			h.http.URL+"/v1/admin/enrollment-codes/"+id+"?reason=test", bearer(admin))))
+		if first["changed"] != true {
+			t.Errorf("the first revocation reports changed=%v", first["changed"])
+		}
+		if at, _ := first["revoked_at"].(string); at == "" {
+			t.Error("the enrollment revocation does not say when")
+		}
+		if first["effect"] != apierr.EffectEnrollmentCodeRevoke {
+			t.Errorf("the effect sentence is %q", first["effect"])
+		}
+		second := dataOf(t, h.do(mustRequest(t, http.MethodDelete,
+			h.http.URL+"/v1/admin/enrollment-codes/"+id, bearer(admin))))
+		if second["changed"] != false || second["revoked"] != true {
+			t.Errorf("repeating reports %v, want revoked:true changed:false", second)
+		}
+		if second["revoked_at"] != first["revoked_at"] {
+			t.Errorf("the repeat moved revoked_at")
+		}
+	})
 }

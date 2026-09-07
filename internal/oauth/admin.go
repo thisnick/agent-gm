@@ -274,20 +274,32 @@ func msTime(ms int64) *string { return wire.InstantMS(ms) }
 // AuthorizationRequest is one pending decision as the owner sees it. It
 // carries no secret: not the handle, not the form token, not a code.
 type AuthorizationRequest struct {
-	ID              string   `json:"id"`
-	ClientID        string   `json:"client_id"`
-	ClientName      string   `json:"client_name,omitempty"`
-	RedirectURI     string   `json:"redirect_uri"`
+	ID          string `json:"id"`
+	ClientID    string `json:"client_id"`
+	ClientName  string `json:"client_name,omitempty"`
+	RedirectURI string `json:"redirect_uri"`
+	// Scopes is the effective set: what was granted if the owner has
+	// decided, else what the browser selected. It is served alongside the
+	// three underlying sets rather than instead of them, because "what does
+	// this request currently amount to" is the question an owner asks, and
+	// answering it by making them compare three arrays answers a different
+	// one.
+	Scopes          []string `json:"scopes"`
 	RequestedScopes []string `json:"requested_scopes"`
 	SelectedScopes  []string `json:"selected_scopes"`
 	GrantedScopes   []string `json:"granted_scopes,omitempty"`
-	Status          string   `json:"status"`
-	DenyReason      string   `json:"deny_reason,omitempty"`
-	Source          string   `json:"source,omitempty"`
-	ExpiresAt       *string  `json:"expires_at"`
-	DecidedAt       *string  `json:"decided_at"`
-	CompletedAt     *string  `json:"completed_at"`
-	CreatedAt       *string  `json:"created_at"`
+	// AuthorizationID is the grant this request eventually minted. It is
+	// null until the browser completes and the token endpoint runs -- the
+	// owner approves BEFORE anything is minted -- and it is what
+	// `agm admin authorizations revoke` is given to undo the whole thing.
+	AuthorizationID *string `json:"authorization_id"`
+	Status          string  `json:"status"`
+	DenyReason      string  `json:"deny_reason,omitempty"`
+	Source          string  `json:"source,omitempty"`
+	ExpiresAt       *string `json:"expires_at"`
+	DecidedAt       *string `json:"decided_at"`
+	CompletedAt     *string `json:"completed_at"`
+	CreatedAt       *string `json:"created_at"`
 }
 
 // ListAuthorizationRequests lists requests, optionally by status.
@@ -438,10 +450,15 @@ func (s *Server) Deny(ctx context.Context, id, reason, source string) (*Authoriz
 }
 
 func (s *Server) requestDTO(ctx context.Context, row store.AuthorizationRequest) AuthorizationRequest {
+	effective := row.GrantedScopes
+	if effective == "" {
+		effective = row.SelectedScopes
+	}
 	out := AuthorizationRequest{
 		ID:              row.ID,
 		ClientID:        row.ClientID,
 		RedirectURI:     row.RedirectURI,
+		Scopes:          store.SplitScopes(effective),
 		RequestedScopes: store.SplitScopes(row.RequestedScopes),
 		SelectedScopes:  store.SplitScopes(row.SelectedScopes),
 		GrantedScopes:   store.SplitScopes(row.GrantedScopes),
@@ -455,6 +472,12 @@ func (s *Server) requestDTO(ctx context.Context, row store.AuthorizationRequest)
 	}
 	if client, err := s.st.OAuthClientByID(ctx, row.ClientID); err == nil {
 		out.ClientName = client.Name
+	}
+	// null, not "", until the browser completes and the token endpoint runs.
+	// An empty string reads as "there is one and it is blank"; null reads as
+	// "there is not one yet", which is the true thing.
+	if id, err := s.st.AuthorizationIDForRequest(ctx, row.ID); err == nil && id != "" {
+		out.AuthorizationID = &id
 	}
 	return out
 }

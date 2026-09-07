@@ -4,6 +4,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/thisnick/agent-gm/internal/apierr"
 )
 
 // command is one typed `agm` command: the words that select it, the flags it
@@ -557,7 +559,7 @@ func buildCommandTable() []*command {
 			words: []string{"admin", "enrollment-codes", "revoke"},
 			inventory: "admin enrollment-codes revoke", route: "admin_enrollment_codes_revoke",
 			destructive: true,
-			confirm:     "stops this enrollment code being redeemable. Repeating it is not an error",
+			confirm:     apierr.EffectEnrollmentCodeRevoke,
 			summary:     "revoke an enrollment code",
 			pos: []posDef{{name: "<enroll-id>", param: "enrollment_code_id", where: wPath, required: true}},
 			flags: []flagDef{
@@ -620,8 +622,7 @@ func buildCommandTable() []*command {
 			words: []string{"admin", "authorizations", "revoke"},
 			inventory: "admin authorizations revoke", route: "admin_authorizations_revoke",
 			destructive: true,
-			confirm: "revokes every token of this authorization. The client's next call is a 401, " +
-				"and it cannot refresh its way back",
+			confirm: apierr.EffectAuthorizationRevoke,
 			summary: "revoke an authorization",
 			pos:     []posDef{{name: "<auth-id>", param: "authorization_id", where: wPath, required: true}},
 			flags: []flagDef{
@@ -644,8 +645,7 @@ func buildCommandTable() []*command {
 			words: []string{"admin", "clients", "revoke"},
 			inventory: "admin clients revoke", route: "admin_clients_revoke",
 			destructive: true,
-			confirm: "removes this registration and revokes every authorization it holds. " +
-				"The client must register again",
+			confirm: apierr.EffectClientRevoke,
 			summary: "revoke a client registration",
 			pos:     []posDef{{name: "<client-id>", param: "client_id", where: wPath, required: true}},
 			flags: []flagDef{

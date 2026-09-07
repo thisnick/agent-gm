@@ -30,3 +30,34 @@ const (
 func Effects() []string {
 	return []string{EffectMessageDelete, EffectConversationDelete, EffectAccountRemove}
 }
+
+// The revocation sentences of spec section 9.5's admin routes.
+//
+// They are a SEPARATE group from Effects() above, and deliberately so.
+// Effects() holds the three sentences spec sections 7.7 and 4.7 write out
+// verbatim, and a test asserts each of them appears in the spec word for word;
+// these three are the same KIND of thing -- one sentence shared by the route's
+// `effect` field and the `agm` confirmation prompt, so a human cannot confirm
+// different words from the ones the server acted on -- but the spec describes
+// the routes rather than quoting a sentence, so there is nothing to match
+// against and adding them to Effects() would make that test assert something
+// it cannot check.
+//
+// Like the other three, none of them carries its own full stop: a surface that
+// adds one would otherwise get two.
+const (
+	// EffectAuthorizationRevoke is DELETE /v1/admin/authorizations/{id}.
+	EffectAuthorizationRevoke = "revokes every token of this authorization. The client's next call is a 401, and it cannot refresh its way back"
+
+	// EffectEnrollmentCodeRevoke is DELETE /v1/admin/enrollment-codes/{id}.
+	EffectEnrollmentCodeRevoke = "stops this enrollment code being redeemable. Repeating it is not an error"
+
+	// EffectClientRevoke is DELETE /v1/admin/clients/{id}.
+	EffectClientRevoke = "removes this registration and revokes every authorization it holds. The client must register again"
+)
+
+// RevocationEffects returns the three sentences of spec section 9.5's admin
+// revocations, for a test that has to enumerate them.
+func RevocationEffects() []string {
+	return []string{EffectAuthorizationRevoke, EffectEnrollmentCodeRevoke, EffectClientRevoke}
+}

@@ -691,3 +691,24 @@ func (s *Store) AuthorizationsForClient(ctx context.Context, clientID string) ([
 	}
 	return out, rows.Err()
 }
+
+// AuthorizationIDForRequest returns the authorization one approved request
+// eventually minted, or "" if the code has not been exchanged yet.
+//
+// It is a join through `authorization_codes` rather than a column on
+// `authorization_requests`, because the authorization does not exist when the
+// request is approved: the owner approves, the browser completes, and only
+// then does the token endpoint mint anything. A column would have to be
+// written by the exchange anyway, and a nullable column that is null for a
+// perfectly ordinary reason invites a reader to think something went wrong.
+func (s *Store) AuthorizationIDForRequest(ctx context.Context, requestID string) (string, error) {
+	var id sql.NullString
+	err := s.read.QueryRowContext(ctx,
+		`SELECT authorization_id FROM authorization_codes
+		  WHERE request_id = ? AND authorization_id IS NOT NULL
+		  ORDER BY created_at_ms DESC LIMIT 1`, requestID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return id.String, err
+}
