@@ -672,3 +672,115 @@ run end to end, plus the admin session lifetimes.
 the dispatched `ci` image job pushes to GHCR from a tag ref; that `release.yml`
 finds the digest inside twenty minutes. All four now fail safe rather than
 loudly, which is what changed.
+
+---
+
+# Re-review at `567a6cb` (`42a72e5..567a6cb`)
+
+**Verdict: accept. R-3 is fixed; I reproduced it. No new findings. The slice is
+done.**
+
+## Evidence
+
+```
+$ devbox run check          # TMPDIR on real disk
+0 issues.  … no-real-numbers: clean … no-deployment-host: clean
+EXIT=0
+$ devbox run -- go test ./internal/release/ -list '.*' | grep -c '^Test'
+52
+```
+
+`internal/cli` gains two tests; `internal/release` is unchanged at 52, as it
+should be — nothing in this commit touches the release path.
+
+## R-3 fixed
+
+The copy is gone from the stub (`stub_test.go:182` now derives from
+`authz.AdminBootstrapScopes().Strings()`), and
+`internal/cli/admin_scopes_internal_test.go` is in package `cli` so it can see
+the unexported list. The production import graph is unchanged, which I checked
+rather than assumed:
+
+```
+$ devbox run -- go list -deps ./cmd/agm | grep -c internal/authz
+0
+```
+
+So `agm` still links no server package; the imports are test-only, exactly as
+argued.
+
+**I planted the reverse drift myself** — the direction that was silent — by
+adding a fifth scope to `canonicalOrder` at `internal/authz/scopes.go:52`, the
+server side, leaving the CLI list at four:
+
+```
+--- FAIL: TestTheCLIsAdminScopeListIsTheServersAdminScopeList
+    the CLI lists 4 admin bootstrap scopes and the server mints 5:
+      cli:    [admin messages:read messages:write messages:delete]
+      server: [admin messages:read messages:write messages:delete messages:archive]
+--- FAIL: TestGrantsEveryAdminScope
+    an un-narrowed session was not recognised as un-narrowed, so it gets no hint
+--- FAIL: TestAdminLoginSuggestsNarrowingWhenItGrantsAllFourScopes
+    a full-scope admin session printed no hint
+```
+
+Three failures where there were none, and the first names the disagreement in
+its message. The third fails **only because the stub is now derived** — which
+was the whole of the finding. Reverted; `git status` clean.
+
+`TestGrantsEveryAdminScope`'s table is the right table: it includes
+`{admin, messages:read, messages:write, messages:archive}` — four elements, one
+of them not a scope the server mints — which is the case a length comparison
+would have called un-narrowed. That is the note from two rounds ago closed
+properly rather than patched.
+
+| # | Mutation | Result |
+|---|---|---|
+| P10 | `internal/authz/scopes.go:52` — a fifth scope in `canonicalOrder`, server side, CLI list untouched | killed — `TestTheCLIsAdminScopeListIsTheServersAdminScopeList`, `TestGrantsEveryAdminScope`, `TestAdminLoginSuggestsNarrowingWhenItGrantsAllFourScopes` |
+
+## The sha-strip collision: recording it is the right answer
+
+Asked whether the formatter should refuse the ambiguity rather than guess — no,
+leave it. Refusing would fail `npm run version-packages`, which fails the
+Version Packages pull request, which blocks a release; that trades a cosmetic
+ambiguity for a stopped release, and the thing lost when the guess is wrong is a
+prefix in prose, not data. The generated prefix is the common case by a wide
+margin, the collision needs a bullet that *opens* with a bare hex word before a
+colon, and the comment at `changelog-format.mjs:76-81` now names it so the next
+reader is not surprised. Correctly weighed.
+
+No changeset for this commit is right: two test files, a derived stub and a
+comment ship nothing. `changeset-check` would have demanded one
+(`internal/**` is a code path) and the branch already carries two, so the check
+passes on the branch as a whole — which is the unit it is asked about.
+
+## Final verdict for the slice
+
+**Accept.** PR #2 may merge; the first automated `v1.0.2` may cut. Merging and
+cutting are the coordinator's acts, not mine and not the implementer's.
+
+Across four rounds: ten findings raised (V-1..V-7, R-1..R-3), ten fixed, each
+fix reproduced by me rather than taken on report. Eighteen mutations planted;
+two survived on first planting (M7, downgraded by a second plant that showed the
+consequence was covered; P5, a real finding, now dead) and the rest were killed
+by named tests.
+
+§18.1 rubric: **2**. No name in this slice means anything other than what it
+means in Google Messages, because the slice introduces no Google Messages name —
+its vocabulary is changesets', npm's and semver's, and it uses each of those the
+way its own tool does.
+
+**Verified:** the one version across six artefacts, built and run; the changeset
+gate on every pull request, live on PR #2; the tag/manifest agreement on both
+paths; the changelog guard on both paths; `already_cut` in both directions;
+prerelease image tagging and the npm `next` dist-tag; the Version Packages bump
+run end to end to a state `cut-tag` accepts; the admin scope set tied to the
+server's; the admin session lifetimes; every Slice-4 release guard still present
+and still killed by its own test.
+
+**Unverified, and only the first merge can settle it:** that
+`changesets/action` opens the Version Packages pull request; that
+`gh workflow run --ref <tag>` succeeds under this job's `actions: write`; that
+the dispatched `ci` image job pushes to GHCR from a tag ref; that `release.yml`
+finds the digest within twenty minutes. All four fail safe. That is the
+difference between this branch and the one I first read.
