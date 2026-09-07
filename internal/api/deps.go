@@ -13,6 +13,7 @@ import (
 	"github.com/thisnick/agent-gm/internal/core"
 	"github.com/thisnick/agent-gm/internal/gm"
 	"github.com/thisnick/agent-gm/internal/media"
+	"github.com/thisnick/agent-gm/internal/oauth"
 	"github.com/thisnick/agent-gm/internal/settings"
 	"github.com/thisnick/agent-gm/internal/store"
 )
@@ -34,6 +35,10 @@ type HandlerDeps struct {
 	Supervisor *accounts.Supervisor
 	Authz      *authz.Service
 	Settings   *settings.Settings
+	// OAuth is the authorization server of spec section 9. The admin routes
+	// of section 9.5 delegate to it; it is nil in a narrow unit test, and
+	// those routes then answer internal_error rather than pretending.
+	OAuth      *oauth.Server
 	Audit      *audit.Writer
 	Signer     *media.Signer
 	Cache      *media.Cache

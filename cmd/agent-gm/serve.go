@@ -27,7 +27,9 @@ import (
 	"github.com/thisnick/agent-gm/internal/gm"
 	"github.com/thisnick/agent-gm/internal/gm/fake"
 	"github.com/thisnick/agent-gm/internal/logging"
+	"github.com/thisnick/agent-gm/internal/mcp"
 	"github.com/thisnick/agent-gm/internal/media"
+	"github.com/thisnick/agent-gm/internal/oauth"
 	"github.com/thisnick/agent-gm/internal/settings"
 	"github.com/thisnick/agent-gm/internal/store"
 )
@@ -90,6 +92,12 @@ type built struct {
 	Sup      *accounts.Supervisor
 	Deps     *api.HandlerDeps
 	Server   *api.Server
+	// OAuth is the authorization server of spec section 9, and MCP is the
+	// streamable-HTTP surface of section 8. Handler is the three of them
+	// mounted together, and it is what the listener serves.
+	OAuth   *oauth.Server
+	MCP     *mcp.Handler
+	Handler http.Handler
 	// Resumed is how many accounts came back from sessions/ at startup.
 	Resumed int
 
@@ -299,9 +307,70 @@ func buildServer(ctx context.Context, addrOverride string) (*built, int) {
 		return nil, exitContract
 	}
 
+	// The authorization server of section 9. It shares the credential
+	// layer's store and clock rather than opening its own, so an approval
+	// and the token it eventually mints are one database with one writer.
+	oauthSrv, err := oauth.New(oauth.Config{
+		PublicURL:  cfg.PublicURL,
+		SigningKey: cfg.DataKey[:],
+		Authz:      authzSvc,
+		Clock:      clk,
+		// The accounts the authorization screen names under its
+		// global-scope disclosure line (section 9.4). It is read at render
+		// time, not at startup: a screen that named a stale set would be
+		// exactly the dishonesty section 9.7 is trying to avoid.
+		Accounts: func() []oauth.Account {
+			rows, aerr := st.Accounts(context.Background())
+			if aerr != nil {
+				return nil
+			}
+			out := make([]oauth.Account, 0, len(rows))
+			for _, row := range rows {
+				out = append(out, oauth.Account{
+					ID: row.ID, Address: row.GoogleAccount, Label: row.Label,
+				})
+			}
+			return out
+		},
+		Log: func(msg string, kv ...any) {
+			e := log.Debug()
+			for i := 0; i+1 < len(kv); i += 2 {
+				if k, ok := kv[i].(string); ok {
+					e = e.Any(k, kv[i+1])
+				}
+			}
+			e.Msg(msg)
+		},
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "agent-gm: %v\n", err)
+		return nil, exitLocalConfig
+	}
+	deps.OAuth = oauthSrv
+
+	mcpHandler := mcp.New(mcp.Config{
+		API:       srv,
+		Authz:     authzSvc,
+		PublicURL: cfg.PublicURL,
+		Version:   buildVersion(),
+		Commit:    buildCommit(),
+		SourceURL: sourceURLBase,
+		Log: func(msg string, kv ...any) {
+			e := log.Debug()
+			for i := 0; i+1 < len(kv); i += 2 {
+				if k, ok := kv[i].(string); ok {
+					e = e.Any(k, kv[i+1])
+				}
+			}
+			e.Msg(msg)
+		},
+	})
+
 	return &built{
 		cfg: cfg, log: log, Store: st, Sessions: sessions,
 		Sup: sup, Deps: deps, Server: srv, workers: workers, libLog: libLog,
+		OAuth: oauthSrv, MCP: mcpHandler,
+		Handler: mcp.Mount(mountOAuth(srv, oauthSrv), mcpHandler),
 	}, exitOK
 }
 
@@ -362,7 +431,7 @@ func (b *built) AccountsStarted() bool {
 
 // listenAndServe binds and serves until the context ends.
 func (b *built) listenAndServe(ctx context.Context) int {
-	cfg, log, srv, sup := b.cfg, b.log, b.Server, b.Sup
+	cfg, log, sup := b.cfg, b.log, b.Sup
 
 	ln, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {
@@ -370,7 +439,7 @@ func (b *built) listenAndServe(ctx context.Context) int {
 		return exitLocalConfig
 	}
 	httpSrv := &http.Server{
-		Handler: srv,
+		Handler: b.Handler,
 		// A read that never finishes must not hold a connection for ever.
 		// The write bound is generous because a send waits on a phone: the
 		// worst case of section 6.1 is 271 seconds.
@@ -383,6 +452,9 @@ func (b *built) listenAndServe(ctx context.Context) int {
 
 	// Accounts come up behind the listener, so /healthz answers immediately.
 	go b.startAccounts(ctx)
+	// The 60-second registration sweep of section 9.3, behind the listener
+	// for the same reason: it talks to nothing a request depends on.
+	go b.oauthMaintenance(ctx)
 
 	done := make(chan error, 1)
 	go func() { done <- httpSrv.Serve(ln) }()
@@ -548,17 +620,82 @@ func resumeAccounts(
 const sourceURLBase = "https://github.com/thisnick/agent-gm"
 
 // buildVersion and buildCommit are what GET /v1/health reports (spec section
-// 7.5). They come from the build's own VCS stamp rather than from a constant
-// somebody has to remember to bump.
-func buildVersion() string { return "1.0.0-slice2" }
+// 7.5) and what the MCP serverInfo carries (section 1.4). They prefer the
+// link-time stamp of section 14.1, which is the only one a container build
+// has, and fall back to the build's own VCS stamp, which is the only one a
+// plain `go build` from a checkout has. Neither is a constant somebody has to
+// remember to bump.
+func buildVersion() string {
+	if version != "" {
+		return version
+	}
+	// An unstamped build -- a checkout, a test binary -- reports the
+	// in-development version. The commit, which is the field section 1.4
+	// actually leans on, still comes from the VCS stamp below.
+	return "1.0.0-slice2"
+}
 
 func buildCommit() string {
-	if info, ok := debug.ReadBuildInfo(); ok {
-		for _, s := range info.Settings {
-			if s.Key == "vcs.revision" {
-				return s.Value
+	if commit != "" {
+		return commit
+	}
+	if v := vcsSetting("vcs.revision"); v != "" {
+		return v
+	}
+	return "unknown"
+}
+
+func vcsSetting(key string) string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return ""
+	}
+	for _, s := range info.Settings {
+		if s.Key == key {
+			return s.Value
+		}
+	}
+	return ""
+}
+
+
+// mountOAuth serves spec section 9.1's public routes from the authorization
+// server and everything else from the REST surface.
+//
+// The split is by PATH PREFIX rather than by exact route, because an unknown
+// path under `/oauth` is the OAuth layer's 404 to answer and not the REST
+// router's (section 9.1). Handing `/oauth/nonsense` to the REST router would
+// still produce a 404, but with the wrong shape and without the browser
+// security headers of section 9.9.
+func mountOAuth(next http.Handler, o *oauth.Server) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if o.Handles(r.URL.Path) {
+			o.ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// oauthMaintenance removes expired, unactivated registrations every 60
+// seconds, auditing each removal (spec section 9.3).
+func (b *built) oauthMaintenance(ctx context.Context) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			removed, err := b.OAuth.SweepExpiredRegistrations(ctx)
+			if err != nil {
+				b.log.Warn().Err(err).Msg("sweeping expired client registrations")
+				continue
+			}
+			if len(removed) > 0 {
+				b.log.Info().Int("registrations", len(removed)).
+					Msg("removed expired client registrations")
 			}
 		}
 	}
-	return "unknown"
 }

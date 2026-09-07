@@ -77,7 +77,28 @@ var routeTable = map[string]route{
 	"admin_backfill":             {method: http.MethodPost, path: "/v1/admin/backfill", idempotent: false},
 	"admin_backup":               {method: http.MethodPost, path: "/v1/admin/backup", idempotent: false},
 	"admin_audit":                {method: http.MethodGet, path: "/v1/admin/audit", idempotent: false},
-	"admin_diagnostics":          {method: http.MethodGet, path: "/v1/admin/diagnostics", idempotent: false}}
+	"admin_diagnostics":          {method: http.MethodGet, path: "/v1/admin/diagnostics", idempotent: false},
+
+	// The OAuth surface of sections 9.5 and 9.6, which section 7.7 defers to
+	// section 9. None of these is idempotent in the section 6.3 sense: they
+	// take no client_request_id, and the one place a repeat matters --
+	// approving a request that is no longer pending -- is answered with
+	// idempotency_conflict by the server's own state machine.
+	"admin_enrollment_codes_create":        {method: http.MethodPost, path: "/v1/admin/enrollment-codes", idempotent: false},
+	"admin_enrollment_codes_list":          {method: http.MethodGet, path: "/v1/admin/enrollment-codes", idempotent: false},
+	"admin_enrollment_codes_get":           {method: http.MethodGet, path: "/v1/admin/enrollment-codes/{enrollment_code_id}", idempotent: false},
+	"admin_enrollment_codes_revoke":        {method: http.MethodDelete, path: "/v1/admin/enrollment-codes/{enrollment_code_id}", idempotent: false},
+	"admin_authorization_requests_list":    {method: http.MethodGet, path: "/v1/admin/authorization-requests", idempotent: false},
+	"admin_authorization_requests_get":     {method: http.MethodGet, path: "/v1/admin/authorization-requests/{authorization_request_id}", idempotent: false},
+	"admin_authorization_requests_approve": {method: http.MethodPost, path: "/v1/admin/authorization-requests/{authorization_request_id}/approve", idempotent: false},
+	"admin_authorization_requests_deny":    {method: http.MethodPost, path: "/v1/admin/authorization-requests/{authorization_request_id}/deny", idempotent: false},
+	"admin_authorizations_list":            {method: http.MethodGet, path: "/v1/admin/authorizations", idempotent: false},
+	"admin_authorizations_get":             {method: http.MethodGet, path: "/v1/admin/authorizations/{authorization_id}", idempotent: false},
+	"admin_authorizations_revoke":          {method: http.MethodDelete, path: "/v1/admin/authorizations/{authorization_id}", idempotent: false},
+	"admin_clients_list":                   {method: http.MethodGet, path: "/v1/admin/clients", idempotent: false},
+	"admin_clients_get":                    {method: http.MethodGet, path: "/v1/admin/clients/{client_id}", idempotent: false},
+	"admin_clients_revoke":                 {method: http.MethodDelete, path: "/v1/admin/clients/{client_id}", idempotent: false},
+}
 
 // routeByName looks a route up.
 func routeByName(name string) (route, bool) {

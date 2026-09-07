@@ -352,6 +352,49 @@ a confirmation.
 
 `agm admin diagnostics` is the only place raw Google values are served.
 
+### Admin — the OAuth flow
+
+```text
+agm admin enrollment-codes create <label> [--expires-in <duration>] [--scopes <list>] [--allow-scopes <list>]
+agm admin enrollment-codes list
+agm admin enrollment-codes show <enroll-id>
+agm admin enrollment-codes revoke <enroll-id> [--reason <text>] [--yes]
+agm admin authorization-requests list [--status pending|approved|denied|completed]
+agm admin authorization-requests show <authreq-id>
+agm admin authorization-requests approve <authreq-id> [--scopes <list>]
+agm admin authorization-requests deny <authreq-id> [--reason <text>]
+agm admin authorizations list [--include-revoked]
+agm admin authorizations show <auth-id>
+agm admin authorizations revoke <auth-id> [--reason <text>] [--yes]
+agm admin clients list
+agm admin clients show <client-id>
+agm admin clients revoke <client-id> [--reason <text>] [--yes]
+```
+
+These are the owner's half of the OAuth flow, described end to end in
+[oauth.md](oauth.md). **There is no self-service**: a connector cannot get a
+token unless the owner does two separate things — issue a code with
+`agm admin enrollment-codes create`, and approve the request it produces with
+`agm admin authorization-requests approve`. There is no approval page; the
+approval happens on a terminal, which is open question OQ-3's recorded answer.
+
+`agm admin enrollment-codes create` prints the code **once**. Only its SHA-256
+is stored, so no later command can show it again — and that is the point:
+`agm admin enrollment-codes show` proves the value is not in the database.
+`--scopes` replaces the default ceiling (`messages:read messages:write`),
+`--allow-scopes` extends it, and the two are mutually exclusive. `admin` can
+never be enrolled by either.
+
+`agm admin authorization-requests approve --scopes` may only **narrow** what
+the browser selected. Widening is refused, because the browser-selected set is
+what the owner saw on screen next to the global-scope disclosure line; an
+approval that could widen it would grant access the screen never described.
+
+`agm admin authorizations revoke` revokes every token of an authorization at
+once, so the client's next call is a `401` and it cannot refresh its way back.
+`agm admin clients revoke` goes further and removes the registration too, after
+revoking every authorization it holds.
+
 `agm completion bash|zsh|fish` and `agm version` drive no route and are not
 listed above.
 

@@ -62,3 +62,44 @@ jobs:
         with:
           enable-cache: "true"
       - run: devbox run no-real-numbers
+
+  # The container image of spec sections 14.1 and 14.2. It builds for
+  # linux/amd64 AND linux/arm64 on every run, and pushes to GHCR on a push to
+  # `main` (tagged `sha-<short>` and `main`) and on a `vX.Y.Z` tag (tagged
+  # `vX.Y.Z`, `vX.Y` and `latest`). A pull request builds and does not push:
+  # nothing outside this repository may name a commit that is not on main.
+  #
+  # Deployments pin by DIGEST, not by tag (section 14.2). The push step prints
+  # the digest; a release note records it alongside the libgm commit.
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: jetify-com/devbox-install-action@v0.13.0
+        with:
+          enable-cache: "true"
+
+      # Acceptance test 26 and 28, on the architecture this runner can
+      # execute: the image runs as nonroot, it has no shell and no curl, and
+      # `agent-gm healthcheck` exits 0 inside it against a server that reports
+      # the commit that was built. It runs BEFORE the push, so a broken image
+      # is never published.
+      - run: devbox run image-smoke
+
+      - if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - run: devbox run image
+        env:
+          # Only a push to main or a version tag publishes. Everywhere else
+          # scripts/image.sh builds both architectures and stops.
+          AGENT_GM_IMAGE_PUSH: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) && '1' || '0' }}

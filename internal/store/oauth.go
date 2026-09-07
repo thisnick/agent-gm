@@ -650,3 +650,44 @@ func (s *Store) Authorizations(ctx context.Context, includeRevoked bool) ([]Auth
 func joinList(v []string) string { return strings.Join(v, " ") }
 
 func splitList(s string) []string { return strings.Fields(s) }
+
+// OAuthClients lists every registration, newest first.
+func (s *Store) OAuthClients(ctx context.Context) ([]OAuthClient, error) {
+	rows, err := s.read.QueryContext(ctx,
+		`SELECT `+oauthClientColumns+` FROM oauth_clients ORDER BY created_at_ms DESC, id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []OAuthClient
+	for rows.Next() {
+		c, err := scanOAuthClient(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// AuthorizationsForClient lists the live authorizations one registration
+// holds, which is what a client revocation has to take with it.
+func (s *Store) AuthorizationsForClient(ctx context.Context, clientID string) ([]Authorization, error) {
+	rows, err := s.read.QueryContext(ctx,
+		`SELECT `+authorizationColumns+` FROM authorizations
+		  WHERE client_id = ? AND revoked_at_ms IS NULL
+		  ORDER BY created_at_ms DESC, id DESC`, clientID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Authorization
+	for rows.Next() {
+		a, err := scanAuthorization(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}

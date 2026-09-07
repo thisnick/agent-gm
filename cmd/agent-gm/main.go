@@ -26,6 +26,8 @@ func main() {
 		os.Exit(runServe(os.Args[2:]))
 	case "spike":
 		os.Exit(runSpike(os.Args[2:]))
+	case "healthcheck":
+		os.Exit(runHealthcheck(os.Args[2:]))
 	case "version":
 		fmt.Println(versionLine())
 		os.Exit(exitOK)
@@ -45,11 +47,15 @@ func usage() {
 Usage:
   agent-gm serve [--addr <host:port>]
   agent-gm spike <pair|list|send|watch|diag> [flags]
+  agent-gm healthcheck [--addr <host:port>] [--timeout <duration>]
   agent-gm version
 
 `+"`serve`"+` is the server: the /v1 REST API of spec section 7. `+"`agm`"+` is the
 client for it and is a separate binary. `+"`spike`"+` drives the Google Messages
 adapter directly and is Slice 1's deliverable; MCP and OAuth arrive in Slice 3.
+`+"`healthcheck`"+` is the container liveness probe: it GETs /healthz against
+this server's own listen address and exits 0 on 200, because the runtime image
+has no shell and no curl (spec section 14.1).
 
 Environment (spec section 15.1):
   AGENT_GM_PUBLIC_URL       required by `+"`serve`"+`; every URL is built from it

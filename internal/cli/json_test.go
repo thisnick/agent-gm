@@ -70,6 +70,24 @@ func invocationFor(t *testing.T, name string) (args []string, stdin string) {
 		"admin backfill":      {"admin", "backfill", "--account", "acct_01k4z0aa"},
 		"admin backup":        {"admin", "backup"},
 		"admin diagnostics":   {"admin", "diagnostics", "--account", "acct_01k4z0aa"},
+
+		"admin enrollment-codes create": {"admin", "enrollment-codes", "create", "claude.ai"},
+		"admin enrollment-codes list":   {"admin", "enrollment-codes", "list"},
+		"admin enrollment-codes show":   {"admin", "enrollment-codes", "show", "enroll_01k4z9"},
+		"admin enrollment-codes revoke": {"admin", "enrollment-codes", "revoke", "enroll_01k4z9", "--yes"},
+
+		"admin authorization-requests list":    {"admin", "authorization-requests", "list", "--status", "pending"},
+		"admin authorization-requests show":    {"admin", "authorization-requests", "show", "authreq_01k4za"},
+		"admin authorization-requests approve": {"admin", "authorization-requests", "approve", "authreq_01k4za"},
+		"admin authorization-requests deny":    {"admin", "authorization-requests", "deny", "authreq_01k4za", "--reason", "not mine"},
+
+		"admin authorizations list":   {"admin", "authorizations", "list"},
+		"admin authorizations show":   {"admin", "authorizations", "show", "auth_01k4zb"},
+		"admin authorizations revoke": {"admin", "authorizations", "revoke", "auth_01k4zb", "--yes"},
+
+		"admin clients list":   {"admin", "clients", "list"},
+		"admin clients show":   {"admin", "clients", "show", "client_01k4zc"},
+		"admin clients revoke": {"admin", "clients", "revoke", "client_01k4zc", "--yes"},
 	}
 
 	args, ok := table[name]

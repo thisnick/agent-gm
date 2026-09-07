@@ -462,6 +462,94 @@ var Commands = []Command{
 		Name: "admin diagnostics", Routes: []string{"admin_diagnostics"},
 		Supplies: map[string]string{"account_id": "--account"},
 	},
+
+	// The OAuth surface of section 9.5. `agm admin authorization-requests
+	// approve` is the answer to open question OQ-3: the owner approves on a
+	// terminal, and there is no approval page, because an approval page is a
+	// human UI and contradicts non-goal N2.
+	{
+		Name: "admin enrollment-codes create", Routes: []string{"admin_enrollment_codes_create"},
+		Supplies: map[string]string{
+			"label":        "positional <label>",
+			"expires_in":   "--expires-in",
+			"scopes":       "--scopes",
+			"allow_scopes": "--allow-scopes",
+		},
+		Notes: "prints the code once. It is never retrievable again: only its SHA-256 is stored (9.5).",
+	},
+	{
+		Name: "admin enrollment-codes list", Routes: []string{"admin_enrollment_codes_list"},
+		Supplies: map[string]string{},
+	},
+	{
+		Name: "admin enrollment-codes show", Routes: []string{"admin_enrollment_codes_get"},
+		Supplies: map[string]string{"enrollment_code_id": "positional <enroll-id>"},
+	},
+	{
+		Name: "admin enrollment-codes revoke", Routes: []string{"admin_enrollment_codes_revoke"},
+		Supplies: map[string]string{
+			"enrollment_code_id": "positional <enroll-id>",
+			"reason":             "--reason",
+		},
+		Destructive: true,
+		Notes:       "repeating it prints `revoked: false` and exits 0 (9.5).",
+	},
+	{
+		Name: "admin authorization-requests list", Routes: []string{"admin_authorization_requests_list"},
+		Supplies: map[string]string{"status": "--status"},
+	},
+	{
+		Name: "admin authorization-requests show", Routes: []string{"admin_authorization_requests_get"},
+		Supplies: map[string]string{"authorization_request_id": "positional <authreq-id>"},
+	},
+	{
+		Name: "admin authorization-requests approve", Routes: []string{"admin_authorization_requests_approve"},
+		Supplies: map[string]string{
+			"authorization_request_id": "positional <authreq-id>",
+			"scopes":                   "--scopes, which may only NARROW what the browser selected (9.5)",
+		},
+	},
+	{
+		Name: "admin authorization-requests deny", Routes: []string{"admin_authorization_requests_deny"},
+		Supplies: map[string]string{
+			"authorization_request_id": "positional <authreq-id>",
+			"reason":                   "--reason",
+		},
+	},
+	{
+		Name: "admin authorizations list", Routes: []string{"admin_authorizations_list"},
+		Supplies: map[string]string{"include_revoked": "--include-revoked"},
+	},
+	{
+		Name: "admin authorizations show", Routes: []string{"admin_authorizations_get"},
+		Supplies: map[string]string{"authorization_id": "positional <auth-id>"},
+	},
+	{
+		Name: "admin authorizations revoke", Routes: []string{"admin_authorizations_revoke"},
+		Supplies: map[string]string{
+			"authorization_id": "positional <auth-id>",
+			"reason":           "--reason",
+		},
+		Destructive: true,
+		Notes:       "revoking an authorization revokes every token of it, so the connector's next call is a 401.",
+	},
+	{
+		Name: "admin clients list", Routes: []string{"admin_clients_list"},
+		Supplies: map[string]string{},
+	},
+	{
+		Name: "admin clients show", Routes: []string{"admin_clients_get"},
+		Supplies: map[string]string{"client_id": "positional <client-id>"},
+	},
+	{
+		Name: "admin clients revoke", Routes: []string{"admin_clients_revoke"},
+		Supplies: map[string]string{
+			"client_id": "positional <client-id>",
+			"reason":    "--reason",
+		},
+		Destructive: true,
+		Notes:       "removes the registration and revokes every authorization it holds.",
+	},
 }
 
 // CommandByName looks a command up by its typed name.

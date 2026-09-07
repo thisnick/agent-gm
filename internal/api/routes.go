@@ -396,6 +396,85 @@ var Routes = []Route{
 		Query:     withPaging("kind", "kind_prefix", "account_id", "authorization_id", "after", "before"),
 		Paginated: true,
 	},
+
+	// --- admin: the OAuth surface of section 9.5 ----------------------------
+	//
+	// Four families, all `admin`, none of them reachable by any token an
+	// agent can hold: issuing enrollment codes, deciding authorization
+	// requests, and revoking the grants and registrations that result. Every
+	// revocation takes its reason as the query parameter `?reason=`, which is
+	// section 9.5's shape and is why `reason` is in Query rather than Body on
+	// three DELETEs.
+	{
+		Method: http.MethodPost, Path: "/v1/admin/enrollment-codes", Name: "admin_enrollment_codes_create",
+		Scope: ScopeAdmin,
+		Body:  []string{"label", "expires_in", "scopes", "allow_scopes"},
+		Notes: "answers 200, not 201. `data.code` is the ONLY time the value is returned and only its SHA-256 is stored (9.5). `scopes` replaces the default ceiling, `allow_scopes` extends it, and they are mutually exclusive. admin can never be enrolled.",
+	},
+	{
+		Method: http.MethodGet, Path: "/v1/admin/enrollment-codes", Name: "admin_enrollment_codes_list",
+		Scope: ScopeAdmin,
+		Notes: "no code value appears here, or anywhere else after creation.",
+	},
+	{
+		Method: http.MethodGet, Path: "/v1/admin/enrollment-codes/{enrollment_code_id}",
+		Name:  "admin_enrollment_codes_get", Scope: ScopeAdmin,
+	},
+	{
+		Method: http.MethodDelete, Path: "/v1/admin/enrollment-codes/{enrollment_code_id}",
+		Name: "admin_enrollment_codes_revoke", Scope: ScopeAdmin,
+		Query: []string{"reason"},
+		Notes: "repeating it answers 200 with `revoked: false` (9.5): a second revocation is not a failure.",
+	},
+	{
+		Method: http.MethodGet, Path: "/v1/admin/authorization-requests",
+		Name: "admin_authorization_requests_list", Scope: ScopeAdmin,
+		Query: []string{"status"},
+	},
+	{
+		Method: http.MethodGet, Path: "/v1/admin/authorization-requests/{authorization_request_id}",
+		Name: "admin_authorization_requests_get", Scope: ScopeAdmin,
+	},
+	{
+		Method: http.MethodPost, Path: "/v1/admin/authorization-requests/{authorization_request_id}/approve",
+		Name: "admin_authorization_requests_approve", Scope: ScopeAdmin,
+		Body:  []string{"scopes"},
+		Notes: "`scopes` may only NARROW the browser-selected set; widening or an empty list is invalid_request, a no-longer-pending request is idempotency_conflict, an expired one is invalid_request (9.5).",
+	},
+	{
+		Method: http.MethodPost, Path: "/v1/admin/authorization-requests/{authorization_request_id}/deny",
+		Name: "admin_authorization_requests_deny", Scope: ScopeAdmin,
+		Body:  []string{"reason"},
+		Notes: "a denial is a decision the client is entitled to hear: the waiting page's completion redirects with error=access_denied (9.5).",
+	},
+	{
+		Method: http.MethodGet, Path: "/v1/admin/authorizations", Name: "admin_authorizations_list",
+		Scope: ScopeAdmin,
+		Query: []string{"include_revoked"},
+	},
+	{
+		Method: http.MethodGet, Path: "/v1/admin/authorizations/{authorization_id}",
+		Name: "admin_authorizations_get", Scope: ScopeAdmin,
+	},
+	{
+		Method: http.MethodDelete, Path: "/v1/admin/authorizations/{authorization_id}",
+		Name: "admin_authorizations_revoke", Scope: ScopeAdmin,
+		Query: []string{"reason"},
+		Notes: "revoking any authorization revokes every token of it. This is the route section 16 Slice 3 test 29 uses to cut a connector off.",
+	},
+	{
+		Method: http.MethodGet, Path: "/v1/admin/clients", Name: "admin_clients_list", Scope: ScopeAdmin,
+	},
+	{
+		Method: http.MethodGet, Path: "/v1/admin/clients/{client_id}", Name: "admin_clients_get",
+		Scope: ScopeAdmin,
+	},
+	{
+		Method: http.MethodDelete, Path: "/v1/admin/clients/{client_id}", Name: "admin_clients_revoke",
+		Scope: ScopeAdmin,
+		Query: []string{"reason"},
+		Notes: "removes a dynamic registration and revokes every authorization it holds.",
+	},
 	{
 		Method: http.MethodGet, Path: "/v1/admin/diagnostics", Name: "admin_diagnostics", Scope: ScopeAdmin,
 		Query: []string{"account_id"},

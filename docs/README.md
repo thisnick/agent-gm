@@ -18,7 +18,7 @@ owes so an implementer does not have to invent a structure.
 | `operations.md` | 2 | §12, §15 — the environment table, the settings table with bounds **and per-account/server scope**, backup and restore (the three things that move together), health and diagnosis, and the runbook |
 | `mcp.md` | 3 | §8 — the tool catalogue with schemas and annotations, `isError` semantics, scope gating, and **`list_accounts` and the account section of the instructions block**, and a **"First five minutes"** section byte-identical to the served `instructions` block (a test asserts it) |
 | `oauth.md` | 3 | §9 — discovery documents, DCR, the authorization screen, enrollment codes, owner approval, tokens, revocation, and the budgets on unauthenticated endpoints |
-| `deploy.md` | 4 | §14, §15 — the Dockerfile, the generic compose example, GHCR by digest, the npm wrapper, and what a host must supply |
+| `deploy.md` | 3 | §14, §15 — the Dockerfile, the generic compose example, GHCR by digest, the `agent-gm healthcheck` probe, `/data`, and what a host must supply. Pulled forward from Slice 4 by decision D35: the connector gate runs against the container, so the container ships in Slice 3 |
 | `upstream-pin.md` | every pin bump (spec §3.6) | §3.6 — the pinned `libgm` commit, what each bump changed in the §3.1 surface, and the live gate that accepted it |
 
 ## Two things to read before anything else

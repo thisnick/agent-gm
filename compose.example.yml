@@ -1,0 +1,113 @@
+# Agent GM -- a generic Compose example (spec section 14.1).
+#
+# This file is an EXAMPLE, not a deployment. It is what any host needs to run
+# Agent GM: the service, the /data volume, and the environment. The owner's
+# real Compose service and the Cloudflare Tunnel that fronts it live in a
+# different repository and are deliberately out of scope here -- a deployment
+# is a fact about one machine, and this repository must not pretend to know
+# which one.
+#
+# It works with nothing but the three required variables:
+#
+#   export AGENT_GM_PUBLIC_URL=https://gm.example.com
+#   export AGENT_GM_ADMIN_SECRET=$(openssl rand -base64 48)   # >= 43 chars
+#   export AGENT_GM_DATA_KEY=$(openssl rand -hex 32)          # 256 bits
+#   docker compose -f compose.example.yml up
+#
+# Then `curl -fsS http://localhost:8080/healthz` answers `{"status":"ok"}`.
+#
+# KEEP AGENT_GM_DATA_KEY. It is not rotatable, and without it every account's
+# saved session -- the credential that keeps the phone paired -- is
+# unreadable. See docs/operations.md, "backup and restore".
+
+services:
+  agent-gm:
+    # Building from this checkout is what makes the example runnable with no
+    # registry access. A real host pins the published image BY DIGEST instead,
+    # because a tag is a label and a digest is evidence (spec section 14.2):
+    #
+    #   image: ghcr.io/thisnick/agent-gm@sha256:<digest from the release note>
+    #
+    # and deletes the `build:` block. `:latest` is convenient and is not a
+    # deployment: it silently changes what you are running.
+    build:
+      context: .
+    image: agent-gm:local
+    restart: unless-stopped
+
+    environment:
+      # --- required (spec section 15.1) -----------------------------------
+      # The public origin. It is the OAuth issuer, the canonical MCP
+      # resource, and the base of every URL Agent GM hands out; it is never
+      # derived from the Host header, so it must be the URL clients actually
+      # use -- the tunnel's or the proxy's, not the container's.
+      AGENT_GM_PUBLIC_URL: ${AGENT_GM_PUBLIC_URL:?set AGENT_GM_PUBLIC_URL, e.g. https://gm.example.com}
+      # The owner's bootstrap credential, at least 43 characters. The server
+      # refuses to start with a shorter one.
+      AGENT_GM_ADMIN_SECRET: ${AGENT_GM_ADMIN_SECRET:?set AGENT_GM_ADMIN_SECRET, e.g. openssl rand -base64 48}
+      # 256 bits, as 64 hex characters or standard base64. NOT ROTATABLE.
+      AGENT_GM_DATA_KEY: ${AGENT_GM_DATA_KEY:?set AGENT_GM_DATA_KEY, e.g. openssl rand -hex 32}
+
+      # --- optional, shown with their defaults ----------------------------
+      # AGENT_GM_DATA_DIR and AGENT_GM_LISTEN_ADDR are already set in the
+      # image; overriding the bind address means changing the port mapping
+      # below to match.
+      AGENT_GM_LOG_LEVEL: ${AGENT_GM_LOG_LEVEL:-info}
+      AGENT_GM_LOG_FORMAT: ${AGENT_GM_LOG_FORMAT:-json}
+      # Only if a reverse proxy or tunnel sits in front AND you trust it to
+      # set X-Forwarded-For. An invalid value refuses to start. Leaving it
+      # empty means every request's client source is the peer address, which
+      # is the safe default and is what rate limiting keys on.
+      AGENT_GM_TRUSTED_PROXY_CIDRS: ${AGENT_GM_TRUSTED_PROXY_CIDRS:-}
+
+    ports:
+      # Publish on loopback only if something else (a tunnel, a proxy) is the
+      # public path: "127.0.0.1:8080:8080". Agent GM speaks plain HTTP and
+      # must not be exposed to the internet directly.
+      - "${AGENT_GM_BIND:-0.0.0.0}:8080:8080"
+
+    volumes:
+      # Holds agent-gm.sqlite3, sessions/ (one file per account),
+      # media-cache/ and backups/. Losing it means re-pairing every account.
+      - agent-gm-data:/data
+
+    # The image already declares a HEALTHCHECK; it is repeated here so that
+    # `docker compose up --wait` and a `depends_on: condition:
+    # service_healthy` work against a Compose file read on its own.
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/agent-gm", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+    security_opt:
+      - no-new-privileges:true
+    # The image runs as USER nonroot (uid 65532) and never needs to write
+    # outside /data.
+    read_only: true
+
+  # --- Cloudflare Tunnel sidecar (commented out) --------------------------
+  #
+  # Agent GM serves plain HTTP and has no TLS of its own; AGENT_GM_PUBLIC_URL
+  # is an https:// URL because something in front terminates TLS. A tunnel is
+  # one way to do that without opening a port. Uncomment, set
+  # CLOUDFLARE_TUNNEL_TOKEN, and configure the tunnel's public hostname to
+  # point at the origin `http://agent-gm:8080` -- the service name on this
+  # network, not localhost.
+  #
+  # If you enable this, change the `ports:` mapping above to
+  # "127.0.0.1:8080:8080" or drop it entirely: the tunnel reaches the service
+  # over the Compose network, and a published port is then only a second,
+  # unprotected way in.
+  #
+  # cloudflared:
+  #   image: cloudflare/cloudflared:latest
+  #   restart: unless-stopped
+  #   command: ["tunnel", "--no-autoupdate", "run", "--token", "${CLOUDFLARE_TUNNEL_TOKEN:?}"]
+  #   depends_on:
+  #     agent-gm:
+  #       condition: service_healthy
+
+volumes:
+  agent-gm-data:

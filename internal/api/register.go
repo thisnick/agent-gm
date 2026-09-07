@@ -96,6 +96,22 @@ func RegisterAll(s *Server, d *HandlerDeps) error {
 		"admin_backup":        d.adminBackup,
 		"admin_audit":         d.adminAudit,
 		"admin_diagnostics":   d.adminDiagnostics,
+
+		// admin: the OAuth surface of section 9.5
+		"admin_enrollment_codes_create":        d.adminEnrollmentCodesCreate,
+		"admin_enrollment_codes_list":          d.adminEnrollmentCodesList,
+		"admin_enrollment_codes_get":           d.adminEnrollmentCodesGet,
+		"admin_enrollment_codes_revoke":        d.adminEnrollmentCodesRevoke,
+		"admin_authorization_requests_list":    d.adminAuthorizationRequestsList,
+		"admin_authorization_requests_get":     d.adminAuthorizationRequestsGet,
+		"admin_authorization_requests_approve": d.adminAuthorizationRequestsApprove,
+		"admin_authorization_requests_deny":    d.adminAuthorizationRequestsDeny,
+		"admin_authorizations_list":            d.adminAuthorizationsList,
+		"admin_authorizations_get":             d.adminAuthorizationsGet,
+		"admin_authorizations_revoke":          d.adminAuthorizationsRevoke,
+		"admin_clients_list":                   d.adminClientsList,
+		"admin_clients_get":                    d.adminClientsGet,
+		"admin_clients_revoke":                 d.adminClientsRevoke,
 	}
 
 	// A deterministic order, so a failure names the same route on every run.

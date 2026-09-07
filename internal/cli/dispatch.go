@@ -523,6 +523,137 @@ func buildCommandTable() []*command {
 			flags:   []flagDef{fAccountQuery},
 		},
 
+		// --- admin: the OAuth surface of section 9.5 -----------------------
+		//
+		// This is open question OQ-3's answer in code: the owner approves an
+		// authorization on a terminal. There is no approval page, because an
+		// approval page is a human UI and contradicts non-goal N2.
+		{
+			words: []string{"admin", "enrollment-codes", "create"},
+			inventory: "admin enrollment-codes create", route: "admin_enrollment_codes_create",
+			summary: "issue an enrollment code; it is printed once and never again",
+			pos:     []posDef{{name: "<label>", param: "label", where: wBody, required: true}},
+			flags: []flagDef{
+				{name: "--expires-in", kind: kString, param: "expires_in", where: wBody,
+					help: "a duration such as 30m; 1m to 24h, defaulting to oauth.enrollment_default_ttl"},
+				{name: "--scopes", kind: kString, param: "scopes", where: wBody,
+					help: "replace the default ceiling (messages:read messages:write)"},
+				{name: "--allow-scopes", kind: kString, param: "allow_scopes", where: wBody,
+					help: "extend the default ceiling; mutually exclusive with --scopes"},
+			},
+		},
+		{
+			words: []string{"admin", "enrollment-codes", "list"},
+			inventory: "admin enrollment-codes list", route: "admin_enrollment_codes_list",
+			summary: "every enrollment code, without its value",
+		},
+		{
+			words: []string{"admin", "enrollment-codes", "show"},
+			inventory: "admin enrollment-codes show", route: "admin_enrollment_codes_get",
+			summary: "one enrollment code",
+			pos: []posDef{{name: "<enroll-id>", param: "enrollment_code_id", where: wPath, required: true}},
+		},
+		{
+			words: []string{"admin", "enrollment-codes", "revoke"},
+			inventory: "admin enrollment-codes revoke", route: "admin_enrollment_codes_revoke",
+			destructive: true,
+			confirm:     "stops this enrollment code being redeemable. Repeating it is not an error",
+			summary:     "revoke an enrollment code",
+			pos: []posDef{{name: "<enroll-id>", param: "enrollment_code_id", where: wPath, required: true}},
+			flags: []flagDef{
+				{name: "--reason", kind: kString, param: "reason", where: wQuery,
+					help: "recorded in the audit row"},
+			},
+		},
+		{
+			words: []string{"admin", "authorization-requests", "list"},
+			inventory: "admin authorization-requests list", route: "admin_authorization_requests_list",
+			summary: "authorization requests waiting on the owner",
+			flags: []flagDef{
+				{name: "--status", kind: kString, param: "status", where: wQuery,
+					help: "pending | approved | denied | completed"},
+			},
+		},
+		{
+			words: []string{"admin", "authorization-requests", "show"},
+			inventory: "admin authorization-requests show", route: "admin_authorization_requests_get",
+			summary: "one authorization request",
+			pos: []posDef{{name: "<authreq-id>", param: "authorization_request_id", where: wPath, required: true}},
+		},
+		{
+			words: []string{"admin", "authorization-requests", "approve"},
+			inventory: "admin authorization-requests approve",
+			route:     "admin_authorization_requests_approve",
+			summary:   "approve an authorization request",
+			pos: []posDef{{name: "<authreq-id>", param: "authorization_request_id", where: wPath, required: true}},
+			flags: []flagDef{
+				{name: "--scopes", kind: kString, param: "scopes", where: wBody,
+					help: "narrow the browser-selected scopes; widening is refused"},
+			},
+		},
+		{
+			words: []string{"admin", "authorization-requests", "deny"},
+			inventory: "admin authorization-requests deny", route: "admin_authorization_requests_deny",
+			summary: "deny an authorization request",
+			pos: []posDef{{name: "<authreq-id>", param: "authorization_request_id", where: wPath, required: true}},
+			flags: []flagDef{
+				{name: "--reason", kind: kString, param: "reason", where: wBody,
+					help: "recorded in the audit row"},
+			},
+		},
+		{
+			words: []string{"admin", "authorizations", "list"},
+			inventory: "admin authorizations list", route: "admin_authorizations_list",
+			summary: "every credential this server has issued",
+			flags: []flagDef{
+				{name: "--include-revoked", kind: kBool, param: "include_revoked", where: wQuery,
+					help: "include revoked authorizations"},
+			},
+		},
+		{
+			words: []string{"admin", "authorizations", "show"},
+			inventory: "admin authorizations show", route: "admin_authorizations_get",
+			summary: "one authorization",
+			pos: []posDef{{name: "<auth-id>", param: "authorization_id", where: wPath, required: true}},
+		},
+		{
+			words: []string{"admin", "authorizations", "revoke"},
+			inventory: "admin authorizations revoke", route: "admin_authorizations_revoke",
+			destructive: true,
+			confirm: "revokes every token of this authorization. The client's next call is a 401, " +
+				"and it cannot refresh its way back",
+			summary: "revoke an authorization",
+			pos:     []posDef{{name: "<auth-id>", param: "authorization_id", where: wPath, required: true}},
+			flags: []flagDef{
+				{name: "--reason", kind: kString, param: "reason", where: wQuery,
+					help: "recorded in the audit row"},
+			},
+		},
+		{
+			words: []string{"admin", "clients", "list"},
+			inventory: "admin clients list", route: "admin_clients_list",
+			summary: "every dynamically registered client",
+		},
+		{
+			words: []string{"admin", "clients", "show"},
+			inventory: "admin clients show", route: "admin_clients_get",
+			summary: "one registration",
+			pos: []posDef{{name: "<client-id>", param: "client_id", where: wPath, required: true}},
+		},
+		{
+			words: []string{"admin", "clients", "revoke"},
+			inventory: "admin clients revoke", route: "admin_clients_revoke",
+			destructive: true,
+			confirm: "removes this registration and revokes every authorization it holds. " +
+				"The client must register again",
+			summary: "revoke a client registration",
+			pos:     []posDef{{name: "<client-id>", param: "client_id", where: wPath, required: true}},
+			flags: []flagDef{
+				{name: "--reason", kind: kString, param: "reason", where: wQuery,
+					help: "recorded in the audit row"},
+			},
+		},
+
 		// --- local commands, which drive no route --------------------------
 		{
 			words: []string{"completion"}, summary: "print a shell completion script",

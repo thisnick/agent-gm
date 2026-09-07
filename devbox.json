@@ -80,8 +80,10 @@
         "exit 2"
       ],
       "image": [
-        "echo 'the Dockerfile and GHCR push of spec 14.1 arrives in Slice 4; there is no script yet' >&2",
-        "exit 2"
+        "./scripts/image.sh"
+      ],
+      "image-smoke": [
+        "./scripts/image.sh smoke"
       ]
     }
   }

@@ -1,0 +1,16 @@
+# The build context is the source tree and nothing else. `.git` is excluded
+# deliberately: the commit reaches the binary through --build-arg COMMIT, not
+# through a VCS stamp, so shipping the history into the build would only make
+# the context larger and the layer cache more brittle.
+.git
+.github
+.claude
+.devbox
+bin/
+dist/
+data/
+docs/
+plans/
+testdata/
+*.env
+*.local

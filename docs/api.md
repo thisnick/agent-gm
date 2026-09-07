@@ -369,6 +369,20 @@ during backfill is not read as an absent message.
 | `POST` | `/v1/admin/backup` | `admin` | — | Writes a snapshot under the data directory. The caller does not choose the path |
 | `GET` | `/v1/admin/audit` | `admin` | query `kind`, `kind_prefix`, `account_id`, `authorization_id`, `after`, `before`, `cursor`, `limit` | The audit trail. Rows for a removed account survive it |
 | `GET` | `/v1/admin/diagnostics` | `admin` | query `account_id` | The **only** place raw Google values appear: `delivery_state_raw`, `operations.google_status_raw`, `CurrentSessionID`, the chosen gaia device, and the compiled and live `ConfigVersion` |
+| `POST` | `/v1/admin/enrollment-codes` | `admin` | body `label`, `expires_in`, `scopes`, `allow_scopes` | Issues an enrollment code. Answers **200, not 201**: only the SHA-256 is stored, so there is no resource at a URL to point a `Location` at. `data.code` is the **only** time the value appears. `scopes` replaces the default ceiling `messages:read messages:write`, `allow_scopes` extends it, and the two are mutually exclusive. `expires_in` is a duration string or a number of seconds, 1m–24h, defaulting to `oauth.enrollment_default_ttl`. **`admin` can never be enrolled** |
+| `GET` | `/v1/admin/enrollment-codes` | `admin` | — | Every code, without its value |
+| `GET` | `/v1/admin/enrollment-codes/{enrollment_code_id}` | `admin` | — | One code, without its value |
+| `DELETE` | `/v1/admin/enrollment-codes/{enrollment_code_id}` | `admin` | query `reason` | Revokes it. Repeating the call answers `200` with `revoked: false`: a second revocation is not a failure |
+| `GET` | `/v1/admin/authorization-requests` | `admin` | query `status` | `pending`, `approved`, `denied` or `completed`. A pending request past its deadline reports `expired`, which is derived rather than stored |
+| `GET` | `/v1/admin/authorization-requests/{authorization_request_id}` | `admin` | — | One request. It carries no secret: not the context handle, not the form token, not a code |
+| `POST` | `/v1/admin/authorization-requests/{authorization_request_id}/approve` | `admin` | body `scopes` | `scopes` may only **narrow** the browser-selected set; widening or an empty list is `invalid_request`. A no-longer-pending request is `idempotency_conflict`; an expired one is `invalid_request` |
+| `POST` | `/v1/admin/authorization-requests/{authorization_request_id}/deny` | `admin` | body `reason` | A denial is a decision the client is entitled to hear: the waiting page's completion redirects with `error=access_denied` rather than leaving it hanging |
+| `GET` | `/v1/admin/authorizations` | `admin` | query `include_revoked` | Every credential this server has issued, admin bootstrap and OAuth alike. No token and no hash appears |
+| `GET` | `/v1/admin/authorizations/{authorization_id}` | `admin` | — | One authorization |
+| `DELETE` | `/v1/admin/authorizations/{authorization_id}` | `admin` | query `reason` | Revokes it and **every token of it**, so the client's next call is `401` and it cannot refresh its way back |
+| `GET` | `/v1/admin/clients` | `admin` | — | Every dynamic registration. There is no `client_secret` anywhere: public native clients only |
+| `GET` | `/v1/admin/clients/{client_id}` | `admin` | — | One registration |
+| `DELETE` | `/v1/admin/clients/{client_id}` | `admin` | query `reason` | Removes the registration **and** revokes every authorization it holds. Removing the row alone would leave live tokens behind |
 
 <!-- route-inventory:end -->
 
@@ -384,6 +398,12 @@ carry an **`effect`** field holding an exact sentence:
 The same string is the MCP tool description's closing sentence and the `agm`
 confirmation prompt, so a model or a human cannot read a broader claim off one
 surface than another.
+
+The four `admin` families above — enrollment codes, authorization requests,
+authorizations and clients — are the owner's half of the OAuth flow, and they
+are described end to end in [oauth.md](oauth.md). None of them is reachable by
+any token an agent can hold: `admin` is issued only by the admin bootstrap, is
+never enrollable, and is `invalid_scope` at `/oauth/authorize`.
 
 `PATCH /v1/admin/settings` is the one route whose body fields are not a fixed
 list, so the parameters column above says `—` rather than enumerating them:

@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -25,16 +24,12 @@ import (
 	"github.com/thisnick/agent-gm/internal/store"
 )
 
+// versionLine is `agent-gm version`. It reports the same commit
+// GET /v1/health does -- the link-time stamp of spec section 14.1 in an
+// image, the VCS stamp in a checkout build -- so `docker run … version` and
+// the health endpoint can never disagree about which source is running.
 func versionLine() string {
-	rev := "unknown"
-	if info, ok := debug.ReadBuildInfo(); ok {
-		for _, s := range info.Settings {
-			if s.Key == "vcs.revision" {
-				rev = s.Value
-			}
-		}
-	}
-	return fmt.Sprintf("agent-gm %s (libgm pinned at %s)", rev, gm.PinnedUpstreamCommit)
+	return fmt.Sprintf("agent-gm %s (libgm pinned at %s)", buildCommit(), gm.PinnedUpstreamCommit)
 }
 
 func spikeUsage() {

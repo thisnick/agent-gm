@@ -76,6 +76,33 @@ func TestRouteInventoryMatchesTheSpec(t *testing.T) {
 		{http.MethodPost, "/v1/admin/backup", api.ScopeAdmin},
 		{http.MethodGet, "/v1/admin/audit", api.ScopeAdmin},
 		{http.MethodGet, "/v1/admin/diagnostics", api.ScopeAdmin},
+
+		// Section 7.7's admin table ends with one row that names four route
+		// families and defers their shapes to section 9:
+		//
+		//     | -- | /v1/admin/enrollment-codes,
+		//            /v1/admin/authorization-requests,
+		//            /v1/admin/authorizations, /v1/admin/clients | section 9 |
+		//
+		// So these fourteen are restated from sections 9.5 and 9.6 rather
+		// than from 7.7, and they are listed here for the same reason every
+		// other row is: this test is the place the inventory and the spec are
+		// held to each other, and a family the spec defers is still a family
+		// the spec names.
+		{http.MethodPost, "/v1/admin/enrollment-codes", api.ScopeAdmin},
+		{http.MethodGet, "/v1/admin/enrollment-codes", api.ScopeAdmin},
+		{http.MethodGet, "/v1/admin/enrollment-codes/{enrollment_code_id}", api.ScopeAdmin},
+		{http.MethodDelete, "/v1/admin/enrollment-codes/{enrollment_code_id}", api.ScopeAdmin},
+		{http.MethodGet, "/v1/admin/authorization-requests", api.ScopeAdmin},
+		{http.MethodGet, "/v1/admin/authorization-requests/{authorization_request_id}", api.ScopeAdmin},
+		{http.MethodPost, "/v1/admin/authorization-requests/{authorization_request_id}/approve", api.ScopeAdmin},
+		{http.MethodPost, "/v1/admin/authorization-requests/{authorization_request_id}/deny", api.ScopeAdmin},
+		{http.MethodGet, "/v1/admin/authorizations", api.ScopeAdmin},
+		{http.MethodGet, "/v1/admin/authorizations/{authorization_id}", api.ScopeAdmin},
+		{http.MethodDelete, "/v1/admin/authorizations/{authorization_id}", api.ScopeAdmin},
+		{http.MethodGet, "/v1/admin/clients", api.ScopeAdmin},
+		{http.MethodGet, "/v1/admin/clients/{client_id}", api.ScopeAdmin},
+		{http.MethodDelete, "/v1/admin/clients/{client_id}", api.ScopeAdmin},
 	}
 
 	key := func(m, p string) string { return m + " " + p }
