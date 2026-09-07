@@ -505,3 +505,112 @@ Must land before a tag:
 2. **R-10** — a text test over `release.yml` and `image.sh`, so R-9 cannot
    recur silently.
 3. R-11 and the `docs/deploy.md` cosign copy: nice to have, not blocking.
+
+---
+
+# Addendum 2 — re-review at `9f1b646` (and `1c9ce22`)
+
+`devbox run check` at `9f1b646`: **EXIT=0**, 0 lint issues, 21 packages `ok`,
+`no-real-numbers`/`no-deployment-host` clean. `internal/release` is **25
+tests, 25 passing** (14 at `a9f5626`, 22 at `ee7cad1`).
+
+My `matrix_consistency_test.go` was extended, not edited: the diff
+`ee7cad1..9f1b646` on that file is **pure addition** — zero deleted lines. The
+addition (`TestTheDocsAndTheNotesAgreeOnTheCosignIdentity`) is better than the
+tightening I asked for: it substitutes `$repo` for the value the script
+itself defaults to, so renaming the repository moves one string, and it holds
+the docs copy to the same two rules as the notes copy, so changing **both** in
+the same wrong way is still caught.
+
+## R-9: fixed, and I ran the jq
+
+Against the exact shape GitHub returns on a tag push (a green `ci` push run
+for `main`, a still-running `ci` push run for the tag, and the `release` run):
+
+```
+new rule  →  1     the release proceeds
+```
+
+and against the same fixture with the green run turned red:
+
+```
+new rule  →  0     the release is refused
+```
+
+The old rule returned `none` for both. The gate now answers the question it
+meant to ask. The diagnostic dump of every run for the sha with its
+`status`/`conclusion` is a genuine improvement on what I asked for — "no green
+run" and "still running" do want different actions.
+
+## R-11: fixed, driven
+
+```
+sha256:zzz…zzz  → not a sha256:<64 lowercase hex> digest
+sha256:AAA…AAA  → not a sha256:<64 lowercase hex> digest   (uppercase refused too)
+v01.0.0         → refusing to publish from the tag 'v01.0.0': it is not vMAJOR.MINOR.PATCH…
+v1.02.0         → same
+v0.0.1 / v10.20.30 / v1.0.0-rc.1  → past require_tag, stopped at the digest
+```
+
+The leading-zero rule is `(0|[1-9][0-9]*)`, so it refuses `01` without
+refusing `0` — the mistake that would have been easy to make here.
+
+## R-10: the two survivors are dead, and the text tests bite
+
+| # | Mutation | Result |
+|---|---|---|
+| Q5p | `image.sh`: `--build-arg "COMMIT="` | **killed** — `TestTheImageBuildPassesTheCommitTheLabelRecords` |
+| Q5b | `image.sh`: delete the `COMMIT` build-arg line | **killed** — same |
+| Q6a | `release.yml`: delete the `merge-base` lines outright | **killed** — `TestTheReleaseWorkflowGatesTheTagOnMainAndOnGreen` |
+| Q7 | `release.yml`: put R-9 back (`sort_by(.run_started_at) \| last`) | **killed** — same test, on both halves |
+| Q8 | `release.yml`: weaken the tag guard to `^v.*$` | **killed** — same |
+| Q9 | `docs/deploy.md`: drift the cosign identity to `@refs/heads/main` | **killed** — `TestTheDocsAndTheNotesAgreeOnTheCosignIdentity` |
+
+Six mutations, six named killers. Both of my `ee7cad1` survivors are gone and
+the R-9 shape cannot be reintroduced by hand.
+
+## R-12 (low, new) — two shapes a text test still lets through
+
+Text is weaker than execution; the implementer said so, and I agree that
+encoding the decision is the point. Two specific holes, both one-line fixes,
+neither blocking:
+
+- **A neutered check that is still spelled out.** `if false && ! git merge-base
+  --is-ancestor …` passes, because the assertion is
+  `strings.Contains(wf, "merge-base --is-ancestor")` and the text is still
+  there. Outright deletion (Q6a) *is* caught, so this only covers the careless
+  edit, not the honest one.
+- **The ancestry target is checked separately from the ancestry check.**
+  `tag_guards_test.go:264`ff asserts `merge-base --is-ancestor` and
+  `origin/main` as two independent substrings. Pointing the check at
+  `origin/any-branch` (**Q6b**) **SURVIVED**, because `origin/main` still
+  appears on the next line — in the *error message*
+  (`release.yml:141`). Asserting the one string
+  `--is-ancestor "${GITHUB_SHA}" origin/main` closes it.
+
+Also cosmetic: the `^sha256:[0-9a-f]{64}$` regexp is now written twice, in
+`do_publish` and in `require_digest`. A `digest_shape='…'` variable beside
+`semver_tag` would make them one string, the way `semver_tag` already is.
+
+## Final verdict
+
+**PR #1: merge.** Every finding I raised across three rounds — R-1 through
+R-11 — is fixed, and I verified each by running it rather than by reading the
+diff. Twenty-six mutations of mine were planted across the three rounds; the
+five that survived at `a9f5626` and the two that survived at `ee7cad1` are all
+killed by named tests now.
+
+**`v1.0.0` may be tagged.** The blocker I raised at `ee7cad1` is gone and the
+gate cannot pass by accident or fail by accident. R-12 is a tightening, not a
+condition.
+
+Two things the coordinator should still expect, neither of which any test can
+discharge:
+
+1. **The first tag is itself a live gate.** The tag path has never executed:
+   no GitHub release has been created, no cosign signature written, no npm
+   version published, and the `ci`→`release` digest handshake has never
+   happened for real. Everything about it is now asserted, and assertion is
+   not execution. Cut `v1.0.0` watching the run, not from a phone.
+2. **§16 Slice 4 test 6**, the owner's Mac CLI gate, remains outstanding and
+   is the coordinator's.
