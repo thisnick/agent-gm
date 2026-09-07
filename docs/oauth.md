@@ -514,8 +514,13 @@ afterwards needs `--server`. `--profile <name>` overrides the name. There is
 no profile called `default` and no built-in hostname: a command with no
 `--server`, no `AGENT_GM_URL` and no active profile fails saying what to type.
 
-Each profile is bound to an exact server issuer and resource, and records the
-`client_id` its tokens belong to. `agm auth login` is the only command that
+The profile records the access token's expiry and the `client_id` its tokens
+belong to, and it **refreshes itself**: within 60 seconds of expiry, or on the
+first `invalid_token`, `agm` exchanges the refresh token at
+`POST /v1/auth/refresh` and stores the rotation. A token past its recorded
+expiry is never presented. Exit `3` means a refresh was attempted and refused.
+
+Each profile is bound to an exact server issuer and resource. `agm auth login` is the only command that
 may name a server this machine has no profile for; on every other command a
 `--server` that matches no stored profile is refused as `invalid_request`,
 naming `agm auth login --server`. One profile's token is never forwarded to

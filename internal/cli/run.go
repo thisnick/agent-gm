@@ -253,6 +253,14 @@ func (r *runner) connect() error {
 	if cred.Source == SourceRefreshFile {
 		return r.exchangeRefreshToken()
 	}
+	if cred.Source == SourceProfile {
+		// A stored profile refreshes itself, proactively and on refusal
+		// (internal/cli/refresh.go). Before this, only the automation path
+		// above ever refreshed, so an admin session was dead fifteen minutes
+		// after it was minted and said so as if the server were at fault.
+		r.client.OnInvalidToken = r.refreshProfile
+		return r.refreshProfileIfExpiring()
+	}
 	return nil
 }
 

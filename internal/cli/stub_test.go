@@ -48,6 +48,29 @@ type stub struct {
 	conversationType string
 	// refreshRejects makes POST /v1/auth/refresh answer invalid_token.
 	refreshRejects bool
+	// rejected are bearer values the server refuses with invalid_token, the
+	// way it refuses an access token that has expired or been revoked. It is
+	// how a test produces the 401 that drives the CLI's refresh-on-refusal
+	// path without waiting for a TTL.
+	rejected map[string]bool
+	// refreshExpiresAt is the `expires_at` a rotation reports.
+	refreshExpiresAt string
+}
+
+// reject makes the stub refuse one bearer value with invalid_token.
+func (s *stub) reject(token string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.rejected == nil {
+		s.rejected = map[string]bool{}
+	}
+	s.rejected[token] = true
+}
+
+func (s *stub) refuses(token string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.rejected[token]
 }
 
 type recorded struct {
@@ -98,6 +121,11 @@ func (s *stub) serve(w http.ResponseWriter, r *http.Request) {
 	})
 	s.mu.Unlock()
 
+	if bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "); bearer != "" &&
+		s.refuses(bearer) {
+		writeError(w, apierr.CodeInvalidToken, "that access token is expired or revoked")
+		return
+	}
 	if s.refreshRejects && r.URL.Path == "/v1/auth/refresh" {
 		writeError(w, apierr.CodeInvalidToken, "that refresh token is not one this server issued")
 		return
@@ -150,11 +178,22 @@ func (s *stub) dataFor(r *http.Request) any {
 	case path == "/v1/auth/admin-session":
 		return map[string]any{
 			"access_token": "agm_at_stub", "refresh_token": "agm_rt_stub",
-			"scopes":     []string{"admin", "messages:read", "messages:write", "messages:delete"},
-			"expires_at": "2026-09-06T10:11:07Z", "authorization_id": "auth_01k4z2p8w8",
+			"scopes":                  []string{"admin", "messages:read", "messages:write", "messages:delete"},
+			"access_token_expires_at": "2099-01-01T00:00:00Z",
+			"authorization_id":        "auth_01k4z2p8w8",
 		}
 	case path == "/v1/auth/refresh":
-		return map[string]any{"access_token": "agm_at_rotated", "refresh_token": "agm_rt_rotated"}
+		// A rotation invalidates what it replaced, which is what makes the
+		// single-use rule observable to a test.
+		s.reject("agm_at_stale")
+		expires := s.refreshExpiresAt
+		if expires == "" {
+			expires = "2099-01-01T00:00:00Z"
+		}
+		return map[string]any{
+			"access_token": "agm_at_rotated", "refresh_token": "agm_rt_rotated",
+			"access_token_expires_at": expires,
+		}
 	case path == "/v1/auth/whoami":
 		return map[string]any{"authorization_id": "auth_01k4z2p8w8", "kind": "admin",
 			"scopes": []string{"admin"}}
@@ -295,6 +334,15 @@ type result struct {
 // client, against the stub. Nothing is called directly.
 func runCLI(t *testing.T, s *stub, env map[string]string, stdin string, args ...string) result {
 	t.Helper()
+	return runCLIAt(t, s, env, nil, stdin, args...)
+}
+
+// runCLIAt is runCLI with the clock injected, for the proactive refresh of
+// spec section 11.5: "within 60 seconds of expiry" is not a window a test can
+// observe against the wall clock.
+func runCLIAt(t *testing.T, s *stub, env map[string]string, now func() time.Time,
+	stdin string, args ...string) result {
+	t.Helper()
 
 	stateDir := t.TempDir()
 	base := map[string]string{
@@ -320,6 +368,7 @@ func runCLI(t *testing.T, s *stub, env map[string]string, stdin string, args ...
 		HTTP:         s.Client(),
 		Version:      "test",
 		PollInterval: time.Millisecond,
+		Now:          now,
 	})
 	return result{code: code, stdout: stdout.String(), stderr: stderr.String()}
 }

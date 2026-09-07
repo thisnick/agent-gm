@@ -347,6 +347,22 @@ func (s *Store) SaveProfile(w *PendingWrite, name string, p Profile) error {
 	return s.commit(w, c)
 }
 
+// UpdateProfile rewrites one profile in place, WITHOUT changing which
+// profile is active. It is what a token rotation uses: refreshing the
+// credential of a profile selected for one invocation with `--profile` must
+// not silently make that profile the machine's active one.
+func (s *Store) UpdateProfile(w *PendingWrite, name string, p Profile) error {
+	c, err := s.Load()
+	if err != nil {
+		return err
+	}
+	if c.Profiles == nil {
+		c.Profiles = map[string]Profile{}
+	}
+	c.Profiles[name] = p
+	return s.commit(w, c)
+}
+
 // DeleteProfile removes one profile. It never leaves `active_profile` naming
 // a profile that is no longer there: removing the active one leaves the
 // remaining profile active when exactly one remains, and otherwise leaves no

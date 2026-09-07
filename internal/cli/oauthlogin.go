@@ -130,11 +130,21 @@ func (r *runner) oauthLogin(inv *invocation) error {
 	}
 
 	granted := strings.Fields(tokens.Scope)
+	// `expires_in` is a duration; the profile records an INSTANT, because
+	// that is what the proactive refresh of section 11.5 compares the clock
+	// against on a later invocation. A response without one records nothing
+	// and falls back to refreshing on refusal.
+	expiresAt := ""
+	if tokens.ExpiresIn > 0 {
+		expiresAt = r.env.Now().UTC().
+			Add(time.Duration(tokens.ExpiresIn) * time.Second).Format(time.RFC3339)
+	}
 	if err := r.store.SaveProfile(pending, r.cred.Profile, Profile{
 		Server:       r.cred.Server,
 		AccessToken:  tokens.AccessToken,
 		RefreshToken: tokens.RefreshToken,
 		Scopes:       granted,
+		ExpiresAt:    expiresAt,
 		Issuer:       meta.Issuer,
 		Resource:     meta.Resource,
 		ClientID:     clientID,

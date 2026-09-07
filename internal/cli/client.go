@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -36,6 +37,16 @@ type Client struct {
 	HTTP    *http.Client
 	// UserAgent identifies the CLI in the server's logs.
 	UserAgent string
+	// OnInvalidToken is called at most once per request, when the server
+	// answers `invalid_token`. It refreshes the credential and updates
+	// Token; the request is then sent again, exactly once.
+	//
+	// It lives on the client rather than at each call site because every
+	// command goes through Do, and a refresh wired into some commands and
+	// not others is a refresh an owner cannot rely on. A nil hook, or an
+	// error from it, leaves the server's refusal in place -- which is what
+	// makes `exit 3` mean "a refresh was attempted and refused".
+	OnInvalidToken func() error
 }
 
 // String describes the client without its credential.
@@ -176,11 +187,40 @@ func (c *Client) build(ctx context.Context, r Request) (*http.Request, error) {
 	return req, nil
 }
 
-// Do sends one request and returns the decoded envelope, or an *apierr.Error
+// Do sends the request, and on `invalid_token` refreshes once and sends it
+// again. The retry carries the SAME Idempotency-Key, because it is the same
+// logical request: a mutation that was refused before it was applied must not
+// become two operations because the credential was stale (spec section 6.3).
+//
+// A request carrying its own Token -- an upload or download ticket -- is
+// never retried: a ticket is not a credential this client can refresh.
+func (c *Client) Do(ctx context.Context, r Request) (*Response, error) {
+	resp, err := c.do(ctx, r)
+	if err == nil || c.OnInvalidToken == nil || r.Token != "" {
+		return resp, err
+	}
+	var apiErr *apierr.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != apierr.CodeInvalidToken {
+		return resp, err
+	}
+	// The hook is unset for the duration of its own call, so the refresh
+	// request cannot recurse into another refresh, and so one request
+	// produces at most one attempt.
+	hook := c.OnInvalidToken
+	c.OnInvalidToken = nil
+	refreshErr := hook()
+	c.OnInvalidToken = hook
+	if refreshErr != nil {
+		return nil, refreshErr
+	}
+	return c.do(ctx, r)
+}
+
+// do sends one request and returns the decoded envelope, or an *apierr.Error
 // built from the error envelope. A transport failure is a *TransportError,
 // which is exit 7; a body that is not an envelope at all is a
 // *ContractError, which is exit 10.
-func (c *Client) Do(ctx context.Context, r Request) (*Response, error) {
+func (c *Client) do(ctx context.Context, r Request) (*Response, error) {
 	if c.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, c.Timeout)

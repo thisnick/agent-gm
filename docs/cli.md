@@ -520,6 +520,25 @@ is enforced **before** the request: on any command except `agm auth login`, a
 forwarded to another origin. `agm auth login` is the exception, because it is
 where a profile comes from.
 
+### Refreshing
+
+A stored profile **refreshes itself**. The profile records the access token's
+`expires_at`, and `agm` exchanges the refresh token when the token is within
+**60 seconds** of that instant, or on the first `invalid_token` from the
+server, whichever comes first. **A token past its recorded expiry is never
+presented.** The rotation is written back to the profile atomically, at mode
+`0600`, and the command carries on; a mutation that was refused before it was
+applied is retried with the **same** `Idempotency-Key`, so it stays one
+logical request.
+
+Both an admin session and an OAuth authorization refresh at
+`POST /v1/auth/refresh`. A profile written by an older build that records no
+expiry is covered by the on-refusal path.
+
+Exit `3` therefore means **a refresh was attempted and refused** — a revoked
+or expired refresh token, or a profile that holds none — and not merely an
+expired access token. Log in again.
+
 **Write-back safety**, which is the part worth knowing before an automated run:
 
 - The destination is proved writable **before the token is spent** — the
