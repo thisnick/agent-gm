@@ -1,0 +1,141 @@
+# Agent GM releases -- spec sections 14.3 and 13.6.
+#
+# Two jobs, one script. `dry-run` runs on every push to main and builds
+# EVERYTHING and publishes NOTHING; `release` runs on a `vX.Y.Z` tag and does
+# the same build, signs it, and publishes. They call the same
+# `scripts/release.sh` modes, which is the point: a release workflow that is
+# only ever exercised on release day is a workflow that has rotted since the
+# last one, and the first anybody hears of it is halfway through a release.
+#
+# Every step here is a `devbox run <script>` or the thin GitHub-side action a
+# script cannot do for itself (checkout, cosign install, GHCR digest lookup).
+# A step that shells out to something with no script is a step nobody can
+# reproduce locally, and is rejected in review (section 13.6).
+#
+# **This workflow does not cut the tag.** The tag is the coordinator's act,
+# after review and after a live gate: no release is cut from a commit that has
+# not passed one (section 16).
+name: release
+
+on:
+  push:
+    branches: ["main"]
+    tags: ["v*"]
+  # So a change to this workflow, to scripts/release.sh or to npm/ can be
+  # proved on the branch that makes it rather than after it lands.
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - "scripts/release.sh"
+      - "npm/**"
+      - "devbox.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Build the six archives, checksums.txt and the npm tarball, install the npm
+  # tarball for real, and assert the section 11.2 exit codes survive the shim.
+  # Publishes nothing, signs nothing, and needs no secret.
+  dry-run:
+    if: "!startsWith(github.ref, 'refs/tags/v')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # binfmt for aarch64, so that `release.sh build` EXECUTES the linux/arm64
+      # binaries rather than only inspecting them. Section 16 Slice 4 test 1
+      # asks for `agm version` under qemu "where the architecture allows", and
+      # this is what allows it.
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: jetify-com/devbox-install-action@v0.13.0
+        with:
+          enable-cache: "true"
+
+      - run: devbox run release-dry-run
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-dry-run-${{ github.sha }}
+          path: |
+            dist/*.tar.gz
+            dist/*.tgz
+            dist/checksums.txt
+          retention-days: 7
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release and upload its assets
+      packages: read # read back the GHCR digest the ci workflow pushed
+      id-token: write # cosign keyless, and npm provenance
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: docker/setup-qemu-action@v3
+      - uses: jetify-com/devbox-install-action@v0.13.0
+        with:
+          enable-cache: "true"
+      - uses: sigstore/cosign-installer@v3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      # The digest of the image the `ci` workflow pushed for this same tag.
+      # A release note records the digest because deployments pin by digest
+      # and not by tag (section 14.2); "unknown" here means the image job has
+      # not finished, and a release note that says `@unknown` is worse than a
+      # release that waits.
+      - name: The GHCR digest for this tag
+        id: image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          image=ghcr.io/thisnick/agent-gm
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          for i in $(seq 1 60); do
+            digest="$(docker buildx imagetools inspect "$image:${GITHUB_REF_NAME}" \
+              --format '{{println .Manifest.Digest}}' 2>/dev/null | head -1 || true)"
+            [ -n "$digest" ] && break
+            echo "waiting for $image:${GITHUB_REF_NAME} to appear (attempt $i)"
+            sleep 20
+          done
+          if [ -z "${digest:-}" ]; then
+            echo "the image for ${GITHUB_REF_NAME} never appeared on GHCR; the ci workflow's image job must finish first" >&2
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "digest is $digest"
+
+      # The same build the dry run does, plus the npm install check, so the
+      # thing being published is the thing that was proved.
+      - run: devbox run -- ./scripts/release.sh build
+      - run: devbox run -- ./scripts/release.sh npm-check
+
+      - run: devbox run -- ./scripts/release.sh sign
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AGENT_GM_IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: devbox run -- ./scripts/release.sh publish
+
+      - name: Publish @agent-gm/cli
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: "true"
+        run: devbox run -- ./scripts/release.sh npm-publish

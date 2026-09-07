@@ -24,12 +24,20 @@ import (
 	"github.com/thisnick/agent-gm/internal/store"
 )
 
-// versionLine is `agent-gm version`. It reports the same commit
-// GET /v1/health does -- the link-time stamp of spec section 14.1 in an
-// image, the VCS stamp in a checkout build -- so `docker run … version` and
-// the health endpoint can never disagree about which source is running.
+// versionLine is `agent-gm version`. It reports the same version and the same
+// commit GET /v1/health does -- the link-time stamps of spec sections 14.1 and
+// 14.3 in a released build, the VCS stamp in a checkout build -- so
+// `docker run … version` and the health endpoint can never disagree about
+// which source is running.
+//
+// The version leads because that is what an operator matches against a
+// release page and against the npm wrapper's version; the commit follows
+// because that is the AGPL section 13 offer of section 1.4, and the pin
+// follows it because a bug in Google Messages behaviour is usually a question
+// about the pin rather than about Agent GM.
 func versionLine() string {
-	return fmt.Sprintf("agent-gm %s (libgm pinned at %s)", buildCommit(), gm.PinnedUpstreamCommit)
+	return fmt.Sprintf("agent-gm %s (%s, libgm pinned at %s)",
+		buildVersion(), buildCommit(), gm.PinnedUpstreamCommit)
 }
 
 func spikeUsage() {

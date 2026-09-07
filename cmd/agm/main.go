@@ -14,14 +14,44 @@ package main
 
 import (
 	"os"
+	"runtime/debug"
 
 	"github.com/thisnick/agent-gm/internal/cli"
 )
 
-// version is stamped at build time with -ldflags "-X main.version=...". It
-// defaults to `dev` so a build from a working tree says so rather than
-// claiming a release it is not.
-var version = "dev"
+// version and commit are stamped at build time with
+// -ldflags "-X main.version=… -X main.commit=…" by scripts/release.sh, which
+// takes both from the tag and the commit being released (spec section 14.3).
+//
+// A build from a working tree stamps neither. version then says `dev` rather
+// than claiming a release it is not, and commit falls back to the VCS stamp
+// `go build` leaves in a checkout build -- the same order `agent-gm` uses, so
+// the two binaries of one release cannot disagree about which source they are.
+var (
+	version = ""
+	commit  = ""
+)
+
+func buildVersion() string {
+	if version != "" {
+		return version
+	}
+	return "dev"
+}
+
+func buildCommit() string {
+	if commit != "" {
+		return commit
+	}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, s := range info.Settings {
+			if s.Key == "vcs.revision" {
+				return s.Value
+			}
+		}
+	}
+	return "unknown"
+}
 
 func main() {
 	// cli.Run never calls os.Exit itself, so a test can drive the real
@@ -32,6 +62,7 @@ func main() {
 		Stdin:   os.Stdin,
 		Stdout:  os.Stdout,
 		Stderr:  os.Stderr,
-		Version: version,
+		Version: buildVersion(),
+		Commit:  buildCommit(),
 	}))
 }

@@ -48,6 +48,15 @@ type Env struct {
 	HTTP *http.Client
 	// Version is what `agm version` prints.
 	Version string
+	// Commit is the source commit `agm version` prints beside the version.
+	// It is stamped at link time by the release build; a checkout build
+	// reads it from the VCS stamp instead, and a build with neither says
+	// "unknown" rather than inventing one. Section 1.4 makes the commit the
+	// AGPL section 13 source offer, and an offer of an unknown commit is not
+	// an offer -- but that is the SERVER's obligation, discharged by
+	// `GET /v1/health`; on the client side the commit is here so that an
+	// owner reporting a bug can say which build they ran.
+	Commit string
 	// PollInterval is how often a wait re-reads an operation. Zero means one
 	// second; a test sets it small so a wait is not a sleep.
 	PollInterval time.Duration
@@ -83,6 +92,9 @@ func (e *Env) normalise() {
 	}
 	if e.Version == "" {
 		e.Version = "dev"
+	}
+	if e.Commit == "" {
+		e.Commit = "unknown"
 	}
 }
 

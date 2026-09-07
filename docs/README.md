@@ -9,6 +9,11 @@ The pages are deliverables of the slices in spec §16. **Seven are written:**
 `deploy.md`. **One is outstanding:** `upstream-pin.md`, which has nothing to
 record until a pin is bumped.
 
+Two things live outside this directory and are looked for here often enough
+to be worth naming: `../CHANGELOG.md`, which records each release with its
+GHCR digest and both dependency pins, and `../npm/README.md`, which is what
+an npm reader sees for `@agent-gm/cli`.
+
 The table below is what each page owes, so that a page is reviewed against its
 brief rather than against itself.
 

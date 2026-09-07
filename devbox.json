@@ -83,8 +83,22 @@
         "./scripts/fixture-validation.sh"
       ],
       "build-matrix": [
-        "echo 'the four-platform build of spec 13.6 arrives in Slice 4; there is no script yet' >&2",
-        "exit 2"
+        "./scripts/release.sh build"
+      ],
+      "release-dry-run": [
+        "./scripts/release.sh dry-run"
+      ],
+      "release": [
+        "./scripts/release.sh build",
+        "./scripts/release.sh sign",
+        "./scripts/release.sh npm-pack",
+        "./scripts/release.sh publish"
+      ],
+      "release-npm-publish": [
+        "./scripts/release.sh npm-publish"
+      ],
+      "restore-drill": [
+        "./scripts/restore-drill.sh"
       ],
       "image": [
         "./scripts/image.sh"
