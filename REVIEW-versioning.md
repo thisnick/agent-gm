@@ -308,3 +308,198 @@ the first exercise of this machinery should not be a failure that is expected.
 
 **n/a:** live gates (§13.3), any real send, any deploy — coordinator only, and
 untouched by this slice.
+
+---
+
+# Re-review at `2382cd4` (`0a8234c..2382cd4`)
+
+Merged into `review/versioning`; the tree under test differs from
+`origin/versioning/changesets` only by this file.
+
+**Verdict: accept.** All seven findings are fixed and I reproduced each fix.
+One new plant survived (R-1, small, a test-tightening) and one new finding is a
+consequence of the out-of-slice work bundled into this commit (R-2). Neither
+blocks the merge of PR #2 or the first automated `v1.0.2`; both should land
+before the Version Packages PR is merged, because R-2 is about what that
+release's changelog will say.
+
+## Evidence
+
+```
+$ devbox run check
+0 issues.  … no-real-numbers: clean … no-deployment-host: clean
+EXIT=0
+$ devbox run -- go test ./internal/release/ -list '.*' | grep -c '^Test'
+52
+```
+
+**52, not the 55 reported.** 48 before, four genuinely new
+(`TestAVersionAlreadyTaggedInThisHistoryCutsNothingAndPasses`,
+`TestCutTagRefusesAVersionTheChangelogDoesNotMention`,
+`TestReleaseScriptRefusesATagTheChangelogDoesNotMention`,
+`TestHandWrittenUnreleasedNotesSurviveIntoTheEntry`) plus a rewritten
+`TestCutTagRefusesAVersionThatIsAlreadyTagged`, and a fifth new test
+(`TestAdminLoginSuggestsNarrowingWhenItGrantsAllFourScopes`) in
+`internal/cli`. Miscount, not a defect.
+
+## Each finding, re-run
+
+**V-1 fixed.** The PR #2 merge now leaves main green, and the re-cut refusal
+survives:
+
+```
+$ ./scripts/cut-tag.sh 0.0.0-dev
+version=1.0.1
+release=0
+cut-tag: v1.0.1 already exists in this repository at b33794c…, and that commit
+is in this history: 1.0.1 is already released and there is nothing to cut.
+rc=0
+
+$ # v9.9.9 pointed at an orphan commit built with git commit-tree
+$ ./scripts/cut-tag.sh 1.0.1        # manifest hand-set to 9.9.9
+cut-tag: v9.9.9 already exists in this repository at ef7c143… and is NOT in this
+history. … Bump to a new version instead of re-cutting this one.
+rc=1
+```
+
+I also checked the branch the local check short-circuits past: on the remote
+path `already_cut` is handed the **annotated tag object** sha
+(`git ls-remote … | head -1` returns `refs/tags/v1.0.1` before
+`refs/tags/v1.0.1^{}`), and `git merge-base --is-ancestor` peels it —
+`is-ancestor accepts the TAG OBJECT: OK`. So the remote branch behaves like the
+local one rather than always dying. Good.
+
+**V-2 fixed**, both paths:
+
+```
+$ ./scripts/cut-tag.sh 1.0.1                    # manifest 1.0.2, no entry
+cut-tag: CHANGELOG.md has no entry for 1.0.2. … rc=1
+$ ./scripts/cut-tag.sh 1.0.1                    # same, entry added
+release=1 … rc=0
+```
+
+The dots are escaped (`${version//./\\.}`) in both scripts, and in `release.sh`
+the check sits after the tag/manifest match and before `[ "$tagged" = 1 ]`.
+
+**V-3 fixed.** `LICENSE` is out of the docs arm (`LICENSE rc=1`, listed under
+"the paths that need one"), and with `--no-renames` the rename now presents both
+paths, so `{docs/a.md, internal/a.go}` → `rc=1`. `docs/a.md` alone still passes.
+
+**V-4 fixed.** `git diff --no-renames --name-only "${base}...${head}"`.
+
+**V-5 fixed**, and it does the better of the two things I offered — the note is
+carried into the entry rather than the run refused:
+
+```
+## [Unreleased]
+
+Nothing yet.
+
+## [1.0.2] — 2026-09-08
+
+- A HAND WRITTEN NOTE THAT MUST SURVIVE.
+
+- one sentence
+```
+
+`Nothing yet.` appears exactly once. The plain case is unchanged: diffing the
+tail from `## [1.0.1]` before and after still yields one hunk, the intended link
+move, so 1.0.0 and 1.0.1 remain byte-for-byte.
+
+**V-6 fixed, and the sha is the right one.** I resolved it independently rather
+than trusting the comment: `changesets/action` tag `v1.9.0` is an annotated tag
+object `3841a0683d3cfa6dae0f9bb335290003010fe3f0`, which dereferences to commit
+`a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d` — exactly the pin. The comment
+explaining why this one action is pinned when the rest are not is the right
+call.
+
+**V-7 fixed.** CONTRIBUTING.md now says `no-release` "merges and **ships in the
+next release, unmentioned in the changelog**", and operations.md picked up both
+smaller reads (dry-run artefacts sharing a filename; both new guards).
+
+## Re-plants at `2382cd4`
+
+| # | Mutation | Result |
+|---|---|---|
+| P1 | `cut-tag.sh:96` — changelog guard disabled | killed — `TestCutTagRefusesAVersionTheChangelogDoesNotMention` |
+| P2 | `release.sh:355` — changelog guard disabled | killed — `TestReleaseScriptRefusesATagTheChangelogDoesNotMention` |
+| P3 | `cut-tag.sh:65` — `already_cut` always dies (the V-1 regression) | killed — `TestAVersionAlreadyTaggedInThisHistoryCutsNothingAndPasses` |
+| P4 | `cut-tag.sh:65` — `already_cut` never dies (re-cut protection lost) | killed — `TestCutTagRefusesAVersionThatIsAlreadyTagged` |
+| P5 | `ci.yml:228` — `--no-renames` deleted from the command | **SURVIVED**, 52 pass — R-1 |
+| P6 | `ci.yml:228` — three-dot reverted to two-dot | killed — `TestTheChangesetCheckIsAJobOnEveryPullRequest` |
+| P7 | `version.yml:75` — pin reverted to `changesets/action@v1` | killed — `TestTheVersionWorkflowCutsTheTagAndDispatchesTheReleasePath` |
+| P8 | `changeset-check.sh:68` — `LICENSE` back in the docs arm | killed — `TestAPullRequestThatShipsSomethingIsRefusedWithoutAChangeset` |
+
+P3 and P4 together are the pair I wanted: both directions of the new branch are
+pinned, so the V-1 fix cannot be undone in either direction without a named test
+failing.
+
+### R-1 — the `--no-renames` assertion is satisfied by its own comment
+
+`internal/release/changeset_check_test.go` asserts
+`strings.Contains(ci, "--no-renames")`. The flag appears twice in `ci.yml`:
+
+```
+225:          # request on a busy day. --no-renames because git collapses a rename
+228:          git diff --no-renames --name-only "${base}...${head}" \
+```
+
+Deleting it from line 228 leaves line 225 to satisfy the test, and the suite
+stays green (P5, 52 pass). The production consequence is the V-3 hole
+reopening silently: a rename of code under `docs/` classifies as
+documentation-only and ships with no changeset and no changelog entry.
+
+The V-4 assertion does not have this problem — it matches the quoted
+`"${base}...${head}"`, which occurs only in the command — which is why P6 died
+and P5 did not.
+
+**Fix:** assert the invocation rather than the flag —
+`strings.Contains(ci, "git diff --no-renames --name-only \"${base}...${head}\"")`
+— which covers V-3 and V-4 in one assertion that no comment can satisfy.
+
+### R-2 — the out-of-slice admin-session change ships unmentioned in 1.0.2
+
+`2382cd4` also carries a user-visible CLI change (`agm auth login --admin` now
+prints `Narrow with --scopes …` on stderr), `docs/cli.md`, and a new "Admin
+sessions" section in `docs/operations.md`. The branch's only changeset says:
+
+```
+Versions are managed with changesets; the container, binaries and npm package
+share one version
+```
+
+So the first release cut on these rails will have a changelog entry that
+describes half of what shipped. This is not a process nit — it is the failure
+mode D39 exists to prevent, arriving on the commit that builds D39. `changeset-check`
+passed because *a* changeset is present; the check counts changesets, it cannot
+read them.
+
+**Fix:** add a second changeset for the admin-session change before the Version
+Packages PR is opened. (No mechanism can enforce "the changeset describes the
+change", and I am not asking for one — the guard against this is review, and
+this is that review.)
+
+Two smaller notes on the same change, neither blocking:
+
+- `internal/cli/commands_impl.go:510` gates the hint on `len(session.Scopes) == 4`.
+  Four is right today — `internal/authz/scopes.go:52` `canonicalOrder` has
+  exactly `admin messages:read messages:write messages:delete` — but a magic
+  number is not the question being asked. A fifth scope would silence the hint;
+  a narrowed four-of-five session would get it wrongly. Compare against the
+  canonical set (exporting it if need be), not against its length.
+- The scope-narrowing behaviour itself is documentation of behaviour that already
+  existed; I did not re-verify the 15-minute / 30-day / 90-day lifetimes beyond
+  the implementer's citation of `internal/authz/settings.go`, and I record that
+  as **unverified** rather than accepted.
+
+## Standing verdict
+
+- **PR #2 may merge.** V-1 is fixed and I reproduced the green path; the tag job
+  will answer `release=0` on the merge.
+- **The first automated `v1.0.2` may be allowed to cut**, once R-2's second
+  changeset is in — otherwise the release it cuts is the one whose changelog is
+  wrong. R-1 should land with it; it is a two-line test change.
+- §18.1 rubric unchanged: **2**. Nothing in `2382cd4` introduces a Google
+  Messages domain name, and the `--scopes` / `admin` / `messages:read`
+  vocabulary in the new CLI documentation is the vocabulary the server already
+  serves.
