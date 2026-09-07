@@ -285,6 +285,31 @@ func (s *Store) UpsertMessage(ctx context.Context, accountID, convSourceID strin
 	return res, err
 }
 
+// LinkMessageOperation writes the op_ ID of the send this message is the echo
+// of, which is the reverse of operations.message_id.
+//
+// Both directions are written at the same moment, in correlateEcho, because
+// only one of them was: `messages.operation_id` was declared in section 4.2,
+// served in every message DTO, and never written by anything -- so "which
+// send produced this message" was null on every row Agent GM had ever
+// stored, and a caller reading it got a definite "there was no operation"
+// for a message its own send had produced.
+//
+// It is written once and never overwritten: a message belongs to the send
+// that produced it, and a later echo of the same message is the same send.
+func (s *Store) LinkMessageOperation(ctx context.Context, messageID, operationID string) error {
+	if messageID == "" || operationID == "" {
+		return nil
+	}
+	return s.Write(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx,
+			`UPDATE messages SET operation_id = ?
+			 -- all-accounts: a msg_ ID already carries its account (section 4.1).
+			 WHERE id = ? AND operation_id IS NULL`, operationID, messageID)
+		return err
+	})
+}
+
 // BumpConversationActivity moves last_activity_ms forward and records the
 // latest message. It never moves backwards.
 func (s *Store) BumpConversationActivity(ctx context.Context, conversationID, latestMessageID string, activityMS int64) error {

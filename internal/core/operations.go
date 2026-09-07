@@ -291,6 +291,15 @@ func (in *Ingester) correlateEcho(ctx context.Context, messageID string, m gm.Me
 		return err
 	}
 
+	// The reverse link: this message is the echo of that send. It is written
+	// here, beside the forward one, because writing only operations.message_id
+	// left messages.operation_id null on every row -- declared, served, and
+	// never written.
+	if err := in.Store.LinkMessageOperation(ctx, messageID, op.ID); err != nil {
+		in.warn("linking the message to its operation failed",
+			"account_id", in.AccountID, "operation_id", op.ID, "error", err.Error())
+	}
+
 	// The size Google's echo does not carry. The operation counted the bytes
 	// it sent; this is the moment the attachment row those bytes became is
 	// known. It runs before the settlement so a settle that fails still
