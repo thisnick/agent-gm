@@ -245,3 +245,90 @@ func TestTheImageCarriesTheRevisionLabelTheDigestGuardReads(t *testing.T) {
 		t.Errorf("%s is set before the final FROM, so it does not reach the published image", label)
 	}
 }
+
+// --- the YAML, which nothing was asserting ------------------------------------
+//
+// R-10. `tag_guards_test.go` runs `scripts/release.sh` for real, which is a
+// genuine advance over reading it -- but the workflow that CALLS it is a file
+// no test had ever opened, and R-9 was sitting in exactly that gap: a jq
+// expression that could never return `success`, in a step that would have
+// refused every release, discovered by a reviewer reading it rather than by
+// anything here.
+//
+// A workflow cannot be executed off GitHub, so these are text assertions.
+// That is weaker than running it and it is what there is; the point is that
+// the decisions are encoded rather than remembered.
+
+// The three questions the release job asks before it builds anything, and the
+// shape of the third one, which is the one that was wrong.
+func TestTheReleaseWorkflowGatesTheTagOnMainAndOnGreen(t *testing.T) {
+	wf := repoFile(t, ".github/workflows/release.yml")
+
+	// The semver check, in the workflow as well as in the script: the script
+	// refuses too, but only after devbox has installed and the build has run.
+	if !strings.Contains(wf, `^v[0-9]+\.[0-9]+\.[0-9]+`) &&
+		!strings.Contains(wf, `^v(0|[1-9][0-9]*)\.`) {
+		t.Error("the release workflow does not check the tag's shape before building; " +
+			"`vtest` would spend six minutes building before scripts/release.sh refused it")
+	}
+
+	// R-5: the tagged commit is on main.
+	if !strings.Contains(wf, "merge-base --is-ancestor") {
+		t.Error("the release workflow does not assert the tagged commit is an ancestor of " +
+			"origin/main; a tag on an unmerged branch would build, sign and publish " +
+			"(spec section 16 makes the tag an act on a reviewed commit)")
+	}
+	if !strings.Contains(wf, "origin/main") {
+		t.Error("the ancestor check names no branch")
+	}
+
+	// R-9: the question must be "did ANY ci push run for this sha go green",
+	// not "what did the newest one conclude". `ci.yml` fires on `v*` tags
+	// too, so the tag starts a SECOND ci push run for the same head_sha which
+	// is still in progress while this step asks. Sorting by start time picks
+	// that run, reads null, and refuses every release -- including a green
+	// one, and including the first one anybody tries.
+	if !strings.Contains(wf, `head_sha=`) {
+		t.Fatal("the release workflow does not look up any run by head_sha")
+	}
+	if strings.Contains(wf, "sort_by(.run_started_at)") {
+		t.Error("the ci gate takes the NEWEST run for the sha. `ci.yml` also fires on the " +
+			"tag, so that run is the tag's own and is still in progress: the gate reads " +
+			"null and no release can ever be cut (R-9)")
+	}
+	if !strings.Contains(wf, `.conclusion == "success"`) {
+		t.Error(`the ci gate does not select on .conclusion == "success"; it must ask ` +
+			`whether ANY ci push run for this sha went green`)
+	}
+	if !strings.Contains(wf, `select(.name == "ci" and .event == "push"`) {
+		t.Error("the ci gate does not restrict to the `ci` workflow's push runs")
+	}
+}
+
+// The label the digest guard reads is set by the Dockerfile from `${COMMIT}`,
+// and `${COMMIT}` is set by whoever builds the image. If `image.sh` stops
+// passing it, the label ships EMPTY: the Dockerfile test still passes, the
+// dry run still passes, and `require_digest` dies on release day with a
+// message about a missing label, which is the last place anybody wants to be
+// debugging a build argument. R-10, from a plant of the reviewer's that
+// survived the whole suite.
+func TestTheImageBuildPassesTheCommitTheLabelRecords(t *testing.T) {
+	sh := repoFile(t, "scripts/image.sh")
+
+	if !strings.Contains(sh, `--build-arg "COMMIT=$commit"`) &&
+		!strings.Contains(sh, `--build-arg COMMIT=$commit`) {
+		t.Error("scripts/image.sh does not pass COMMIT=$commit as a build argument. " +
+			"The Dockerfile sets org.opencontainers.image.revision from ${COMMIT}, so the " +
+			"published image would carry an empty revision and scripts/release.sh would " +
+			"refuse its digest on release day")
+	}
+	// And $commit must be the real thing rather than a placeholder.
+	if !strings.Contains(sh, `commit="${GITHUB_SHA:-$(git rev-parse HEAD)}"`) {
+		t.Error("scripts/image.sh no longer derives $commit from GITHUB_SHA or the working " +
+			"tree; the revision label would name something that is not the built commit")
+	}
+	if !strings.Contains(sh, `--build-arg "VERSION=$version"`) &&
+		!strings.Contains(sh, `--build-arg VERSION=$version`) {
+		t.Error("scripts/image.sh does not pass VERSION as a build argument")
+	}
+}

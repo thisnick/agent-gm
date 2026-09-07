@@ -144,14 +144,31 @@ jobs:
             exit 1
           fi
 
-          # The `ci` workflow's own conclusion for this exact commit. A run
-          # that is still going is not a pass, and neither is a missing one.
-          conclusion="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${GITHUB_SHA}&per_page=100" \
-            --jq '[.workflow_runs[] | select(.name == "ci" and .event == "push")]
-                  | sort_by(.run_started_at) | last | .conclusion // "none"')"
-          if [ "$conclusion" != "success" ]; then
-            echo "::error::the ci run for ${GITHUB_SHA} concluded '${conclusion}', not 'success'." \
-                 "Section 14.3: no release is cut from a commit that has not passed." >&2
+          # Has ANY `ci` push run for this exact commit concluded `success`?
+          #
+          # Not "what did the newest one conclude" -- that question cannot be
+          # answered yes. `ci.yml` also fires on `tags: ["v*"]`, so pushing
+          # v1.0.0 starts a SECOND ci push run for this same head_sha, and
+          # that run is still in progress while this step asks. Taking the
+          # last run by start time therefore reads the tag's own run, gets
+          # `null`, and refuses every release including a perfectly green one.
+          # It failed closed, so nothing unsafe would have shipped -- but
+          # nothing at all would have shipped either, and the first anybody
+          # would have heard of it is halfway through cutting v1.0.0. R-9.
+          #
+          # The honest question is the one above: the merge-base check has
+          # already proved the commit is on main, so "some push run of ci for
+          # this exact sha went green" is what "this commit has passed" means.
+          green="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${GITHUB_SHA}&per_page=100" \
+            --jq '[.workflow_runs[]
+                   | select(.name == "ci" and .event == "push" and .conclusion == "success")]
+                  | length')"
+          if [ "${green:-0}" -lt 1 ]; then
+            echo "::error::no ci push run for ${GITHUB_SHA} has concluded 'success'." \
+                 "Section 14.3: no release is cut from a commit that has not passed." \
+                 "If ci is still running on the merge commit, wait for it and re-run this job." >&2
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${GITHUB_SHA}&per_page=100" \
+              --jq '.workflow_runs[] | "\(.name)\t\(.event)\t\(.status)\t\(.conclusion // "-")"' >&2 || true
             exit 1
           fi
           echo "tag ${GITHUB_REF_NAME} is a version, ${GITHUB_SHA} is on main, and its ci run is green"

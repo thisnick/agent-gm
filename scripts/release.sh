@@ -46,7 +46,10 @@ ref_type="${GITHUB_REF_TYPE:-branch}"
 # certificate and created a public GitHub release before `npm publish` finally
 # rejected the version -- by which time the signature was in a transparency
 # log that cannot be unpublished. R-1.
-semver_tag='^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+# No leading zeros in a numeric identifier: semver says `01.0.0` is not a
+# version, and npm agrees, so `v01.0.0` would have been refused at the very
+# last step of a release instead of the very first. R-11.
+semver_tag='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$'
 
 tagged=0
 case "$ref_type" in
@@ -303,7 +306,7 @@ require_tag() {
   # one worth asserting directly; `vnonsense` never reaches this line with a
   # `$version` that passes.
   if [[ ! "$ref_name" =~ $semver_tag ]] ||
-     [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+     [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; then
     die "refusing to $1 from the tag '$ref_name': it is not vMAJOR.MINOR.PATCH" \
         "with an optional prerelease. A tag that is not a version cuts a real," \
         "signed, public release that cannot be withdrawn from the sigstore log."
@@ -351,10 +354,12 @@ require_digest() {
   [ -n "$digest" ] || die "AGENT_GM_IMAGE_DIGEST is unset. A release note pins a deployment" \
       "by digest (section 14.2); publish it without one and there is nothing to deploy." \
       "The release workflow reads it back from the image the ci workflow pushed for this tag."
-  case "$digest" in
-    sha256:????????????????????????????????????????????????????????????????) ;;
-    *) die "AGENT_GM_IMAGE_DIGEST is '$digest', which is not a sha256:<64 hex> digest" ;;
-  esac
+  # Hex, not 64 wildcards. `sha256:zzz…` passed a `?`-glob check and was then
+  # caught by the registry, so a typo was diagnosed as "the image is not
+  # there" -- which sends the reader looking in the wrong place. R-11.
+  if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    die "AGENT_GM_IMAGE_DIGEST is '$digest', which is not a sha256:<64 lowercase hex> digest"
+  fi
 
   if [ "${AGENT_GM_SKIP_DIGEST_RESOLVE:-0}" = 1 ]; then
     note "digest $digest (resolution skipped by AGENT_GM_SKIP_DIGEST_RESOLVE)"
@@ -436,12 +441,13 @@ do_publish() {
   # require_digest's. `unknown` -- do_notes' default -- fails on the first
   # line, which is the point: `devbox run release` sets no digest at all, and
   # the documented local release path used to publish `@unknown` in silence.
-  case "${AGENT_GM_IMAGE_DIGEST:-}" in
-    sha256:????????????????????????????????????????????????????????????????) ;;
-    "") die "AGENT_GM_IMAGE_DIGEST is unset; a release note pins a deployment by digest" \
-            "(section 14.2) and a note that names none is an instruction nobody can follow" ;;
-    *)  die "AGENT_GM_IMAGE_DIGEST is '${AGENT_GM_IMAGE_DIGEST}', not a sha256:<64 hex> digest" ;;
-  esac
+  if [ -z "${AGENT_GM_IMAGE_DIGEST:-}" ]; then
+    die "AGENT_GM_IMAGE_DIGEST is unset; a release note pins a deployment by digest" \
+        "(section 14.2) and a note that names none is an instruction nobody can follow"
+  fi
+  if [[ ! "${AGENT_GM_IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    die "AGENT_GM_IMAGE_DIGEST is '${AGENT_GM_IMAGE_DIGEST}', not a sha256:<64 lowercase hex> digest"
+  fi
   require_digest
   command -v gh >/dev/null 2>&1 || die "gh is not on PATH"
   [ -f "$dist/checksums.txt" ] || die "dist/checksums.txt is missing; run 'release.sh build' first"
