@@ -112,10 +112,11 @@ and two URLs that parse the same are not the same bytes.
 The `401` challenge on `/mcp`:
 
 ```http
-WWW-Authenticate: Bearer
-  resource_metadata="https://gm.agent-wx.app/.well-known/oauth-protected-resource/mcp",
-  scope="messages:read messages:write"
+WWW-Authenticate: Bearer resource_metadata="https://gm.agent-wx.app/.well-known/oauth-protected-resource/mcp", scope="messages:read messages:write"
 ```
+
+One line, printed unwrapped because it is sent unwrapped — HTTP line folding is
+obsolete and a folded copy is a header no server sends.
 
 There is no `realm` and no `error` parameter here. `/mcp` is served by the MCP
 Go SDK's bearer middleware and this is the format that middleware emits; the

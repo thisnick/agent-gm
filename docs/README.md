@@ -4,11 +4,15 @@ The specification is `../plans/AGENT_GM_SPEC.md`. It is the contract: where
 the code and the spec disagree, the code is wrong. These pages are written
 against it and each one names the spec sections it serves.
 
-Nothing under `docs/` exists yet except this index — the pages are
-deliverables of the slices in spec §16, and this file records what each one
-owes so an implementer does not have to invent a structure.
+The pages are deliverables of the slices in spec §16. **Seven are written:**
+`pairing.md`, `api.md`, `cli.md`, `operations.md`, `mcp.md`, `oauth.md` and
+`deploy.md`. **One is outstanding:** `upstream-pin.md`, which has nothing to
+record until a pin is bumped.
 
-## Planned pages
+The table below is what each page owes, so that a page is reviewed against its
+brief rather than against itself.
+
+## The pages
 
 | Page | Slice | Spec sections it serves |
 |---|---|---|
