@@ -4,8 +4,8 @@ Serves spec §6.3, §11.1–§11.3, §11.5 and §12.1.
 
 `agm` is one binary and it speaks the [REST API](api.md) and nothing else. It
 never opens SQLite and never talks to Google directly, so anything the CLI can
-do an agent can do too, and the reverse. Every command below names the routes
-it drives; if you want the route's parameters, its DTO or its error semantics,
+do an agent can do too, and the reverse. Every command below names the routes it
+drives; if you want the route's parameters, its DTO or its error semantics,
 read [api.md](api.md).
 
 Pairing has a page of its own — [pairing.md](pairing.md) — because most of what
@@ -164,10 +164,10 @@ leaves it available to `agm operations wait <op-id>`.
 
 ## Commands
 
-Grouped as spec §11.3 groups them. Each entry names the routes it drives; the
-mapping is declared in `internal/cli/commands.go` and a test asserts that
-**every `/v1` route parameter is reachable from a command and every `/v1` route
-has one**, so this list cannot quietly fall behind the API.
+Each entry names the routes it drives. The mapping is declared in
+`internal/cli/commands.go`, and a test asserts that **every `/v1` route
+parameter is reachable from a command and every `/v1` route has one**, so this
+list cannot quietly fall behind the API.
 
 The two exceptions are `GET` and `DELETE /v1/uploads/{upload_id}`, which have
 no command: `agm messages send --file` performs the whole reserve, `PUT` and
@@ -314,9 +314,9 @@ case**: `agm` then sends no `Idempotency-Key` header at all and the server
 mints the operation ID. Re-running the command sends again, which is what
 re-running a send has always meant.
 
-`agm` never mints a key for you. It used to, and that was a fiction: a fresh
-key on every run is exactly a run with no key, with one more field on the
-wire. The flag is for **automation that retries** — pass the *same* value on
+`agm` never mints a key for you: a fresh key on every run is exactly a run
+with no key, with one more field on the wire. The flag is for **automation
+that retries** — pass the *same* value on
 the retry and the second call returns the first operation and sends nothing.
 Reusing a key against a *different* `--account` is refused rather than obeyed,
 because obeying it would send a second real message to a real person.
@@ -395,8 +395,12 @@ active, so nothing afterwards needs `--server`. See
 `agm auth login --admin` exchanges `AGENT_GM_ADMIN_SECRET` for a session over
 `--secret-stdin` or a TTY prompt — **never `argv`**. `--scopes` narrows the
 session; `admin` is refused at `--scopes` on the OAuth path and can only come
-from `--admin`. Slice 2 has only the admin path; the OAuth flow that
-`--no-browser` belongs to arrives in Slice 3.
+from `--admin`.
+
+Without `--admin`, `agm auth login` performs the ordinary OAuth flow — the same
+one any MCP client performs — and needs an enrollment code from the owner and
+an approval. `--no-browser` prints the authorization URL instead of opening
+one. [oauth.md](oauth.md#agm-auth-login) walks it through end to end.
 
 `agm auth logout` ends **this token's** session. It has nothing to do with
 signing a Google account out, which is `agm accounts sign-out`.
@@ -447,8 +451,7 @@ These are the owner's half of the OAuth flow, described end to end in
 [oauth.md](oauth.md). **There is no self-service**: a connector cannot get a
 token unless the owner does two separate things — issue a code with
 `agm admin enrollment-codes create`, and approve the request it produces with
-`agm admin authorization-requests approve`. There is no approval page; the
-approval happens on a terminal, which is open question OQ-3's recorded answer.
+`agm admin authorization-requests approve`. There is no approval page; the approval happens on a terminal.
 
 `agm admin enrollment-codes create` prints the code **once**. Only its SHA-256
 is stored, so no later command can show it again — and that is the point:
