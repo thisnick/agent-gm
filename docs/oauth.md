@@ -516,8 +516,10 @@ no profile called `default` and no built-in hostname: a command with no
 
 The profile records the access token's expiry and the `client_id` its tokens
 belong to, and it **refreshes itself**: within 60 seconds of expiry, or on the
-first `invalid_token`, `agm` exchanges the refresh token at
-`POST /v1/auth/refresh` and stores the rotation. A token past its recorded
+first `invalid_token`, `agm` exchanges the refresh token at `/oauth/token`
+with `grant_type=refresh_token` and its `client_id`, and stores the rotation.
+An admin session refreshes at `POST /v1/auth/refresh` instead; the two paths
+do not cross. A token past its recorded
 expiry is never presented. Exit `3` means a refresh was attempted and refused.
 
 Each profile is bound to an exact server issuer and resource. `agm auth login` is the only command that

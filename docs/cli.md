@@ -531,9 +531,12 @@ presented.** The rotation is written back to the profile atomically, at mode
 applied is retried with the **same** `Idempotency-Key`, so it stays one
 logical request.
 
-Both an admin session and an OAuth authorization refresh at
-`POST /v1/auth/refresh`. A profile written by an older build that records no
-expiry is covered by the on-refusal path.
+An admin session refreshes at `POST /v1/auth/refresh`; an OAuth profile
+refreshes at `/oauth/token` with `grant_type=refresh_token` and the
+`client_id` the profile records. **The two paths do not cross** — a token
+presented at the other endpoint is unknown or `invalid_grant`. A profile
+written by an older build that records no expiry is covered by the on-refusal
+path.
 
 Exit `3` therefore means **a refresh was attempted and refused** — a revoked
 or expired refresh token, or a profile that holds none — and not merely an

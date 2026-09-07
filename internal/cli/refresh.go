@@ -32,6 +32,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -112,10 +113,15 @@ func (r *runner) refreshProfileIfExpiring() error {
 // refreshProfile exchanges the profile's refresh token and stores the
 // rotation. It is also the client's OnInvalidToken hook.
 //
-// Both an admin session and an OAuth authorization refresh at
-// `/v1/auth/refresh`. An admin refresh token is NEVER sent to `/oauth/token`
-// (spec section 9.6): that grant is the OAuth client's, it would answer
-// `invalid_grant`, and the two paths must not cross.
+// THE TWO PATHS DO NOT CROSS (spec section 9.6). An admin session refreshes
+// at `POST /v1/auth/refresh`, which accepts an admin-bootstrap refresh token
+// and nothing else; an OAuth profile refreshes at `/oauth/token` with
+// `grant_type=refresh_token` and its `client_id`, which is why the profile
+// records one. Sending either token to the other endpoint is `invalid_grant`
+// or an unknown token -- the credential layer keys the token digest by kind,
+// so this is not a matter of taste.
+//
+// The discriminator is the stored `client_id`: only an OAuth login has one.
 func (r *runner) refreshProfile() error {
 	p, ok, err := r.storedProfile()
 	if err != nil {
@@ -134,6 +140,10 @@ func (r *runner) refreshProfile() error {
 		return err
 	}
 	defer pending.Close()
+
+	if p.ClientID != "" {
+		return r.finishOAuthRefresh(pending, p)
+	}
 
 	// Step 2. Exchange, with NO bearer of our own: the refresh token is the
 	// credential here, and presenting a dead access token alongside it only
@@ -194,5 +204,54 @@ func (r *runner) refreshProfile() error {
 	r.client.Token = body.AccessToken
 	r.cred.Token = body.AccessToken
 	r.out.Verbosef("the profile %s was refreshed", r.cred.Profile)
+	return nil
+}
+
+// finishOAuthRefresh is steps 2 and 3 for a profile minted through OAuth. The
+// token endpoint is read from the server's metadata rather than assembled
+// from the issuer: a client that builds an endpoint it was told to discover
+// is a client that keeps working only by luck.
+func (r *runner) finishOAuthRefresh(pending *PendingWrite, p Profile) error {
+	meta, err := r.discover()
+	if err != nil {
+		return err
+	}
+	tokens, err := r.postTokenForm(meta.TokenEndpoint, url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {p.RefreshToken},
+		"client_id":     {p.ClientID},
+	})
+	if err != nil {
+		// An OAuth refusal is an `error` code, not a /v1 envelope, so it is
+		// translated here -- otherwise `invalid_grant` would exit 10, and a
+		// revoked authorization would read as a server fault rather than as
+		// "log in again".
+		var oauthErr *apierrFromCallback
+		if errors.As(err, &oauthErr) {
+			return &apierr.Error{Code: apierr.CodeInvalidToken, Message: "the profile " +
+				r.cred.Profile + "'s refresh token was refused (" + oauthErr.code + "); it is " +
+				"single-use and is not retried. " + loginAgainMessage}
+		}
+		return err
+	}
+
+	p.AccessToken = tokens.AccessToken
+	if tokens.RefreshToken != "" {
+		p.RefreshToken = tokens.RefreshToken
+	}
+	p.ExpiresAt = ""
+	if tokens.ExpiresIn > 0 {
+		p.ExpiresAt = r.env.Now().UTC().
+			Add(time.Duration(tokens.ExpiresIn) * time.Second).Format(time.RFC3339)
+	}
+	if granted := strings.Fields(tokens.Scope); len(granted) > 0 {
+		p.Scopes = granted
+	}
+	if err := r.store.UpdateProfile(pending, r.cred.Profile, p); err != nil {
+		return err
+	}
+	r.client.Token = tokens.AccessToken
+	r.cred.Token = tokens.AccessToken
+	r.out.Verbosef("the OAuth profile %s was refreshed at %s", r.cred.Profile, meta.TokenEndpoint)
 	return nil
 }

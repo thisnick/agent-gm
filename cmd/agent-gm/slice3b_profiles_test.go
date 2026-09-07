@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -299,5 +300,137 @@ func TestSlice3bARevokedAuthorizationIsExitThreeWithLoginGuidance(t *testing.T) 
 	if after := readStoredCredentials(t, credentials).Profiles[host]; after.RefreshToken !=
 		profile.RefreshToken {
 		t.Error("a refused refresh rewrote the profile")
+	}
+}
+
+// An OAuth profile refreshes at `/oauth/token`, not at `/v1/auth/refresh`
+// (spec sections 9.6, 11.5). The two paths do not cross: the credential layer
+// keys a token digest by kind, so an OAuth refresh token presented at
+// `/v1/auth/refresh` is simply unknown and an admin one at `/oauth/token` is
+// `invalid_grant`.
+//
+// This drives the whole real flow -- discovery, DCR, PKCE, the enrollment
+// code, the approval -- because the client_id the refresh grant requires only
+// exists if the login really performed it.
+func TestSlice3bAnOAuthProfileRefreshesAtTheTokenEndpoint(t *testing.T) {
+	h := newOAuthHarnessOnItsOwnURL(t)
+	credentials := filepath.Join(t.TempDir(), "credentials.json")
+	host := mustHost(t, h.http.URL)
+	oauthLoginViaCLI(t, h, credentials)
+
+	before := readStoredCredentials(t, credentials).Profiles[host]
+	if before.ClientID == "" {
+		t.Fatal("the OAuth profile records no client_id, which the refresh grant requires")
+	}
+	if before.ExpiresAt == "" || before.RefreshToken == "" {
+		t.Fatalf("the OAuth profile records no expiry or no refresh token: %+v", before)
+	}
+	expiry, err := time.Parse(time.RFC3339, before.ExpiresAt)
+	if err != nil {
+		t.Fatalf("expires_at %q is not RFC3339: %v", before.ExpiresAt, err)
+	}
+
+	code, _, stderr := runAgmAt(t, func() time.Time { return expiry.Add(-30 * time.Second) },
+		"auth", "whoami", "--credentials-file", credentials)
+	if code != 0 {
+		t.Fatalf("`agm auth whoami` on an expiring OAuth profile exited %d\nstderr: %s",
+			code, stderr)
+	}
+
+	after := readStoredCredentials(t, credentials).Profiles[host]
+	if after.AccessToken == before.AccessToken || after.RefreshToken == before.RefreshToken {
+		t.Fatal("the OAuth profile was not rotated")
+	}
+	if after.ClientID != before.ClientID {
+		t.Errorf("the client_id changed: %q became %q", before.ClientID, after.ClientID)
+	}
+	if whoami := h.get("/v1/auth/whoami", bearer(after.AccessToken)); whoami.StatusCode != 200 {
+		t.Fatalf("the refreshed OAuth access token answered %d", whoami.StatusCode)
+	}
+	// The admin path would not have accepted this token, which is the whole
+	// point of keeping the two endpoints apart.
+	crossed := h.postJSON("/v1/auth/refresh", map[string]any{"refresh_token": after.RefreshToken})
+	if crossed.StatusCode == 200 {
+		t.Error("an OAuth refresh token was accepted at /v1/auth/refresh; the admin and " +
+			"OAuth paths must not cross (section 9.6)")
+	}
+	_ = readBody(t, crossed)
+}
+
+// oauthLoginViaCLI runs the real `agm auth login` OAuth flow to completion,
+// playing the part of the browser exactly as an owner on a headless box does
+// by hand.
+func oauthLoginViaCLI(t *testing.T, h *oauthHarness, credentials string) {
+	t.Helper()
+	admin := h.adminToken()
+	_, enrollValue := h.enrollmentCode(admin, map[string]any{
+		"label":  "agm",
+		"scopes": []string{"messages:read", "messages:write"},
+	})
+
+	stdout, stderr := &lockedBuffer{}, &lockedBuffer{}
+	var wg sync.WaitGroup
+	var exit int
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		exit = cli.Run(cli.Env{
+			Args: []string{
+				"auth", "login", "--no-browser",
+				"--scopes", "messages:read messages:write",
+				"--server", h.http.URL,
+				"--credentials-file", credentials,
+			},
+			Stdout: stdout,
+			Stderr: stderr,
+			Getenv: func(string) string { return "" },
+		})
+	}()
+
+	authorizeURL := waitForAuthorizeURL(t, stderr)
+	req, err := http.NewRequest(http.MethodGet, authorizeURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	screen := h.do(req)
+	if screen.StatusCode != http.StatusOK {
+		t.Fatalf("the authorization screen answered %d", screen.StatusCode)
+	}
+	h.captureCookie(screen)
+	form := hiddenFields(t, readBody(t, screen))
+	form.Add("scope_selected", "messages:read")
+	form.Add("scope_selected", "messages:write")
+	form.Set("enrollment_code", enrollValue)
+
+	submitted := h.postForm("/oauth/authorize", form, h.withCookie)
+	if submitted.StatusCode != http.StatusSeeOther {
+		t.Fatalf("submitting the form answered %d", submitted.StatusCode)
+	}
+	requestID := strings.TrimPrefix(submitted.Header.Get("Location"), "/oauth/requests/")
+	_ = readBody(t, submitted)
+
+	approve := h.postJSON("/v1/admin/authorization-requests/"+requestID+"/approve",
+		map[string]any{}, bearer(admin))
+	if approve.StatusCode != http.StatusOK {
+		t.Fatalf("approving answered %d", approve.StatusCode)
+	}
+	_ = readBody(t, approve)
+
+	complete := h.postForm("/oauth/requests/"+requestID+"/complete",
+		url.Values{"form_token": {form.Get("form_token")}}, h.withCookie, h.sameOrigin)
+	if complete.StatusCode != http.StatusSeeOther {
+		t.Fatalf("completing answered %d", complete.StatusCode)
+	}
+	callback := complete.Header.Get("Location")
+	_ = readBody(t, complete)
+	cb, err := http.NewRequest(http.MethodGet, callback, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = readBody(t, h.do(cb))
+
+	wg.Wait()
+	if exit != 0 {
+		t.Fatalf("agm auth login exited %d\nstderr:\n%s", exit, stderr.String())
 	}
 }
