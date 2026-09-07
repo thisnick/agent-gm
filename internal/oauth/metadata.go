@@ -34,16 +34,6 @@ var ScopesSupported = []string{
 // same URL section 1.4's AGPL obligation puts in `GET /v1/health`.
 const SourceURL = "https://github.com/thisnick/agent-gm"
 
-// ProtectedResourceMetadata is the RFC 9728 document as the official MCP Go
-// SDK's own type (decision D36).
-//
-// It is the SDK's type rather than one of ours because this document is read
-// by clients, not by us: an MCP client fetches it to discover where to
-// authorize, and `oauthex.ProtectedResourceMetadata` is what the reference
-// implementation both writes and parses. Our values are unchanged and still
-// byte-exact -- `resource` is AGENT_GM_PUBLIC_URL plus `/mcp` and nothing
-// else -- and section 16 Slice 3 test 1 still asserts them as strings.
-type protectedResourceDoc = oauthex.ProtectedResourceMetadata
 
 type authorizationServerDoc struct {
 	Issuer                                     string   `json:"issuer"`
@@ -66,8 +56,16 @@ func (s *Server) ProtectedResourceDocument() any {
 	return s.protectedResourceMetadata()
 }
 
-// protectedResourceMetadata is the same document as the SDK's typed value, so
-// that the handler and the accessor cannot drift.
+// protectedResourceMetadata is the RFC 9728 document as the official MCP Go
+// SDK's own type (decision D36), so that the handler and the accessor cannot
+// drift.
+//
+// It is the SDK's type rather than one of ours because this document is read
+// by clients, not by us: an MCP client fetches it to discover where to
+// authorize, and `oauthex.ProtectedResourceMetadata` is what the reference
+// implementation both writes and parses. Our values are unchanged and still
+// byte-exact -- `resource` is AGENT_GM_PUBLIC_URL plus `/mcp` and nothing
+// else -- and section 16 Slice 3 test 1 still asserts them as strings.
 func (s *Server) protectedResourceMetadata() *oauthex.ProtectedResourceMetadata {
 	return &oauthex.ProtectedResourceMetadata{
 		Resource:               s.Resource(),

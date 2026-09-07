@@ -251,18 +251,24 @@ func TestSlice3Test19IsErrorSemantics(t *testing.T) {
 	// And the boundary of the rule: `resources/read` is NOT a tools/call, so
 	// its failures are JSON-RPC errors. A ReadResourceResult has no isError
 	// field and must carry `contents`; a "result" reporting a failure is not
-	// a valid result, and the official TypeScript SDK rejects it on schema
-	// before the client's own code runs. The model learns nothing either
-	// way, so the only thing at stake is whether the CLIENT gets a readable
-	// refusal or a parse error.
+	// a valid result, and an official SDK client rejects it on schema before
+	// the client's own code runs. The model learns nothing either way, so the
+	// only thing at stake is whether the CLIENT gets a readable refusal or a
+	// parse error.
 	answer = h.callWith(h.Token, "resources/read",
 		map[string]any{"uri": "agm://attachments/att_00000000-0000-0000-0000-000000000000"}, nil)
 	if answer.Error == nil {
 		t.Fatalf("a missing resource answered a result rather than a JSON-RPC error: %s",
 			answer.Raw)
 	}
-	if answer.Error.Code != -32002 {
-		t.Errorf("a missing resource answered code %d, want MCP's -32002", answer.Error.Code)
+	if int64(answer.Error.Code) != sdkjsonrpc.CodeInvalidParams {
+		t.Errorf("a missing resource answered code %d, want the SDK's resource-not-found %d",
+			answer.Error.Code, sdkjsonrpc.CodeInvalidParams)
+	}
+	// And it is a `200`, because a reference client treats a 4xx as a
+	// connection failure -- see TestAJSONRPCErrorDoesNotEndTheSession.
+	if answer.Status != http.StatusOK {
+		t.Errorf("a JSON-RPC error was delivered with HTTP %d, want 200", answer.Status)
 	}
 }
 

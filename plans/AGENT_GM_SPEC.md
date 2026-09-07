@@ -2537,30 +2537,62 @@ conversation exists, is readable, and will be writable again after
 
 ### 8.1 Transport
 
-Streamable HTTP at `https://gm.agent-wx.app/mcp`. Protocol revision
-`2026-07-28`, with `2025-11-25` accepted for compatibility. Stateless at the
-application layer: every request carries its own bearer token and its own
-protocol metadata, and durable state lives in SQLite.
+Streamable HTTP at `https://gm.agent-wx.app/mcp`, served by the official MCP
+Go SDK's `StreamableHTTPHandler` (**D36**). Protocol revision `2026-07-28`,
+with `2025-11-25` accepted for compatibility; the SDK also answers the two
+revisions older than those, and that is the SDK's business rather than this
+document's.
 
-Checked **before the transport parses anything**:
+**Stateless**, and not by preference: the SDK refuses every revision from
+`2026-07-28` onwards on a stateful transport, because SEP-2575's protocol is
+sessionless by design and drops resumability. Sessions and this section's
+protocol revision cannot both be had. So every request carries its own bearer
+token and its own protocol metadata, durable state lives in SQLite, and `GET`
+and `DELETE` on `/mcp` are `405` with `Allow: POST` — there is no
+server-initiated stream to open and no session to delete.
+
+The checks, in this order. The first two run **before the transport parses
+anything**; the rest are the SDK's, and run after authentication because the
+SDK owns the parse.
 
 - `Origin`, when present, must equal `https://gm.agent-wx.app`; a foreign one
-  is `403`. A non-browser client sending no `Origin` is supported.
-- Body over 1 MiB → `413`.
-- `Content-Type` must be `application/json`.
-- `Accept` must admit `application/json` or `text/event-stream`.
+  is `403`. A non-browser client sending no `Origin` is supported. **This one
+  is ours**, not the SDK's: the SDK's cross-origin protection is opt-in behind
+  a debug parameter, is deprecated in favour of external middleware, and
+  compares `Origin` against the request's own `Host`, which behind the tunnel
+  of §14 is not `AGENT_GM_PUBLIC_URL`.
+- Body over 1 MiB → `413`, refused before authentication so that an
+  unauthenticated body cannot buy a store lookup.
 - Exactly one `Authorization` header is parsed, and only the `Bearer` scheme.
   Two headers, another scheme, or a value carrying two tokens are all refused
-  rather than resolved to whichever happens to be first.
+  rather than resolved to whichever happens to be first. **This one is ours
+  too**, and it is a correction rather than an addition: the SDK's bearer
+  middleware reads the first `Authorization` value and ignores the rest, so
+  with the SDK alone a request carrying a valid token and a second header is
+  served from the valid one.
 - The token must carry **at least one** messaging scope. No token → `401` with
-  the RFC 9728 challenge. Valid token with no messaging scope → `403`
+  the RFC 9728 challenge of §9.2. Valid token with no messaging scope → `403`
   `insufficient_scope` with the same challenge, deliberately distinct from
-  `401`.
+  `401`. The OR is ours: the SDK enforces its scope list as an AND, which
+  would refuse a legitimate read-only token.
 - Concurrency: 8 in flight per authorization, 32 across the process; excess is
   `429` with `Retry-After`.
+- `Content-Type` must be `application/json`; anything else is `415`.
+- `Accept` must admit **both** `application/json` and `text/event-stream`. The
+  server chooses which to answer with, so a client admitting only one is
+  refusing an answer the server is entitled to give.
 
-`serverInfo` carries `name: "agent-gm"`, the version, the built commit, and
-`source_url` (§1.4).
+A refusal at any of these carries §7.1's error envelope, on this surface as on
+every other.
+
+`serverInfo` carries `name: "agent-gm"`, `version` — the release version with
+the built commit as **semver build metadata**, `1.0.0+abc1234` — and
+`websiteUrl`, the source URL of §1.4. There is no `serverInfo.commit` and no
+`serverInfo.source_url`: the SDK's `serverInfo` type has no field for either,
+and a build fact placed in `_meta` does not survive, because from
+`2026-07-28` a client discovers the server with `server/discover` and the
+reference client keeps only one `_meta` key of that result. A licence
+obligation no client can read is not met, so it goes where a client reads.
 
 ### 8.2 Tools
 
@@ -2577,6 +2609,7 @@ exclusions, and the reason for each:
 |---|---|
 | `POST /v1/conversations/{id}/typing` | no lasting effect and no result a model can act on |
 | `GET /v1/messages/{id}/attachments` | its data is already inside `get_message`; a tool would only add a round trip |
+| `GET /v1/conversations/{id}/messages` | the same rows as `list_messages` with `conversation_id`, under a second name. Two tools that answer identically are two chances for a model to think they differ |
 | `GET`, `DELETE /v1/uploads/{id}` | an agent that has just called `create_upload` already holds everything they would return |
 | `GET /v1/auth/whoami`, `POST /v1/auth/logout` | **credential self-management.** A model does not choose its own token, cannot act on the answer, and must not be able to log its client out mid-conversation. The client owns its credential; the model does not |
 | `POST /v1/auth/admin-session`, `POST /v1/auth/refresh` | credential *issuance*. Reachable only by presenting a secret or a refresh token, neither of which a model holds |
@@ -2683,14 +2716,34 @@ same sentence: *"Repeating this call with the same client_request_id returns
 the same operation and sends nothing further. A fresh client_request_id is a
 different call, not a repeat."*
 
-**`isError` semantics.** A domain failure is a **result** with `isError: true`
-carrying the REST error envelope in `structuredContent.error`. That covers
-every code in §7.2 except the transport-level ones. Only a malformed request,
-an unknown method, an unknown tool name, or an authorization failure at the
-transport is a JSON-RPC error. The split matters: many MCP clients surface a
-JSON-RPC error as a transport failure and never hand it to the model, so a
-`not_found` reported that way is a fact the model never learns and cannot
-correct itself from.
+**`isError` semantics — a `tools/call` rule, and only that.** A domain failure
+in a **tool call** is a **result** with `isError: true` carrying the REST error
+envelope in `structuredContent.error`. That covers every code in §7.2 except
+the transport-level ones. Only an unknown method, an unknown tool name, or an
+authorization failure at the transport is a JSON-RPC error. The split matters:
+many MCP clients surface a JSON-RPC error as a transport failure and never hand
+it to the model, so a `not_found` reported that way is a fact the model never
+learns and cannot correct itself from.
+
+The rule stops at `tools/call`, because that is the only result type with an
+`isError` field. **`resources/read` failures are JSON-RPC errors** — the SDK's
+resource-not-found code, `-32602` since SEP-2164 moved it off the older
+`-32002` — and never `isError` results: a `ReadResourceResult` must carry
+`contents`, so a "result" reporting a failure is not a valid result at all and
+a reference client rejects it on schema before the application sees it. A
+scope refusal on `resources/read` is the same error, because to a caller who
+may not read it the resource does not exist.
+
+A body that is not a JSON-RPC message at all is neither: it is `400` with
+§7.1's envelope, because it carries no `id` and there is nothing to answer.
+
+**A JSON-RPC error is delivered with HTTP `200`.** Its code is the SDK's; only
+the status is ours. From `2026-07-28` the SDK gives some JSON-RPC errors a 4xx
+status of their own (SEP-2575), and its own client treats any non-2xx as a
+connection failure and tears the session down — so a model naming a tool that
+does not exist, which is an everyday thing for a model to do, would disconnect
+the connector rather than be told. That is the opposite of what the `isError`
+rule exists for, one layer down.
 
 `insufficient_scope` appears on both sides deliberately, addressed to
 different readers. The transport's `401`/`403` is addressed to the client. A
@@ -2940,13 +2993,29 @@ envelope.
 that plus `/mcp` with no trailing-slash drift. Both are tested as string
 equality, not as parsed-URL equivalence.
 
-The `401` challenge:
+The protected-resource document is served by the SDK's own RFC 9728 handler
+(**D36**), so it carries the CORS headers §3.1 of that RFC asks for and
+answers an `OPTIONS` preflight — public discovery data has to be readable from
+a browser. The values above are unchanged and still asserted as strings.
+
+The `401` challenge from `/mcp`, which the `403 insufficient_scope` carries
+too because it says the same thing to the same reader:
 
 ```http
-WWW-Authenticate: Bearer realm="agent-gm",
-  resource_metadata="https://gm.agent-wx.app/.well-known/oauth-protected-resource/mcp",
-  scope="messages:read messages:write"
+WWW-Authenticate: Bearer resource_metadata="https://gm.agent-wx.app/.well-known/oauth-protected-resource/mcp", scope="messages:read messages:write"
 ```
+
+**There is no `realm`.** The format is the SDK's, byte for byte — a test runs
+a real `auth.RequireBearerToken` and requires this server's challenge to equal
+what it wrote, so a version bump that changes the format fails there rather
+than at a connector. The `scope` names `messages:read messages:write` and not
+`messages:delete`, which is what §9.4 makes the default an authorization
+request carries; the omission is load-bearing rather than tidy, because a
+challenge naming no scope at all sends a reference client to
+`scopes_supported` and puts `messages:delete` on the owner's approval screen.
+
+The `/v1` REST surface's challenge (§7.2) is unchanged and still carries
+`realm` and `error`. Only `/mcp` speaks the SDK's.
 
 ### 9.3 Dynamic client registration (RFC 7591)
 
@@ -5029,7 +5098,12 @@ this slice's gate, not in this one.
    equality on both discovery documents.
 2. An unauthenticated `/mcp` request answers `401` with the exact
    `WWW-Authenticate` of §9.2; a valid token carrying no messaging scope
-   answers `403 insufficient_scope` with the same challenge.
+   answers `403 insufficient_scope` with the same challenge; and so does a
+   **well-formed `Bearer` whose token is not valid**, which is the path where
+   the SDK writes a challenge of its own and this server substitutes §9.2's.
+   One header, never two. A separate test runs a real
+   `auth.RequireBearerToken` and requires this server's challenge string to
+   equal what the SDK wrote, so the SDK stays the authority for the format.
 3. DCR: `token_endpoint_auth_method` other than `none` is refused; a
    client-chosen `client_id` is refused; 11 redirect URIs are refused; a
    501-character URI is refused; `http://localhost:1/cb` is **accepted** and
@@ -5096,20 +5170,37 @@ this slice's gate, not in this one.
 18. The §9.4 authorization screen renders the global-scope disclosure line
     verbatim, above the scope checkboxes, followed by the current accounts —
     asserted as a string, which is what makes §9.7's honesty claim testable.
-19. A domain failure is a **result** with `isError: true` and
-    `structuredContent.error`, not a JSON-RPC error; an unknown tool name
-    **is** a JSON-RPC error. Both directions asserted.
+19. A domain failure in a tool call is a **result** with `isError: true` and
+    `structuredContent.error`, not a JSON-RPC error; an unknown tool name and
+    an unknown method **are** JSON-RPC errors; a `resources/read` failure is a
+    JSON-RPC error and never a result; a body that is not a JSON-RPC message
+    is `400` with §7.1's envelope. Every direction asserted. And the property
+    that makes the split worth anything: after each JSON-RPC error, **the same
+    client session still works** — a reference client treats a 4xx as a
+    connection failure, so an unknown tool name delivered with one would
+    disconnect the connector instead of teaching the model.
 20. The `initialize` instructions block is byte-identical to the "First five
     minutes" section of `docs/mcp.md` modulo markdown quoting.
 21. `Origin: https://evil.example` on `/mcp` is `403` before parsing; no
     `Origin` is accepted; two `Authorization` headers are refused rather than
-    resolved.
+    resolved **even when the first is valid**, which is the case the SDK's own
+    middleware gets wrong; a wrong `Content-Type` is `415`; an `Accept`
+    carrying only one of the two media types is `400`; `GET /mcp` is `405`
+    with `Allow: POST` once authenticated and `401` before. And §8.1's
+    concurrency budget: with 8 calls really in flight — held there, not timed
+    — the ninth is `429` with `Retry-After` and §7.1's envelope, and a slot is
+    freed when a call settles.
 22. `get_attachment` returns inline image content under
     `media.inline_mcp_image_max_bytes` and a resource link above it, **and the
     download ticket either way**; the first content block is the text summary.
 23. `devbox run conformance` runs against a token minted through the **whole**
     OAuth flow, passes its baseline in both directions, and fails if the
-    chosen spec revision runs zero scenarios.
+    chosen spec revision runs zero scenarios. Separately, the **official SDK
+    OAuth client** (`auth.AuthorizationCodeHandler`, with dynamic client
+    registration, PKCE and refresh) completes that same flow against the wired
+    binary — discovery, registration, the authorization screen, an enrollment
+    code, owner approval, completion, the exchange, a call on `/mcp`, and a
+    refresh — so §9 is checked by the reference client rather than by ours.
 24. `devbox run lint-names` fails on each banned word in a served tool
     description and in a `docs/` page, and its meta-test proves the exempt
     cases — §18.3, a fenced block quoting upstream, `send_mode`,
@@ -5128,8 +5219,14 @@ this slice's gate, not in this one.
     and `agent-gm healthcheck` succeeds inside it with no shell and no `curl`.
 27. `docker compose -f compose.example.yml up` on a clean machine with only the
     three required environment variables reaches `GET /healthz` = 200.
-28. `GET /v1/health` and MCP `serverInfo` report a `commit` equal to the built
-    commit and a `source_url` that resolves — the AGPL §13 obligation of §1.4.
+28. `GET /v1/health` and MCP `serverInfo` report the built commit and a
+    `source_url` that resolves — the AGPL §13 obligation of §1.4 — and the two
+    surfaces **agree**. On the MCP side the facts are `serverInfo.version`
+    (the version plus the commit as semver build metadata) and
+    `serverInfo.websiteUrl`, and they are read from the object **the official
+    SDK client reconstructs**, not off the wire: a client keeps only one
+    `_meta` key of the `server/discover` result, so an obligation asserted on
+    the wire alone could be one no client receives.
 29. **Live gate.** claude.ai and ChatGPT each add
     `https://gm.agent-wx.app/mcp` as a connector against the **deployed**
     container, complete enrollment and approval, list conversations, read a
@@ -5259,6 +5356,7 @@ add missing tools to `devbox.json` rather than installing on the host.
 | **D33** | **The pairing Chrome profile is short-lived.** It is created fresh under the platform's temporary directory for one capture and deleted the moment Chrome closes — on success, on failure, on timeout and on Ctrl-C. There is no kept profile, nothing under `$XDG_STATE_HOME/agent-gm/`, and no `--forget-browser`. **Owner decision, 2026-09-06** | A kept profile is a directory holding a live, logged-in Google session sitting on the client machine indefinitely, protected by nothing but its mode — the same blast radius as `sessions/*.enc` but with no data key in front of it, and easy to forget about. The benefit it bought was a `--refresh-cookies` that usually needed no sign-in; the owner judged a sign-in prompt per refresh to be cheap next to a permanent credential on disk. Keying it by account, and the `--forget-browser` command that existed to clean it up, both go with it |
 | **D34** | **The group name is sent on the RCS retry, not on the first `GetOrCreateConversation`.** A deliberate divergence from upstream, recorded 2026-09-07 from the Slice 2 live gate | `connector/startchat.go:186-189` at the pin sets `RCSGroupName` on the first call. The live gate found that a named start with SMS/MMS recipients **fails** there, and the same start without a name succeeds seconds later against the same phone and the same numbers. A name is an RCS group concept, and Google refuses it on the call that is still deciding whether this is an RCS group at all. So the first call asks the question and the name goes on the retry — which is where upstream puts it too once the first call returns `CREATE_RCS`; the divergence is only about the first call. The same gate showed the second half of this bug: the failure was being relabelled `config_version_stale` because the versions happened to differ, which sent the operator after the pin instead of the name (D32) |
 | **D35** | **The container ships in Slice 3, not Slice 4.** The Dockerfile, `compose.example.yml`, the GHCR image and `docs/deploy.md` are Slice 3 deliverables, and the claude.ai/ChatGPT connector gate runs in Slice 3 against the deployed container behind `https://gm.agent-wx.app`. **Owner decision, 2026-09-06** | Production is a Compose service beside the bridge it replaces, behind the tunnel; bare metal is only where the spike and the early gates ran. The connector gate is the first time external clients bind to the public URL, so it must exercise the artifact they will keep talking to — the container — rather than a host binary that is then repackaged. Slice 4 keeps what does not affect that gate: the npm wrapper, release binaries, the owner's Mac CLI gate, and the cutover of the live data directory into the volume |
+| **D36** | **The MCP protocol layer is the official Go SDK, `github.com/modelcontextprotocol/go-sdk`, pinned at `v1.7.0`.** The hand-written JSON-RPC, session and dispatch code is deleted. **Owner decision, 2026-09-06: "I'd rather not reinvent the wheel."** What the SDK now decides, what stays ours, and what it forced, are in §8.1, §8.2, §9.2 and the note below | A protocol we wrote ourselves is a protocol we have to keep correct against a spec that moves, with the connectors as the only test. The reference implementation is the one the clients are written against, and every place it disagreed with us is a place a connector would have disagreed with us later |
 
 #### Field observation behind D3 — the ConfigVersion, and status 4
 
@@ -5287,6 +5385,58 @@ documents it, so:
   particular status number.
 - `GET /v1/health` reports both versions unconditionally, so the diff is
   visible before anything fails.
+
+#### D36 — what the SDK decides, and what it does not
+
+**The pin is `github.com/modelcontextprotocol/go-sdk v1.7.0`, in `go.mod`.**
+It is bumped the way §3.6 bumps `libgm`: **a deliberate slice, never a
+drive-by commit.** The slice must re-run §16 Slice 3's tests 2, 14–22 and 28,
+re-run `devbox run conformance` and re-baseline it in both directions, and
+drive `bin/agent-gm serve` with the SDK's own client and with the official
+TypeScript client. It does not need §3.6's live gate: nothing here touches
+Google, and the connectors are covered by test 29.
+
+**The SDK decides:** JSON-RPC framing and error objects and their codes;
+session lifecycle and protocol-version negotiation; `tools/list` and
+`tools/call` and their wire shapes; `resources/list`,
+`resources/templates/list` and `resources/read`; the bearer middleware and
+the RFC 9728 challenge format; the RFC 9728 document's handler; and every
+method we do not implement but it does — a client asking for one gets the
+SDK's answer, not a `-32601` we chose.
+
+**Ours, and stated where each is:** the twenty-one tools and every schema,
+description and enum in them (§8.2); the translation onto the REST routes, so
+that both surfaces still answer from one handler; the `isError` envelope; scope
+gating, including the `tools/call` re-check that must be a **result** rather
+than the SDK's "unknown tool" error, because the model has to be able to act on
+it; the `Origin` check; the single-`Authorization`-header rule; the "at least
+one messaging scope" OR; the concurrency budget; §7.1's envelope on every
+refusal; and the whole of §9's authorization server, which is our design and
+which the SDK's OAuth *client* now tests rather than replaces.
+
+**What it forced.** Each of these is a real change to what a client sees, and
+each is written where it applies:
+
+| | Before | Now | Because |
+|---|---|---|---|
+| Sessions | none, by choice | none, by necessity | the SDK refuses protocol `2026-07-28` on a stateful transport; sessions and this revision are exclusive |
+| Challenge | `realm="agent-gm", …` | no `realm` | it is the format `auth.RequireBearerToken` emits |
+| Wrong `Content-Type` | `400` | `415` | the SDK's, and the more correct status |
+| `Accept` | either media type | **both** | the SDK's, and the MCP transport's rule |
+| Malformed body | `-32700` | `400` + §7.1 envelope | it carries no `id`, so there is nothing to answer |
+| `resources/read` not found | `-32002` | `-32602` | SEP-2164; `-32002` was the pre-1.7.0 code |
+| Build facts | `serverInfo.commit`, `serverInfo.source_url` | `serverInfo.version` build metadata, `serverInfo.websiteUrl` | the SDK's `serverInfo` has no field for a commit, and `_meta` does not survive `server/discover` |
+| `GET`/`DELETE` on `/mcp` | `405` | `405` after auth, `401` before | authentication precedes the transport |
+
+**And one thing it decided that we declined.** From `2026-07-28` the SDK gives
+some JSON-RPC errors a 4xx HTTP status (SEP-2575), and its own client treats
+any non-2xx as a connection failure and closes the session. A model naming a
+tool that does not exist would therefore disconnect the connector. This server
+delivers every JSON-RPC error with `200`, keeping the SDK's code and only
+overriding its status. That is the single place the SDK is not the authority,
+and it is not a matter of taste: it is the `isError` rule of §8.2 — *a refusal
+must reach the reader who can act on it* — applied one layer further down than
+§8.2 was written for.
 
 #### The single acceptance axis
 
