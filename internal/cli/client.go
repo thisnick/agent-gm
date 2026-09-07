@@ -109,8 +109,7 @@ func (c *Client) urlFor(r Request) (string, error) {
 	base := r.AbsoluteURL
 	if base == "" {
 		if c.BaseURL == "" {
-			return "", &LocalError{Msg: "no server is configured: pass --server, set AGENT_GM_URL, " +
-				"or log in with `agm auth login` so a profile records one"}
+			return "", &LocalError{Msg: noServerMessage}
 		}
 		base = strings.TrimRight(c.BaseURL, "/") + r.Path
 	}

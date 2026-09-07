@@ -81,7 +81,10 @@ func (e *Env) normalise() {
 
 // runner is one invocation.
 type runner struct {
-	env    *Env
+	env *Env
+	// cmd is the command being run. connect needs it: `agm auth login` is
+	// the one command allowed to name a server no profile holds (11.5).
+	cmd    *command
 	g      globals
 	out    *Output
 	client *Client
@@ -182,6 +185,7 @@ func dispatch(env *Env) error {
 
 	r := &runner{
 		env: env,
+		cmd: cmd,
 		g:   g,
 		ctx: context.Background(),
 		out: &Output{
@@ -220,13 +224,13 @@ func dispatch(env *Env) error {
 func (r *runner) connect() error {
 	r.store = NewStore(CredentialsPath(r.g.credentialsFile, r.env.Getenv))
 
-	cred, err := ResolveCredential(r.store, r.env.Getenv, r.g.server, r.g.profile)
+	cred, err := ResolveCredential(r.store, r.env.Getenv, r.g.server, r.g.profile,
+		r.cmd != nil && r.cmd.createsProfile)
 	if err != nil {
 		return err
 	}
 	if cred.Server == "" {
-		return &LocalError{Msg: "no server is configured: pass --server, set AGENT_GM_URL, " +
-			"or log in with `agm auth login` so a profile records one"}
+		return &LocalError{Msg: noServerMessage}
 	}
 	r.cred = cred
 	r.out.profile = cred.Profile

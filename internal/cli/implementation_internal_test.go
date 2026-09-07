@@ -33,9 +33,15 @@ func TestEveryInventoryCommandIsImplemented(t *testing.T) {
 func TestEveryImplementedCommandIsInTheInventory(t *testing.T) {
 	for _, c := range commandTable() {
 		if c.inventory == "" {
-			// `agm completion` and `agm version` drive no route and are
-			// absent from the inventory on purpose (commands.go).
-			if c.Name() != "completion" && c.Name() != "version" {
+			// `agm completion`, `agm version` and the three `agm profiles`
+			// commands drive no route and are absent from the inventory on
+			// purpose (commands.go): the inventory is walked against the
+			// route table, and these touch only the local credentials file.
+			local := map[string]bool{
+				"completion": true, "version": true,
+				"profiles list": true, "profiles use": true, "profiles remove": true,
+			}
+			if !local[c.Name()] {
 				t.Errorf("`agm %s` names no inventory entry", c.Name())
 			}
 			continue

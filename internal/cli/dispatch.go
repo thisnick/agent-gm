@@ -25,6 +25,11 @@ type command struct {
 	// route is the route the generic executor drives. A command with its own
 	// run may name the route it starts with, or none.
 	route string
+	// createsProfile marks the one command that may name a server this
+	// machine holds no profile for: `agm auth login`, which is where a
+	// profile comes from. Every other command's --server must match a
+	// stored profile (spec section 11.5).
+	createsProfile bool
 	// connectsItself marks a command that resolves the server and the
 	// credential in its own body rather than having dispatch do it first.
 	// `agm pair` is the only one: it must diagnose a bad paste before it
@@ -456,7 +461,7 @@ func buildCommandTable() []*command {
 				{name: "--no-browser", kind: kBool,
 					help: "print the URL instead of opening a browser (the OAuth path, Slice 3)"},
 			},
-			run: (*runner).authLogin,
+			run: (*runner).authLogin, createsProfile: true,
 		},
 		{
 			words: []string{"auth", "logout"}, inventory: "auth logout", route: "auth_logout",
@@ -531,7 +536,7 @@ func buildCommandTable() []*command {
 		// authorization on a terminal. There is no approval page, because an
 		// approval page is a human UI and contradicts non-goal N2.
 		{
-			words: []string{"admin", "enrollment-codes", "create"},
+			words:     []string{"admin", "enrollment-codes", "create"},
 			inventory: "admin enrollment-codes create", route: "admin_enrollment_codes_create",
 			summary: "issue an enrollment code; it is printed once and never again",
 			pos:     []posDef{{name: "<label>", param: "label", where: wBody, required: true}},
@@ -545,30 +550,30 @@ func buildCommandTable() []*command {
 			},
 		},
 		{
-			words: []string{"admin", "enrollment-codes", "list"},
+			words:     []string{"admin", "enrollment-codes", "list"},
 			inventory: "admin enrollment-codes list", route: "admin_enrollment_codes_list",
 			summary: "every enrollment code, without its value",
 		},
 		{
-			words: []string{"admin", "enrollment-codes", "show"},
+			words:     []string{"admin", "enrollment-codes", "show"},
 			inventory: "admin enrollment-codes show", route: "admin_enrollment_codes_get",
 			summary: "one enrollment code",
-			pos: []posDef{{name: "<enroll-id>", param: "enrollment_code_id", where: wPath, required: true}},
+			pos:     []posDef{{name: "<enroll-id>", param: "enrollment_code_id", where: wPath, required: true}},
 		},
 		{
-			words: []string{"admin", "enrollment-codes", "revoke"},
+			words:     []string{"admin", "enrollment-codes", "revoke"},
 			inventory: "admin enrollment-codes revoke", route: "admin_enrollment_codes_revoke",
 			destructive: true,
 			confirm:     apierr.EffectEnrollmentCodeRevoke,
 			summary:     "revoke an enrollment code",
-			pos: []posDef{{name: "<enroll-id>", param: "enrollment_code_id", where: wPath, required: true}},
+			pos:         []posDef{{name: "<enroll-id>", param: "enrollment_code_id", where: wPath, required: true}},
 			flags: []flagDef{
 				{name: "--reason", kind: kString, param: "reason", where: wQuery,
 					help: "recorded in the audit row"},
 			},
 		},
 		{
-			words: []string{"admin", "authorization-requests", "list"},
+			words:     []string{"admin", "authorization-requests", "list"},
 			inventory: "admin authorization-requests list", route: "admin_authorization_requests_list",
 			summary: "authorization requests waiting on the owner",
 			flags: []flagDef{
@@ -577,34 +582,34 @@ func buildCommandTable() []*command {
 			},
 		},
 		{
-			words: []string{"admin", "authorization-requests", "show"},
+			words:     []string{"admin", "authorization-requests", "show"},
 			inventory: "admin authorization-requests show", route: "admin_authorization_requests_get",
 			summary: "one authorization request",
-			pos: []posDef{{name: "<authreq-id>", param: "authorization_request_id", where: wPath, required: true}},
+			pos:     []posDef{{name: "<authreq-id>", param: "authorization_request_id", where: wPath, required: true}},
 		},
 		{
-			words: []string{"admin", "authorization-requests", "approve"},
+			words:     []string{"admin", "authorization-requests", "approve"},
 			inventory: "admin authorization-requests approve",
 			route:     "admin_authorization_requests_approve",
 			summary:   "approve an authorization request",
-			pos: []posDef{{name: "<authreq-id>", param: "authorization_request_id", where: wPath, required: true}},
+			pos:       []posDef{{name: "<authreq-id>", param: "authorization_request_id", where: wPath, required: true}},
 			flags: []flagDef{
 				{name: "--scopes", kind: kString, param: "scopes", where: wBody,
 					help: "narrow the browser-selected scopes; widening is refused"},
 			},
 		},
 		{
-			words: []string{"admin", "authorization-requests", "deny"},
+			words:     []string{"admin", "authorization-requests", "deny"},
 			inventory: "admin authorization-requests deny", route: "admin_authorization_requests_deny",
 			summary: "deny an authorization request",
-			pos: []posDef{{name: "<authreq-id>", param: "authorization_request_id", where: wPath, required: true}},
+			pos:     []posDef{{name: "<authreq-id>", param: "authorization_request_id", where: wPath, required: true}},
 			flags: []flagDef{
 				{name: "--reason", kind: kString, param: "reason", where: wBody,
 					help: "recorded in the audit row"},
 			},
 		},
 		{
-			words: []string{"admin", "authorizations", "list"},
+			words:     []string{"admin", "authorizations", "list"},
 			inventory: "admin authorizations list", route: "admin_authorizations_list",
 			summary: "every credential this server has issued",
 			flags: []flagDef{
@@ -613,41 +618,41 @@ func buildCommandTable() []*command {
 			},
 		},
 		{
-			words: []string{"admin", "authorizations", "show"},
+			words:     []string{"admin", "authorizations", "show"},
 			inventory: "admin authorizations show", route: "admin_authorizations_get",
 			summary: "one authorization",
-			pos: []posDef{{name: "<auth-id>", param: "authorization_id", where: wPath, required: true}},
+			pos:     []posDef{{name: "<auth-id>", param: "authorization_id", where: wPath, required: true}},
 		},
 		{
-			words: []string{"admin", "authorizations", "revoke"},
+			words:     []string{"admin", "authorizations", "revoke"},
 			inventory: "admin authorizations revoke", route: "admin_authorizations_revoke",
 			destructive: true,
-			confirm: apierr.EffectAuthorizationRevoke,
-			summary: "revoke an authorization",
-			pos:     []posDef{{name: "<auth-id>", param: "authorization_id", where: wPath, required: true}},
+			confirm:     apierr.EffectAuthorizationRevoke,
+			summary:     "revoke an authorization",
+			pos:         []posDef{{name: "<auth-id>", param: "authorization_id", where: wPath, required: true}},
 			flags: []flagDef{
 				{name: "--reason", kind: kString, param: "reason", where: wQuery,
 					help: "recorded in the audit row"},
 			},
 		},
 		{
-			words: []string{"admin", "clients", "list"},
+			words:     []string{"admin", "clients", "list"},
 			inventory: "admin clients list", route: "admin_clients_list",
 			summary: "every dynamically registered client",
 		},
 		{
-			words: []string{"admin", "clients", "show"},
+			words:     []string{"admin", "clients", "show"},
 			inventory: "admin clients show", route: "admin_clients_get",
 			summary: "one registration",
-			pos: []posDef{{name: "<client-id>", param: "client_id", where: wPath, required: true}},
+			pos:     []posDef{{name: "<client-id>", param: "client_id", where: wPath, required: true}},
 		},
 		{
-			words: []string{"admin", "clients", "revoke"},
+			words:     []string{"admin", "clients", "revoke"},
 			inventory: "admin clients revoke", route: "admin_clients_revoke",
 			destructive: true,
-			confirm: apierr.EffectClientRevoke,
-			summary: "revoke a client registration",
-			pos:     []posDef{{name: "<client-id>", param: "client_id", where: wPath, required: true}},
+			confirm:     apierr.EffectClientRevoke,
+			summary:     "revoke a client registration",
+			pos:         []posDef{{name: "<client-id>", param: "client_id", where: wPath, required: true}},
 			flags: []flagDef{
 				{name: "--reason", kind: kString, param: "reason", where: wQuery,
 					help: "recorded in the audit row"},
@@ -655,6 +660,28 @@ func buildCommandTable() []*command {
 		},
 
 		// --- local commands, which drive no route --------------------------
+		// --- profiles ------------------------------------------------------
+		// Local commands: they read and write the credentials file and drive
+		// no route, so they answer "what is this machine pointed at" even
+		// when the server is unreachable.
+		{
+			words:   []string{"profiles", "list"},
+			summary: "every stored profile, with the active one marked",
+			run:     (*runner).profilesList,
+		},
+		{
+			words:   []string{"profiles", "use"},
+			summary: "make one profile the active one",
+			pos:     []posDef{{name: "<name>", where: wLocal, required: true}},
+			run:     (*runner).profilesUse,
+		},
+		{
+			words:   []string{"profiles", "remove"},
+			summary: "forget one profile; `agm auth logout` revokes at the server",
+			pos:     []posDef{{name: "<name>", where: wLocal, required: true}},
+			run:     (*runner).profilesRemove,
+		},
+
 		{
 			words: []string{"completion"}, summary: "print a shell completion script",
 			pos: []posDef{{name: "<shell>", where: wLocal, required: true}},
