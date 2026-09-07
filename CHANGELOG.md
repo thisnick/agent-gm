@@ -16,6 +16,11 @@ tag: a tag is a label and a digest is evidence.
 
 Nothing yet.
 
+## [1.0.2] — 2026-09-07
+
+- `agm auth login --admin` prints a hint when it grants all four scopes; admin sessions are narrowed with `--scopes`
+- Versions are managed with changesets; the container, binaries and npm package share one version
+
 ## [1.0.1] — 2026-09-07
 
 - Releases publish `@agent-gm/cli` through npm trusted publishing (OIDC);
@@ -103,6 +108,7 @@ Agent GM *is* rather than what changed.
   gate was satisfied through the public URL with Codex CLI. Adding either
   later needs no code.
 
-[Unreleased]: https://github.com/thisnick/agent-gm/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/thisnick/agent-gm/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/thisnick/agent-gm/releases/tag/v1.0.2
 [1.0.1]: https://github.com/thisnick/agent-gm/releases/tag/v1.0.1
 [1.0.0]: https://github.com/thisnick/agent-gm/releases/tag/v1.0.0
