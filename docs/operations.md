@@ -226,7 +226,7 @@ are diagnosable without reading logs.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `session envelope cannot be decrypted` at startup | `AGENT_GM_DATA_KEY` differs from the key that sealed `sessions/*.enc` | Restore the original key. **There is no in-place rotation.** The server still starts and still serves: each account whose session will not open is marked `signed_out` / `credentials`, with its history intact, and the rest resume normally |
+| `session envelope cannot be decrypted` at startup | `AGENT_GM_DATA_KEY` differs from the key that sealed `sessions/*.enc` | Restore the original key. **There is no in-place rotation.** The server still starts and still serves: each account whose session will not open is marked `signed_out` / `credentials`, with its history intact, and the rest resume normally. `session_present` stays `1`, so restoring the key and restarting brings them back with **no re-pair** |
 | Every write is `not_paired` | There are **no accounts at all** | `agm pair`. A server with zero accounts is healthy; it just cannot send |
 | A write is refused `unsupported_capability` / `not_signed_in` | **That one account** is not usable; the rest may be fine | Read the account's `state` in `agm accounts list` and follow the matching row below |
 | An account goes to `error` with `RevokePairData` in the audit log | That phone revoked the pairing | `agm pair --account <acct-id>`; history resumes |

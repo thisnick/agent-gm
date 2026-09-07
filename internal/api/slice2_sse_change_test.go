@@ -110,6 +110,10 @@ func TestSlice2_AStateChangeReachesAnSSEClient(t *testing.T) {
 			if got, _ := f.data["state_reason"].(string); got != "credentials" {
 				t.Errorf("the change's state_reason is %v, want credentials", f.data["state_reason"])
 			}
+			assertMillisecondWidth(t, "the change frame's at", func() string {
+				v, _ := f.data["at"].(string)
+				return v
+			}())
 			if f.data["from"] == nil {
 				t.Error("the change's from is null; on a CHANGE there is a previous " +
 					"state and it is what tells a client what moved")

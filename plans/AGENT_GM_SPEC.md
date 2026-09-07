@@ -1461,7 +1461,16 @@ download or an open ticket is not evicted underneath itself.
 Google timestamps are **microseconds**; Agent GM converts at the `gm` boundary
 and stores **milliseconds** in every `*_ms` column. Every JSON surface renders
 them as RFC 3339 UTC with millisecond precision — including
-`expires_at` on media tickets.
+`expires_at` on media tickets, and including the SSE feed's `at`.
+
+**The width is fixed at three digits, and one helper does it** (`internal/wire`).
+Not two: the DTO layer renders almost every surface, and the SSE feed does not
+— an `accounts.StateChange` is marshalled in `internal/accounts` and written
+straight to the socket. Stating the rule twice is how the stream came to
+marshal a bare `time.Time`, which Go renders as RFC3339Nano and therefore
+*strips trailing zeros*: `.507Z` and `.52Z` in one stream, seconds apart. A
+client parsing a fixed `.SSS` then works for nine frames in ten. Any surface
+that does not go through the DTO layer calls the same helper.
 
 `messages.delivery_state` is Agent GM's own closed vocabulary. The mapping
 covers **every** value declared in `MessageStatusType` at the pin; a value the
@@ -1598,6 +1607,18 @@ are `gmproto` internals that mean nothing to a caller (§18.1 rubric):
    Google account cookies are gone from disk and from the process;
 3. sets `state='signed_out'`, `session_present=0`;
 4. writes an audit row.
+
+**`signed_out` has two shapes on disk, and `session_present` is what tells
+them apart.** The procedure above is the first: the session is *gone*
+(`session_present=0`), and only a re-pair brings the account back. The second
+is a session that is present but cannot be opened — the data key does not
+match, or the file is damaged (§4.5). That account is marked `signed_out` with
+`state_reason: "credentials"` too, because from a caller's point of view it is
+the same fact (reads work, writes are refused), but `session_present` stays
+`1`. The difference is not cosmetic: the resume walk retries every account
+with a session present, so restoring the original key or the original file and
+restarting brings that account back **with no re-pair**, automatically. "Gone"
+and "unreadable from here" are different, and the row says which.
 
 It deletes **no** conversation, message, attachment, reaction, contact or
 operation. Everything stays readable and searchable — the account simply

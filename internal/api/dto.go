@@ -7,6 +7,7 @@ import (
 	"github.com/thisnick/agent-gm/internal/apierr"
 	"github.com/thisnick/agent-gm/internal/gm"
 	"github.com/thisnick/agent-gm/internal/store"
+	"github.com/thisnick/agent-gm/internal/wire"
 )
 
 // The DTOs of spec sections 6.5, 7.5 and 7.6, exactly as docs/api.md
@@ -31,22 +32,15 @@ import (
 // millisecond precision (spec section 4.4), or null for the zero value. A
 // pointer, because "no such moment" and "the Unix epoch" are different facts
 // and a caller must be able to tell them apart.
-func rfc3339(ms int64) *string {
-	if ms == 0 {
-		return nil
-	}
-	s := time.UnixMilli(ms).UTC().Format("2006-01-02T15:04:05.000Z")
-	return &s
-}
+func rfc3339(ms int64) *string { return wire.InstantMS(ms) }
 
 // rfc3339Time is rfc3339 for a *time.Time, which is what the accounts
 // package's health blocks carry.
 func rfc3339Time(t *time.Time) *string {
-	if t == nil || t.IsZero() {
+	if t == nil {
 		return nil
 	}
-	s := t.UTC().Format("2006-01-02T15:04:05.000Z")
-	return &s
+	return wire.InstantPtr(*t)
 }
 
 // nullable renders "" as JSON null, so `subject` and `state_reason` are

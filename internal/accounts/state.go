@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/thisnick/agent-gm/internal/store"
+	"github.com/thisnick/agent-gm/internal/wire"
 )
 
 // State is the account-state vocabulary of spec section 4.7. It is an alias
@@ -171,7 +172,12 @@ type StateChange struct {
 }
 
 // MarshalJSON renders an absent `from` and an absent `state_reason` as JSON
-// null rather than as "".
+// null, and `at` at section 4.4's fixed millisecond width.
+//
+// The SSE feed is the one JSON surface that does not go through internal/api's
+// DTO layer -- this object is marshalled here and written straight to the
+// socket -- so every rendering rule has to be applied again, by hand, right
+// here. Two have now had to be: null-not-empty-string, and the timestamp.
 //
 // Section 4.7 says state_reason is "a short machine-readable string ... or
 // null", and /v1/accounts already honours that. The SSE feed did not: a
@@ -181,12 +187,16 @@ type StateChange struct {
 // none" are different, and a client branching on truthiness gets the same
 // answer for both only by accident.
 func (c StateChange) MarshalJSON() ([]byte, error) {
-	type wire struct {
-		AccountID string    `json:"account_id"`
-		From      *string   `json:"from"`
-		To        State     `json:"to"`
-		Reason    *string   `json:"state_reason"`
-		At        time.Time `json:"at"`
+	type frame struct {
+		AccountID string  `json:"account_id"`
+		From      *string `json:"from"`
+		To        State   `json:"to"`
+		Reason    *string `json:"state_reason"`
+		// A string, not a time.Time: Go marshals one as RFC3339Nano, which
+		// strips trailing zeros, so the width of the fraction depended on the
+		// value and section 4.4's millisecond precision held only nine times
+		// in ten. wire.Instant is the same rendering every DTO uses.
+		At string `json:"at"`
 	}
 	nullable := func(s string) *string {
 		if s == "" {
@@ -194,12 +204,12 @@ func (c StateChange) MarshalJSON() ([]byte, error) {
 		}
 		return &s
 	}
-	return json.Marshal(wire{
+	return json.Marshal(frame{
 		AccountID: c.AccountID,
 		From:      nullable(string(c.From)),
 		To:        c.To,
 		Reason:    nullable(string(c.Reason)),
-		At:        c.At,
+		At:        wire.Instant(c.At),
 	})
 }
 

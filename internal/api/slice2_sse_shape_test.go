@@ -76,11 +76,46 @@ func TestSlice2_TheSSESnapshotWritesNullNotEmptyString(t *testing.T) {
 				"as one", field, v)
 		}
 	}
+	// V-1. Section 4.4 says every JSON surface renders an instant as RFC 3339
+	// UTC with millisecond precision, and every DTO pads to three digits. The
+	// stream did not: it marshalled a bare time.Time, and Go's RFC3339Nano
+	// STRIPS trailing zeros, so ".507Z" and ".52Z" appeared in one stream
+	// seconds apart. A client parsing a fixed three-digit fraction works
+	// until a timestamp lands on a multiple of ten milliseconds -- one frame
+	// in ten, which is the worst possible failure rate: often enough to
+	// happen in production, rare enough to survive a test run.
+	//
+	// Plant: marshal StateChange.At as a time.Time again and this fails on
+	// roughly one run in ten -- so the assertion below is also made against a
+	// value CHOSEN to strip, in the accounts package's TestStateChangeRendersExactlyThreeFractionalDigits.
+	at, _ := frame["at"].(string)
+	assertMillisecondWidth(t, "the snapshot frame's at", at)
+
 	// The fields that DO have a value still carry it.
 	if got, _ := frame["account_id"].(string); got != accountID {
 		t.Errorf("the snapshot frame's account_id is %q, want %s", got, accountID)
 	}
 	if got, _ := frame["to"].(string); got != "connected" {
 		t.Errorf("the snapshot frame's to is %q, want connected", got)
+	}
+}
+
+// assertMillisecondWidth holds section 4.4's rule: RFC 3339, UTC, exactly
+// three fractional digits.
+func assertMillisecondWidth(t *testing.T, what, s string) {
+	t.Helper()
+	if s == "" {
+		t.Errorf("%s is empty", what)
+		return
+	}
+	dot := strings.LastIndex(s, ".")
+	if dot < 0 || !strings.HasSuffix(s, "Z") {
+		t.Errorf("%s is %q, want RFC 3339 UTC with a fractional part (section 4.4)", what, s)
+		return
+	}
+	if digits := len(s) - dot - 2; digits != 3 {
+		t.Errorf("%s is %q: %d fractional digits, want exactly 3. Go strips trailing "+
+			"zeros, so a client parsing a fixed .SSS breaks on one timestamp in ten",
+			what, s, digits)
 	}
 }
