@@ -155,6 +155,67 @@ func TestPublishUploadsTheArchivesTheSignatureAndTheChecksums(t *testing.T) {
 	}
 }
 
+// docs/deploy.md carries a THIRD copy of the cosign verify command, and
+// nothing kept it in step with the one `release.sh` prints into the notes.
+// The reviewer found it byte-identical and said so; byte-identical today is
+// not a property, it is a coincidence with a date on it.
+//
+// The script is the source of truth, because it is the thing that writes the
+// identity a reader is told to check against. The comparison substitutes
+// `$repo` for its default, which is the only shell expansion in the string.
+//
+// A divergence here is not cosmetic: a reader who follows the docs and gets a
+// verification failure cannot tell it from a forged binary, and the honest
+// reaction to that is to not install the thing -- which is the same outcome
+// as shipping nothing, arrived at by frightening somebody.
+func TestTheDocsAndTheNotesAgreeOnTheCosignIdentity(t *testing.T) {
+	sh := repoFile(t, "scripts/release.sh")
+	doc := repoFile(t, "docs/deploy.md")
+
+	identity := func(src, where string) string {
+		t.Helper()
+		m := regexp.MustCompile(`--certificate-identity-regexp '([^']+)'`).FindStringSubmatch(src)
+		if m == nil {
+			t.Fatalf("%s prints no --certificate-identity-regexp", where)
+		}
+		return m[1]
+	}
+
+	// The repository the script defaults to, read from the script rather than
+	// typed here, so renaming the repository moves one string and not three.
+	rm := regexp.MustCompile(`repo="\$\{AGENT_GM_RELEASE_REPO:-([^}]+)\}"`).FindStringSubmatch(sh)
+	if rm == nil {
+		t.Fatal("scripts/release.sh does not default AGENT_GM_RELEASE_REPO to a repository")
+	}
+	want := strings.ReplaceAll(identity(sh, "scripts/release.sh"), "$repo", rm[1])
+	got := identity(doc, "docs/deploy.md")
+
+	if got != want {
+		t.Errorf("docs/deploy.md tells a reader to verify against\n  %s\n"+
+			"but the release notes print\n  %s\n"+
+			"A reader who follows the docs gets a verification failure that is "+
+			"indistinguishable from a forged binary.", got, want)
+	}
+
+	// And the docs copy is held to the same two rules as the notes copy, so
+	// changing BOTH in the same wrong way is still caught.
+	var signing string
+	for _, name := range []string{"release.yml", "ci.yml"} {
+		if strings.Contains(repoFile(t, ".github/workflows/"+name), "release.sh sign") {
+			signing = name
+		}
+	}
+	if signing == "" {
+		t.Fatal("no workflow in .github/workflows runs `release.sh sign`")
+	}
+	if !strings.Contains(got, ".github/workflows/"+strings.ReplaceAll(signing, ".", `\.`)) {
+		t.Errorf("docs/deploy.md names a workflow that does not sign: %s", got)
+	}
+	if !strings.Contains(got, "@refs/tags/v") {
+		t.Errorf("docs/deploy.md's identity does not pin the ref to a v tag: %s", got)
+	}
+}
+
 // --- the reviewer's two plants, un-skipped as R-1 and R-2 landed --------------
 
 // PLANT (reviewer, slice 4). `do_notes` defaults AGENT_GM_IMAGE_DIGEST to the
