@@ -503,3 +503,172 @@ Two smaller notes on the same change, neither blocking:
   Messages domain name, and the `--scopes` / `admin` / `messages:read`
   vocabulary in the new CLI documentation is the vocabulary the server already
   serves.
+
+---
+
+# Re-review at `42a72e5` (`2382cd4..42a72e5`)
+
+**Verdict: accept. R-1 and R-2 are fixed and I reproduced both.** One new
+finding, R-3, non-blocking and cheap. Nothing here holds up PR #2 or the first
+automated `v1.0.2`.
+
+## Evidence
+
+```
+$ devbox run check
+0 issues.  … 22 packages ok … no-real-numbers: clean … no-deployment-host: clean
+EXIT=0
+$ devbox run release-dry-run
+release: agm version through the shim: agm 1.0.1 (c1f76b7…)
+release: dry run complete -- built everything, published nothing
+EXIT=0
+```
+
+A first `check` at this sha failed and it was **my** fault, recorded here so
+nobody chases it: I had left a `check` running in the background while planting
+mutations in the same worktree, and the retry then hit
+`link: mapping output file failed: disk quota exceeded` on three test binaries.
+`/tmp` on this machine is a 16G tmpfs shared by every agent in this session and
+was at 79%; the Go linker maps its output there. Re-run with `TMPDIR` on real
+disk: `EXIT=0`. Environment contention, not a defect, and not anything this
+branch does.
+
+## R-1 fixed
+
+`internal/release/changeset_check_test.go:183` now asserts the invocation as one
+string:
+
+```go
+const invocation = `git diff --no-renames --name-only "${base}...${head}"`
+```
+
+I re-ran the exact plant that survived last round — `sed -i '228s/--no-renames //'`,
+deleting the flag from the command and leaving it in the comment on line 225:
+
+```
+--- FAIL: TestTheChangesetCheckIsAJobOnEveryPullRequest
+```
+
+The survivor is dead. V-3 and V-4 are now covered by one assertion no comment
+can satisfy.
+
+## R-2 fixed, and I ran the whole first release rather than reading about it
+
+`.changeset/brave-lions-narrow.md` exists. Rather than take the trial on report
+I ran `devbox run changeset-version` against a clean tree and inspected the
+result end to end:
+
+```
+$ grep '"version"' npm/package.json
+  "version": "1.0.2",
+
+## [Unreleased]
+
+Nothing yet.
+
+## [1.0.2] — 2026-09-08
+
+- `agm auth login --admin` prints a hint when it grants all four scopes; admin sessions are narrowed with `--scopes`
+- Versions are managed with changesets; the container, binaries and npm package share one version
+
+## [1.0.1] — 2026-09-07
+```
+
+Both halves of what shipped are in the entry; `npm/CHANGELOG.md` is gone;
+`.changeset/` is left holding exactly `README.md` and `config.json`; 1.0.1 and
+1.0.0 are untouched. Then, on that same state:
+
+```
+$ ./scripts/cut-tag.sh 1.0.1
+version=1.0.2
+release=1
+cut-tag: npm/package.json went 1.0.1 -> 1.0.2; v1.0.2 is free
+rc=0
+```
+
+So the full first-release path — two changesets, a Version Packages bump, a
+changelog the guard accepts, a free tag — is verified, not projected. Tree
+restored with `git checkout -- .`; `git status` clean.
+
+The `patch` choice is right: a hint on stderr and two documentation sections
+change no route, DTO, error code, tool schema, flag or exit code, so §14.3's
+public contract is untouched and a minor would have been wrong.
+
+**The sha-prefix strip is a real find and I would not have caught it** — the
+committed changeset comes back as `- 7fae2a9: …` and a fresh one does not,
+because the default generator prefixes with the short commit when it knows one.
+The output above shows both bullets bare, so the `.map()` at
+`changelog-format.mjs:80` works. One note, not a finding: the regex
+`^(\s*-\s+)[0-9a-f]{7,40}: ` would also strip a deliberate prefix, and this
+project writes bullets like `- be48a58: bumped the pin` about libgm commits.
+Contrived enough to leave alone; worth knowing it is there.
+
+## Both earlier notes taken
+
+- `grantsEveryAdminScope` compares as a set (length **and** membership), so the
+  magic number is gone. Verified.
+- `cut-tag.sh` now says why the annotated-tag object sha is safe to hand to
+  `already_cut`. By intent rather than by nicety, as asked.
+- The lifetimes I had recorded as unverified, I verified:
+  `internal/authz/settings.go:39-41` — `SettingAdminAccessTokenTTL` def 15m
+  (min 5m, max 1h), `SettingAdminRefreshTokenIdleTTL` def 30d (min 1d, max 90d),
+  `SettingAdminRefreshTokenAbsoluteTL` def 90d (min 7d, max 365d). All three are
+  settings with bounds, so both docs saying "by default" is exactly right.
+  **Moves from unverified to verified.**
+
+## Plants at `42a72e5`
+
+| # | Mutation | Result |
+|---|---|---|
+| P5′ | `ci.yml:228` — `--no-renames` deleted from the command, left in the comment | killed — `TestTheChangesetCheckIsAJobOnEveryPullRequest` (survived at `2382cd4`) |
+| P9 | `commands_impl.go:530` — a fifth scope added to the CLI's `adminBootstrapScopes` | killed — `TestAdminLoginSuggestsNarrowingWhenItGrantsAllFourScopes` |
+
+P9 kills, but only in one direction — which is R-3.
+
+### R-3 — the admin bootstrap scope set now exists in three places, tied together by nothing
+
+`internal/authz/scopes.go:60` exports `AdminBootstrapScopes() ScopeSet` over
+`canonicalOrder`. It is now also written out at
+`internal/cli/commands_impl.go:530` (`adminBootstrapScopes`) and, separately,
+at `internal/cli/stub_test.go:181`. `grep -rn "internal/authz" internal/cli/`
+returns nothing, so no test relates any of the three.
+
+P9 mutates the *CLI* copy and dies — but the drift that will actually happen is
+the other direction: the **server** gains a fifth scope, `canonicalOrder` and
+`AdminBootstrapScopes()` grow, the CLI list stays at four, and
+`grantsEveryAdminScope` returns false for every un-narrowed session. The
+narrowing hint disappears from `agm auth login --admin` and **no test notices**,
+because the stub that the CLI test asserts against is a third hand-written copy
+of the same four strings and it did not grow either. A settings-level default
+that silently stops appearing is the failure mode the reviewer brief asks me to
+hunt for, and this is one.
+
+The stated reason for the copy is sound — `agm` is a REST client and the shipped
+binary must not link a server package. But that argument is about *production*
+imports. `_test.go` files are excluded from the package's non-test build, so a
+test-only `import "…/internal/authz"` costs the `agm` binary nothing.
+
+**Fix:** one test in `internal/cli` that asserts
+`adminBootstrapScopes` equals `authz.AdminBootstrapScopes()` as a set, and
+either derives `stub_test.go:181` from the same source or asserts it too. Three
+lines, and it converts a comment that *says* it mirrors
+`authz.AdminBootstrapScopes` into something that mirrors it.
+
+## Standing verdict
+
+- **PR #2 may merge.**
+- **The first automated `v1.0.2` may cut.** R-2's changeset is in and I ran the
+  bump end to end; the entry describes both halves of what shipped. R-3 does not
+  gate it — it is about a scope that does not exist yet.
+- §18.1 rubric: **2**, unchanged.
+
+**Verified across the whole slice:** everything listed at `0a8234c`, plus the
+seven fixes at `2382cd4`, plus R-1 and R-2 here, plus the version-packages bump
+run end to end, plus the admin session lifetimes.
+
+**Still unverified, and only first-merge facts can settle them:** that
+`changesets/action` opens the Version Packages PR; that
+`gh workflow run --ref <tag>` succeeds under this job's `actions: write`; that
+the dispatched `ci` image job pushes to GHCR from a tag ref; that `release.yml`
+finds the digest inside twenty minutes. All four now fail safe rather than
+loudly, which is what changed.
