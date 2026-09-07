@@ -17,6 +17,19 @@ const (
 	SettingAdminAccessTokenTTL         = "admin.access_token_ttl"
 	SettingAdminRefreshTokenIdleTTL    = "admin.refresh_token_idle_ttl"
 	SettingAdminRefreshTokenAbsoluteTL = "admin.refresh_token_absolute_ttl"
+
+	// The OAuth grant's own three, with the same defaults and the same
+	// bounds. They are separate keys because an owner may want a connector's
+	// session to outlive (or not outlive) their own admin session, and one
+	// key for both would make that choice impossible to express.
+	SettingOAuthAccessTokenTTL          = "oauth.access_token_ttl"
+	SettingOAuthRefreshTokenIdleTTL     = "oauth.refresh_token_idle_ttl"
+	SettingOAuthRefreshTokenAbsoluteTTL = "oauth.refresh_token_absolute_ttl"
+
+	// The three lifetimes of the authorization flow itself (section 9.6).
+	SettingOAuthAuthorizationCodeTTL    = "oauth.authorization_code_ttl"
+	SettingOAuthAuthorizationRequestTTL = "oauth.authorization_request_ttl"
+	SettingOAuthEnrollmentDefaultTTL    = "oauth.enrollment_default_ttl"
 )
 
 type ttlBound struct {
@@ -27,6 +40,14 @@ var ttlBounds = map[string]ttlBound{
 	SettingAdminAccessTokenTTL:         {def: 15 * time.Minute, min: 5 * time.Minute, max: time.Hour},
 	SettingAdminRefreshTokenIdleTTL:    {def: 30 * 24 * time.Hour, min: 24 * time.Hour, max: 90 * 24 * time.Hour},
 	SettingAdminRefreshTokenAbsoluteTL: {def: 90 * 24 * time.Hour, min: 7 * 24 * time.Hour, max: 365 * 24 * time.Hour},
+
+	SettingOAuthAccessTokenTTL:          {def: 15 * time.Minute, min: 5 * time.Minute, max: time.Hour},
+	SettingOAuthRefreshTokenIdleTTL:     {def: 30 * 24 * time.Hour, min: 24 * time.Hour, max: 90 * 24 * time.Hour},
+	SettingOAuthRefreshTokenAbsoluteTTL: {def: 90 * 24 * time.Hour, min: 7 * 24 * time.Hour, max: 365 * 24 * time.Hour},
+
+	SettingOAuthAuthorizationCodeTTL:    {def: 2 * time.Minute, min: 30 * time.Second, max: 5 * time.Minute},
+	SettingOAuthAuthorizationRequestTTL: {def: 15 * time.Minute, min: time.Minute, max: time.Hour},
+	SettingOAuthEnrollmentDefaultTTL:    {def: 15 * time.Minute, min: time.Minute, max: 24 * time.Hour},
 }
 
 // Settings is the minimal view of the runtime settings table this package

@@ -26,6 +26,17 @@ const (
 	PrefixOperation     = "op_"
 	PrefixUpload        = "upl_"
 	PrefixAuthorization = "auth_"
+	// PrefixClient is a dynamically registered OAuth client (spec section
+	// 9.3). Every client this server will ever see registers itself, so
+	// there is no other way a client_ ID comes into existence.
+	PrefixClient = "client_"
+	// PrefixEnrollment is an enrollment code's ROW, never its value: the
+	// value is returned once and only its SHA-256 is stored (section 9.5).
+	PrefixEnrollment = "enroll_"
+	// PrefixAuthorizationRequest is one pending authorization (section 9.5).
+	// The ID alone conveys no authority -- without the context cookie every
+	// /oauth/requests route answers 404.
+	PrefixAuthorizationRequest = "authreq_"
 )
 
 // v5 derives a UUIDv5 from the frozen namespace and the joined components.
@@ -128,3 +139,14 @@ func HasPrefix(id, prefix string) bool {
 	_, err := uuid.Parse(id[len(prefix):])
 	return err == nil
 }
+
+// ClientID mints a fresh dynamically registered client ID (spec section 9.3).
+// A client-chosen client_id is refused at registration, so this is the only
+// place one is created.
+func ClientID() string { return PrefixClient + uuid.NewString() }
+
+// EnrollmentCodeID mints the ID of an enrollment code row (spec section 9.5).
+func EnrollmentCodeID() string { return PrefixEnrollment + uuid.NewString() }
+
+// AuthorizationRequestID mints the ID of one pending authorization request.
+func AuthorizationRequestID() string { return PrefixAuthorizationRequest + uuid.NewString() }

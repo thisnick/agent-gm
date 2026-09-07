@@ -145,6 +145,15 @@ func buildV3WithRawParticipants(t *testing.T, dir string) string {
 	// migration 0005 fail on a duplicate column -- which is the fixture
 	// lying, not the migration.
 	exec(`ALTER TABLE operations DROP COLUMN media_size_bytes`)
+	// The same reasoning one migration further on: a v3 database has none of
+	// migration 0006's OAuth tables, and leaving them in place would make
+	// 0006 fail on "table already exists" -- the fixture lying about what a
+	// v3 database is, not the migration being wrong.
+	for _, table := range []string{
+		"authorization_codes", "authorization_requests", "enrollment_codes", "oauth_clients",
+	} {
+		exec(`DROP TABLE IF EXISTS ` + table)
+	}
 	exec(`PRAGMA user_version = 3`)
 	return path
 }

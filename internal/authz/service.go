@@ -306,13 +306,61 @@ func (s *Service) recordAdminSecretFailure(ctx context.Context, source string) e
 // The two budgets of section 9.8 are checked before the presented token is
 // examined at all, so a 429 never distinguishes a real token from a guess.
 func (s *Service) Refresh(ctx context.Context, presentedRefreshToken string, requestedScopes []string, source string) (*Session, error) {
-	source = normalizeSource(source)
+	return s.refreshSession(ctx, refreshParams{
+		PresentedToken:  presentedRefreshToken,
+		RequestedScopes: requestedScopes,
+		Source:          source,
+		Kind:            store.AuthKindAdminBootstrap,
+		Limit:           LimitRefreshToken,
+		TTLs:            s.ttls,
+		AuditRefreshed:  AuditAdminSessionRefreshed,
+		AuditNarrowed:   AuditAdminSessionNarrowed,
+		AuditFailed:     AuditRefreshTokenFailed,
+		WrongKind:       ErrTokenUnknown,
+	})
+}
+
+// refreshParams is everything that differs between the admin bootstrap
+// refresh at POST /v1/auth/refresh and the OAuth `refresh_token` grant at
+// POST /oauth/token.
+//
+// The two are ONE implementation on purpose. Spec section 9.6 gives them the
+// same rotation rule, the same reuse rule, the same one-transaction
+// requirement and the same never-widen rule; writing them twice is how one of
+// those stops being true on one endpoint and nobody notices, because each
+// endpoint has its own passing tests. What genuinely differs is a TTL table,
+// an audit kind, a limiter and -- the security-relevant one -- which
+// authorization KIND the presented token is allowed to belong to, which is
+// what keeps the two credential paths from crossing (section 9.6, section 16
+// Slice 3 test 13).
+type refreshParams struct {
+	PresentedToken  string
+	RequestedScopes []string
+	Source          string
+	// Kind is the authorization kind this endpoint serves. A token belonging
+	// to the other kind is refused with WrongKind and, deliberately, revokes
+	// nothing: presenting an admin refresh token at /oauth/token is a
+	// mistake, not an attack on that grant.
+	Kind  string
+	Limit DurableLimitSpec
+	TTLs  func(context.Context) (time.Duration, time.Duration, time.Duration, error)
+	// ClientID, when non-empty, must equal the authorization's client.
+	ClientID       string
+	AuditRefreshed string
+	AuditNarrowed  string
+	AuditFailed    string
+	WrongKind      error
+}
+
+func (s *Service) refreshSession(ctx context.Context, p refreshParams) (*Session, error) {
+	presentedRefreshToken, requestedScopes := p.PresentedToken, p.RequestedScopes
+	source := normalizeSource(p.Source)
 
 	// Both budgets, before the token is looked at.
 	if err := s.Buckets.Allow(BucketUnauthenticated, source); err != nil {
 		return nil, err
 	}
-	if err := s.Durable.Check(ctx, LimitRefreshToken, source); err != nil {
+	if err := s.Durable.Check(ctx, p.Limit, source); err != nil {
 		return nil, err
 	}
 
@@ -323,7 +371,7 @@ func (s *Service) Refresh(ctx context.Context, presentedRefreshToken string, req
 	row, err := s.st.TokenByHash(ctx, hexDigest(presentedDigest))
 	if err != nil {
 		if errors.Is(err, store.ErrTokenNotFound) {
-			return nil, s.recordRefreshFailure(ctx, source, "unknown", ErrTokenUnknown)
+			return nil, s.recordRefreshFailure(ctx, p, source, "unknown", ErrTokenUnknown)
 		}
 		return nil, err
 	}
@@ -331,28 +379,43 @@ func (s *Service) Refresh(ctx context.Context, presentedRefreshToken string, req
 	// whether this is the right credential is compared constant-time, over
 	// fixed-length digests, exactly like every other secret comparison.
 	if !equalHashHex(presentedDigest, row.TokenHash) {
-		return nil, s.recordRefreshFailure(ctx, source, "unknown", ErrTokenUnknown)
+		return nil, s.recordRefreshFailure(ctx, p, source, "unknown", ErrTokenUnknown)
 	}
 
 	now := s.clk.Now()
 	switch {
 	case row.Revoked():
-		return nil, s.recordRefreshFailure(ctx, source, "revoked", ErrTokenRevoked)
+		return nil, s.recordRefreshFailure(ctx, p, source, "revoked", ErrTokenRevoked)
 	case now.UnixMilli() >= row.ExpiresAtMS:
-		return nil, s.recordRefreshFailure(ctx, source, "expired", ErrTokenExpired)
+		return nil, s.recordRefreshFailure(ctx, p, source, "expired", ErrTokenExpired)
 	case row.Spent():
-		return nil, s.detectReuse(ctx, source, row)
+		return nil, s.detectReuse(ctx, p, source, row)
 	}
 
 	auth, err := s.st.Authorization(ctx, row.AuthorizationID)
 	if err != nil {
 		return nil, err
 	}
+	// The two credential paths do not cross (spec section 9.6, section 16
+	// Slice 3 test 13): an OAuth refresh token presented at
+	// POST /v1/auth/refresh is invalid_token, an admin refresh token
+	// presented at POST /oauth/token is invalid_grant, and NEITHER attempt
+	// revokes anything. It is counted as a failure, because it is still an
+	// unusable credential presented to an unauthenticated endpoint, but the
+	// grant it really belongs to is left exactly as it was.
+	if auth.Kind != p.Kind {
+		return nil, s.recordRefreshFailure(ctx, p, source, "wrong_credential_path", p.WrongKind)
+	}
+	// A refresh token is bound to the client it was issued to. A different
+	// client presenting it is refused without being told whether it exists.
+	if p.ClientID != "" && auth.Client != p.ClientID {
+		return nil, s.recordRefreshFailure(ctx, p, source, "wrong_client", p.WrongKind)
+	}
 	if auth.Revoked() {
-		return nil, s.recordRefreshFailure(ctx, source, "revoked", ErrTokenRevoked)
+		return nil, s.recordRefreshFailure(ctx, p, source, "revoked", ErrTokenRevoked)
 	}
 	if auth.ExpiresAtMS != 0 && now.UnixMilli() >= auth.ExpiresAtMS {
-		return nil, s.recordRefreshFailure(ctx, source, "expired", ErrTokenExpired)
+		return nil, s.recordRefreshFailure(ctx, p, source, "expired", ErrTokenExpired)
 	}
 
 	current, err := ParseScopeString(auth.Scopes)
@@ -387,7 +450,7 @@ func (s *Service) Refresh(ctx context.Context, presentedRefreshToken string, req
 		next = req
 	}
 
-	accessTTL, idleTTL, _, err := s.ttls(ctx)
+	accessTTL, idleTTL, _, err := p.TTLs(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -451,7 +514,7 @@ func (s *Service) Refresh(ctx context.Context, presentedRefreshToken string, req
 			if terr := t.SetAuthorizationScopes(auth.ID, next.String()); terr != nil {
 				return terr
 			}
-			if terr := t.AppendAudit(AuditAdminSessionNarrowed, "ok", "", auth.ID, source,
+			if terr := t.AppendAudit(p.AuditNarrowed, "ok", "", auth.ID, source,
 				renderPayload(map[string]any{
 					"authorization_id": auth.ID,
 					"source":           source,
@@ -461,7 +524,7 @@ func (s *Service) Refresh(ctx context.Context, presentedRefreshToken string, req
 				return terr
 			}
 		}
-		return t.AppendAudit(AuditAdminSessionRefreshed, "ok", "", auth.ID, source,
+		return t.AppendAudit(p.AuditRefreshed, "ok", "", auth.ID, source,
 			renderPayload(refreshedFields))
 	})
 	if err != nil {
@@ -474,12 +537,12 @@ func (s *Service) Refresh(ctx context.Context, presentedRefreshToken string, req
 		return nil, ErrTokenReused
 	}
 	if narrowedNow {
-		s.observe(ctx, AuditAdminSessionNarrowed, map[string]any{
+		s.observe(ctx, p.AuditNarrowed, map[string]any{
 			"authorization_id": auth.ID, "source": source,
 			"scopes_before": current.Strings(), "scopes_after": next.Strings(),
 		})
 	}
-	s.observe(ctx, AuditAdminSessionRefreshed, refreshedFields)
+	s.observe(ctx, p.AuditRefreshed, refreshedFields)
 
 	return &Session{
 		AuthorizationID:       auth.ID,
@@ -496,13 +559,13 @@ func (s *Service) Refresh(ctx context.Context, presentedRefreshToken string, req
 // detectReuse handles a presented refresh token that has already been spent.
 // The family revocation, the authorization revocation and the audit row commit
 // in one transaction (spec section 9.6).
-func (s *Service) detectReuse(ctx context.Context, source string, row store.Token) error {
+func (s *Service) detectReuse(ctx context.Context, p refreshParams, source string, row store.Token) error {
 	if err := s.st.AuthzTx(ctx, func(t *store.AuthzTx) error {
 		return s.revokeFamilyTx(t, row.AuthorizationID, row.FamilyID, source)
 	}); err != nil {
 		return err
 	}
-	if _, err := s.Durable.RecordFailure(ctx, LimitRefreshToken, source); err != nil {
+	if _, err := s.Durable.RecordFailure(ctx, p.Limit, source); err != nil {
 		return err
 	}
 	s.observe(ctx, AuditRefreshTokenReuse, map[string]any{
@@ -534,8 +597,8 @@ func (s *Service) revokeFamilyTx(t *store.AuthzTx, authorizationID, familyID, so
 // recordRefreshFailure counts one unknown or invalid presented token against
 // the durable budget and returns the caller's refusal unchanged. Note what is
 // NOT in the audit payload: anything derived from the presented value.
-func (s *Service) recordRefreshFailure(ctx context.Context, source, reason string, refusal error) error {
-	attempt, err := s.Durable.RecordFailure(ctx, LimitRefreshToken, source)
+func (s *Service) recordRefreshFailure(ctx context.Context, p refreshParams, source, reason string, refusal error) error {
+	attempt, err := s.Durable.RecordFailure(ctx, p.Limit, source)
 	if err != nil {
 		return err
 	}
@@ -546,7 +609,7 @@ func (s *Service) recordRefreshFailure(ctx context.Context, source, reason strin
 		"cooldown_steps":     attempt.CooldownSteps,
 		"cooldown_until_ms":  attempt.CooldownUntilMS,
 	}
-	if aerr := s.appendStandalone(ctx, AuditRefreshTokenFailed, "refused", "", source, fields); aerr != nil {
+	if aerr := s.appendStandalone(ctx, p.AuditFailed, "refused", "", source, fields); aerr != nil {
 		return aerr
 	}
 	return refusal

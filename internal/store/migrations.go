@@ -28,6 +28,7 @@ var migrations = []migration{
 	migration0003,
 	migration0004,
 	migration0005,
+	migration0006,
 }
 
 var migration0001 = migration{
@@ -668,3 +669,112 @@ var migration0005 = migration{
 
 // SchemaVersion is the highest migration this binary knows.
 func SchemaVersion() int { return migrations[len(migrations)-1].version }
+
+// Migration 0006 adds the four OAuth tables of spec section 4.2 that Slice 3
+// needs: `oauth_clients`, `enrollment_codes`, `authorization_requests` and
+// `authorization_codes`.
+//
+// Three things about the shape are load-bearing and are worth stating here
+// rather than in a comment on a column:
+//
+//   - **Only hashes are stored.** An enrollment code, an authorization code
+//     and the two browser secrets (the context cookie handle and the form
+//     token) all reach a column as a SHA-256 digest and never as their value
+//     (spec sections 9.5, 9.6, section 16 Slice 3 test 12). There is no
+//     column anywhere below that could hold a plaintext credential, which is
+//     stronger than remembering not to write one.
+//   - **`authorization_codes.authorization_id` exists so that a replay can
+//     undo the first exchange.** A replayed code is `invalid_grant` AND
+//     revokes the tokens the first exchange produced (section 9.6), so the
+//     code row has to remember which authorization it minted long after it
+//     was consumed. Without this column the second half of that rule could
+//     not be carried out at all.
+//   - **`oauth_clients.source` and `created_at_ms` carry the registration
+//     budget.** Section 9.3 limits registration to 20 per source per hour;
+//     counting rows is durable and exact, where an in-memory bucket would
+//     forgive a restart -- and a registration is a durable object, unlike an
+//     ordinary request.
+//
+// A registration expires 24 hours after creation unless an authorization
+// activates it (`activated_at_ms`), and a maintenance pass removes expired
+// unreferenced registrations every 60 seconds, auditing each removal.
+var migration0006 = migration{
+	version: 6,
+	name:    "oauth_clients, enrollment_codes, authorization_requests, authorization_codes",
+	stmts: []string{
+		`CREATE TABLE oauth_clients (
+		    id                         TEXT PRIMARY KEY,
+		    client_name                TEXT,
+		    redirect_uris              TEXT NOT NULL,
+		    grant_types                TEXT NOT NULL,
+		    response_types             TEXT NOT NULL,
+		    token_endpoint_auth_method TEXT NOT NULL,
+		    metadata_json              TEXT NOT NULL,
+		    source                     TEXT,
+		    activated_at_ms            INTEGER,
+		    expires_at_ms              INTEGER,
+		    created_at_ms              INTEGER NOT NULL
+		)`,
+		`CREATE INDEX oauth_clients_source ON oauth_clients(source, created_at_ms)`,
+		`CREATE INDEX oauth_clients_expiry ON oauth_clients(expires_at_ms) WHERE activated_at_ms IS NULL`,
+
+		// code_hash is UNIQUE as well as indexed: two enrollment codes that
+		// hashed the same would make redemption ambiguous, and the database
+		// is the right place to make that impossible.
+		`CREATE TABLE enrollment_codes (
+		    id              TEXT PRIMARY KEY,
+		    code_hash       TEXT NOT NULL UNIQUE,
+		    label           TEXT NOT NULL,
+		    scopes          TEXT NOT NULL,
+		    expires_at_ms   INTEGER NOT NULL,
+		    consumed_at_ms  INTEGER,
+		    consumed_by     TEXT,
+		    revoked_at_ms   INTEGER,
+		    revoked_reason  TEXT,
+		    created_at_ms   INTEGER NOT NULL,
+		    updated_at_ms   INTEGER NOT NULL
+		)`,
+		`CREATE INDEX enrollment_codes_live ON enrollment_codes(expires_at_ms)
+		    WHERE revoked_at_ms IS NULL AND consumed_at_ms IS NULL`,
+
+		`CREATE TABLE authorization_requests (
+		    id                    TEXT PRIMARY KEY,
+		    client_id             TEXT NOT NULL REFERENCES oauth_clients(id) ON DELETE CASCADE,
+		    redirect_uri          TEXT NOT NULL,
+		    state                 TEXT NOT NULL,
+		    code_challenge        TEXT NOT NULL,
+		    code_challenge_method TEXT NOT NULL,
+		    resource              TEXT NOT NULL,
+		    requested_scopes      TEXT NOT NULL,
+		    selected_scopes       TEXT NOT NULL,
+		    granted_scopes        TEXT,
+		    enrollment_code_id    TEXT,
+		    status                TEXT NOT NULL,
+		    deny_reason           TEXT,
+		    handle_hash           TEXT NOT NULL,
+		    form_token_hash       TEXT NOT NULL,
+		    source                TEXT,
+		    expires_at_ms         INTEGER NOT NULL,
+		    decided_at_ms         INTEGER,
+		    completed_at_ms       INTEGER,
+		    created_at_ms         INTEGER NOT NULL,
+		    updated_at_ms         INTEGER NOT NULL
+		)`,
+		`CREATE INDEX authorization_requests_status ON authorization_requests(status, created_at_ms DESC)`,
+
+		`CREATE TABLE authorization_codes (
+		    code_hash        TEXT PRIMARY KEY,
+		    request_id       TEXT NOT NULL REFERENCES authorization_requests(id) ON DELETE CASCADE,
+		    client_id        TEXT NOT NULL,
+		    redirect_uri     TEXT NOT NULL,
+		    code_challenge   TEXT NOT NULL,
+		    scopes           TEXT NOT NULL,
+		    resource         TEXT NOT NULL,
+		    authorization_id TEXT,
+		    consumed_at_ms   INTEGER,
+		    expires_at_ms    INTEGER NOT NULL,
+		    created_at_ms    INTEGER NOT NULL
+		)`,
+		`CREATE INDEX authorization_codes_request ON authorization_codes(request_id)`,
+	},
+}
