@@ -14,6 +14,7 @@ import (
 	"github.com/thisnick/agent-gm/internal/gm"
 	"github.com/thisnick/agent-gm/internal/gm/fake"
 	"github.com/thisnick/agent-gm/internal/store"
+	"github.com/thisnick/agent-gm/internal/wire"
 )
 
 // ---------------------------------------------------------------------------
@@ -1323,9 +1324,9 @@ func TestSweepAndBackfillTimestampsSurviveARestart(t *testing.T) {
 	if block.Sweep.LastSweepAt == nil {
 		t.Fatal("last_sweep_at is null after a restart")
 	}
-	if block.Sweep.LastSweepAt.UnixMilli() != row.LastSweepAtMS {
-		t.Errorf("last_sweep_at = %d, want the stored %d",
-			block.Sweep.LastSweepAt.UnixMilli(), row.LastSweepAtMS)
+	if want := wire.Instant(time.UnixMilli(row.LastSweepAtMS)); *block.Sweep.LastSweepAt != want {
+		t.Errorf("last_sweep_at = %s, want the stored %s",
+			*block.Sweep.LastSweepAt, want)
 	}
 	// The total is a process-lifetime counter, so a fresh process reports 0
 	// while the timestamp above still answers "has it swept?".
@@ -1333,9 +1334,9 @@ func TestSweepAndBackfillTimestampsSurviveARestart(t *testing.T) {
 		t.Errorf("sweeps_total = %d in a fresh process, want 0", block.Sweep.SweepsTotal)
 	}
 	if block.Backfill.CompletedAt == nil ||
-		block.Backfill.CompletedAt.UnixMilli() != completed.UnixMilli() {
+		*block.Backfill.CompletedAt != wire.Instant(completed) {
 		t.Errorf("backfill.completed_at = %v, want the stored %v",
-			block.Backfill.CompletedAt, completed)
+			block.Backfill.CompletedAt, wire.Instant(completed))
 	}
 	// A Backfiller supplies the live state; the completion instant stays the
 	// stored one.

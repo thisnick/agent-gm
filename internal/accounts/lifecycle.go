@@ -10,6 +10,7 @@ import (
 	"github.com/thisnick/agent-gm/internal/core"
 	"github.com/thisnick/agent-gm/internal/gm"
 	"github.com/thisnick/agent-gm/internal/store"
+	"github.com/thisnick/agent-gm/internal/wire"
 )
 
 // DefaultPairingTimeout is AGENT_GM_PAIRING_TIMEOUT (spec section 15.1): how
@@ -291,7 +292,16 @@ type BackfillHealth struct {
 	State              string     `json:"state"`
 	ConversationsDone  int        `json:"conversations_done"`
 	ConversationsTotal int        `json:"conversations_total"`
-	CompletedAt        *time.Time `json:"completed_at"`
+	// A rendered string, not a *time.Time. These three blocks are served
+	// STRAIGHT out of this package by GET /v1/health and
+	// GET /v1/accounts/{id} -- they never pass through internal/api's DTO
+	// layer -- so Go's default encoder rendered them as RFC3339Nano, which
+	// strips trailing zeros: the same account's last_event_at came back
+	// ".120Z" on GET /v1/accounts (a DTO route) and ".12Z" on GET /v1/health.
+	// Section 4.4's width is fixed, and section 7.5 promises those two routes
+	// serve the same object. The type is a string so a *time.Time cannot come
+	// back by accident: reverting this does not compile.
+	CompletedAt *string `json:"completed_at"`
 }
 
 // SweepHealth is the per-account `sweep` block.
@@ -299,7 +309,7 @@ type SweepHealth struct {
 	// LastSweepAt is accounts.last_sweep_at_ms, so it survives a restart:
 	// "when did this account last sweep?" is exactly the question an operator
 	// asks after one.
-	LastSweepAt *time.Time `json:"last_sweep_at"`
+	LastSweepAt *string `json:"last_sweep_at"`
 	// SweepsTotal is a PROCESS-LIFETIME counter, not a stored total. A small
 	// number right after a restart means the process is young, not that the
 	// sweeper has stalled -- read LastSweepAt for that.
@@ -327,7 +337,7 @@ type AccountHealth struct {
 	State           State          `json:"state"`
 	StateReason     *string        `json:"state_reason"`
 	PhoneResponding bool           `json:"phone_responding"`
-	LastEventAt     *time.Time     `json:"last_event_at"`
+	LastEventAt     *string        `json:"last_event_at"`
 	Google          *GoogleHealth  `json:"google"`
 	Backfill        BackfillHealth `json:"backfill"`
 	Sweep           SweepHealth    `json:"sweep"`
@@ -434,13 +444,9 @@ func (s *Supervisor) healthFor(ctx context.Context, row store.Account) AccountHe
 	return h
 }
 
-func msToTime(ms int64) *time.Time {
-	if ms == 0 {
-		return nil
-	}
-	t := time.UnixMilli(ms).UTC()
-	return &t
-}
+// msToTime renders an epoch-millisecond column the way every other JSON
+// surface does (section 4.4), through the one helper that knows the width.
+func msToTime(ms int64) *string { return wire.InstantMS(ms) }
 
 // refreshGoogle caches FetchConfig and IsDefaultSMSApp for this account. It
 // runs on connect and on every sweep tick; GET /v1/health only ever reads the

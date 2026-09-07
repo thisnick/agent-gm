@@ -159,16 +159,21 @@ const SubscriberBuffer = 64
 // StateChange is one account state transition, and the whole payload of
 // GET /v1/accounts/{id}/events. It carries no message data, which is why that
 // route needs no replay ring and no cursor (spec section 7.5).
+// The fields carry NO json tags: this type does not marshal itself field by
+// field. MarshalJSON below is the whole rendering, and a tag here would be a
+// second, inert statement of the shape for a reader to trust and a linter to
+// check -- which is precisely how the timestamp came to be rendered twice,
+// differently.
 type StateChange struct {
-	AccountID string `json:"account_id"`
-	From      State  `json:"from"`
-	To        State  `json:"to"`
-	Reason    Reason `json:"state_reason"`
+	AccountID string
+	From      State
+	To        State
+	Reason    Reason
 	// At is truncated to milliseconds. Section 4.4 says every JSON surface
 	// renders timestamps as RFC 3339 UTC with millisecond precision, and a
 	// stream is a JSON surface: a nanosecond timestamp here made the SSE
 	// feed the one place a client saw a different shape.
-	At time.Time `json:"at"`
+	At time.Time
 }
 
 // MarshalJSON renders an absent `from` and an absent `state_reason` as JSON

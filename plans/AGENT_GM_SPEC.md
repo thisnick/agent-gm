@@ -1472,6 +1472,16 @@ marshal a bare `time.Time`, which Go renders as RFC3339Nano and therefore
 client parsing a fixed `.SSS` then works for nine frames in ten. Any surface
 that does not go through the DTO layer calls the same helper.
 
+The same defect was live a second time, in the `accounts` package's health
+blocks — served straight out of that package by `GET /v1/health` and
+`GET /v1/accounts/{id}`, so the *same field for the same account* came back
+`.120Z` from `GET /v1/accounts` and `.12Z` from `GET /v1/health`, while §7.5
+promises those two routes serve the same object. Twice is a pattern, so the
+rule is now held by a test rather than by a habit: **no struct field
+anywhere in the tree is a `time.Time` carrying a `json` tag.** Every instant
+on the wire is a string this helper rendered, which also means reverting one
+of these fields does not compile.
+
 `messages.delivery_state` is Agent GM's own closed vocabulary. The mapping
 covers **every** value declared in `MessageStatusType` at the pin; a value the
 mapping does not name fails the table test in §13.2 rather than falling
