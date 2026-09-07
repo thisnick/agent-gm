@@ -114,6 +114,38 @@ func TestTwoAuthorizationHeadersAreRefusedBeforeTheSDKSeesThem(t *testing.T) {
 	}
 }
 
+// TestTheSDKsOwnRefusalCarriesSection92sChallenge covers the path where the
+// challenge really is written by the SDK's middleware rather than by this
+// package: a well-formed `Bearer <token>` whose token is not valid.
+//
+// It matters because the SDK writes a challenge of its own there, and it is
+// the wrong one -- no `scope` parameter, for the reason `Challenge` gives.
+// Driven with the SDK's own OAuth client, a challenge with no `scope` makes
+// the client fall back to the metadata document's `scopes_supported` and ask
+// the owner to approve `messages:delete` as well, which is exactly what
+// ChallengeScopes exists to prevent. The header is substituted, not added,
+// so there is one.
+func TestTheSDKsOwnRefusalCarriesSection92sChallenge(t *testing.T) {
+	h := newHarness(t)
+
+	answer := h.rawCall("a-well-formed-token-that-is-not-valid", "ping", nil)
+	if answer.Status != http.StatusUnauthorized {
+		t.Fatalf("an invalid token answered %d, want 401", answer.Status)
+	}
+	got := answer.Headers.Values("WWW-Authenticate")
+	if len(got) != 1 {
+		t.Fatalf("the refusal carries %d WWW-Authenticate headers, want exactly one: %v",
+			len(got), got)
+	}
+	if got[0] != mcp.Challenge(publicURL) {
+		t.Fatalf("the challenge is %q, want %q", got[0], mcp.Challenge(publicURL))
+	}
+	if !strings.Contains(got[0], `scope="`) {
+		t.Error("the challenge names no scope, so a client falls back to the metadata " +
+			"document's scopes_supported and asks the owner for messages:delete too")
+	}
+}
+
 // TestAJSONRPCErrorDoesNotEndTheSession is the property the SEP-2575 HTTP
 // status mapping would have cost us.
 //

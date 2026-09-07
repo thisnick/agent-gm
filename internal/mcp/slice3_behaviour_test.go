@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	sdkjsonrpc "github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"net/http"
 	"strconv"
 	"strings"
@@ -735,9 +736,15 @@ func TestSlice3Resources(t *testing.T) {
 		if answer.Error == nil {
 			t.Fatalf("a file:// URI was served: %v", answer.Result)
 		}
-		if answer.Error.Code != -32002 {
-			t.Errorf("the error code is %d, want MCP's -32002 resource-not-found",
-				answer.Error.Code)
+		// -32602, which is what `mcp.ResourceNotFoundError` returns at
+		// v1.7.0: SEP-2164 moved resource-not-found off the old -32002 and
+		// the SDK is the authority for protocol codes (decision D36). The
+		// code can be this one only because this server does not adopt the
+		// SDK's SEP-2575 HTTP status mapping -- see
+		// TestAJSONRPCErrorDoesNotEndTheSession.
+		if int64(answer.Error.Code) != sdkjsonrpc.CodeInvalidParams {
+			t.Errorf("the error code is %d, want the SDK's resource-not-found %d",
+				answer.Error.Code, sdkjsonrpc.CodeInvalidParams)
 		}
 	})
 
@@ -747,8 +754,9 @@ func TestSlice3Resources(t *testing.T) {
 		if answer.Error == nil {
 			t.Fatalf("an attachment that does not exist was served: %v", answer.Result)
 		}
-		if answer.Error.Code != -32002 {
-			t.Errorf("the error code is %d, want -32002", answer.Error.Code)
+		if int64(answer.Error.Code) != sdkjsonrpc.CodeInvalidParams {
+			t.Errorf("the error code is %d, want the SDK's resource-not-found %d",
+				answer.Error.Code, sdkjsonrpc.CodeInvalidParams)
 		}
 	})
 }
