@@ -12,13 +12,18 @@ import (
 // machine that has never logged in and has no server configured.
 func (r *runner) version(inv *invocation) error {
 	if r.out.JSON() {
-		data, err := json.Marshal(map[string]any{"version": r.env.Version})
+		data, err := json.Marshal(map[string]any{
+			"version": r.env.Version,
+			"commit":  r.env.Commit,
+		})
 		if err != nil {
 			return &ContractError{Msg: "the version could not be encoded"}
 		}
 		return r.out.Emit(&Response{Status: http.StatusOK, Data: data, Warnings: []string{}})
 	}
-	_, _ = fmt.Fprintf(r.out.stdout, "agm %s\n", r.env.Version)
+	// Version first, because that is what an owner reads back to a release
+	// page; the commit follows it, because that is what a bug report needs.
+	_, _ = fmt.Fprintf(r.out.stdout, "agm %s (%s)\n", r.env.Version, r.env.Commit)
 	return nil
 }
 

@@ -22,7 +22,6 @@ func TestSlice2_TheEchoedMessageNamesTheSendThatProducedIt(t *testing.T) {
 
 	sent := s.call("POST", "/v1/conversations/"+conv.ID+"/messages", map[string]any{
 		"text":              "which send was this?",
-		"client_request_id": key("oplink"),
 	}).ok(t, 200)
 	op, _ := sent.Data["operation"].(map[string]any)
 	if op == nil {

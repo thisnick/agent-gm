@@ -205,6 +205,51 @@ they have. Take a backup first, keep the previous digest — that is the
 rollback — and read [operations.md](operations.md#upgrading), which covers
 what a rollback can and cannot undo and the `libgm` pin policy.
 
+## Releases and their artefacts
+
+A GitHub release for `vX.Y.Z` carries, from this public repository, so no
+token is needed to download any of it:
+
+```text
+agent-gm_X.Y.Z_linux_amd64.tar.gz     the server
+agent-gm_X.Y.Z_linux_arm64.tar.gz
+agm_X.Y.Z_linux_amd64.tar.gz          the CLI, four platforms
+agm_X.Y.Z_linux_arm64.tar.gz
+agm_X.Y.Z_darwin_amd64.tar.gz
+agm_X.Y.Z_darwin_arm64.tar.gz
+checksums.txt
+checksums.txt.sig                     cosign keyless, GitHub OIDC
+checksums.txt.pem
+```
+
+Every archive holds the binary, `LICENSE` and `README.md`. Windows is not in
+the v1 matrix.
+
+Verify before you run anything:
+
+```bash
+shasum -a 256 -c checksums.txt --ignore-missing
+
+cosign verify-blob checksums.txt \
+  --signature checksums.txt.sig \
+  --certificate checksums.txt.pem \
+  --certificate-identity-regexp 'https://github.com/thisnick/agent-gm/\.github/workflows/release\.yml@refs/tags/v.*' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+There is no private key anywhere in this repository and there is not meant to
+be one: the signature is keyless, and the identity it binds is the workflow
+file at the tag. That is what the `--certificate-identity-regexp` above is
+checking, and it is the part worth reading rather than pasting — a signature
+that verifies against the wrong identity has told you nothing.
+
+**The release notes carry the GHCR digest** of the image built from the same
+commit, together with the `libgm` and `go-sdk` pins. Deploy the digest.
+
+The CLI is also on npm as `@agent-gm/cli`, a thin wrapper that downloads the
+matching `agm` archive and verifies it against a `checksums.txt` pinned inside
+the npm tarball; see [cli.md](cli.md#installing).
+
 ## The source offer
 
 Agent GM is **AGPL-3.0-or-later**, and it is reachable over a network, so
@@ -221,7 +266,7 @@ container:
 
 ```bash
 docker run --rm ghcr.io/thisnick/agent-gm@sha256:<digest> version
-# agent-gm <commit> (libgm pinned at <pin>)
+# agent-gm <version> (<commit>, libgm pinned at <pin>)
 ```
 
 and the same commit appears in `GET /v1/health`. If you deploy a modified

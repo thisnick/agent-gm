@@ -5,7 +5,7 @@ package mcp
 // It is written for an agent that has never seen this server, has no memory of
 // prior calls, and cannot ask a human. Everything a cold model needs in order
 // not to do harm is in it: that this is one real person's phone, that a send
-// is irreversible, how accounts work, what a `client_request_id` is for, and
+// is irreversible, how accounts work, what to do when a result is lost, and
 // what a refusal looks like.
 //
 // It is reproduced in `docs/mcp.md` under "First five minutes", and section 16
@@ -66,8 +66,8 @@ const Instructions = "**This server is one person's Google Messages — possibly
 	"   back as `cursor` for the next page; page size defaults to 50 and caps at\n" +
 	"   100. `search_messages` needs `q`; it searches **every** account unless\n" +
 	"   you pass `account_id`.\n" +
-	"3. **Reply.** `send_message` with the `conversation_id`, `text`, and a\n" +
-	"   `client_request_id` you invent. Add `reply_to_message_id` to thread a\n" +
+	"3. **Reply.** `send_message` with the `conversation_id` and `text`.\n" +
+	"   Add `reply_to_message_id` to thread a\n" +
 	"   reply — **but replies are an RCS feature; on an `sms_mms` conversation\n" +
 	"   that argument is refused with `unsupported_capability` and\n" +
 	"   `reason: \"reply_not_supported\"`.** Check the conversation's `type` first,\n" +
@@ -100,18 +100,16 @@ const Instructions = "**This server is one person's Google Messages — possibly
 	"   `delete_conversation` delete from **this account only** — the recipient\n" +
 	"   keeps their copy. There is no delete-for-everyone and no mode to choose.\n" +
 	"\n" +
-	"**Every write needs a `client_request_id` that you invent.** Repeating a\n" +
-	"call with the same one returns the same operation and sends nothing\n" +
-	"further. A **fresh** `client_request_id` is a different call, not a repeat\n" +
-	"— reusing this to \"retry\" is how a person gets the same text twice.\n" +
-	"**Changing `account_id` while keeping the same `client_request_id` is also a\n" +
-	"different call**, not a retry: it would send a second real message from the\n" +
-	"other account. The server refuses that combination with `invalid_request`\n" +
-	"rather than obeying it, so if a send fails, retry it **against the same\n" +
-	"account** with the same key, or use a new key. If a\n" +
-	"send times out with `phone_not_responding`, the operation is `pending`, not\n" +
-	"failed: the server accepted it and the phone may still send it when it\n" +
-	"wakes. **Poll `get_operation`; do not resend.**\n" +
+	"**There is no idempotency key to invent.** Every write returns an\n" +
+	"`operation` with an id, and status is checked by that id with\n" +
+	"`get_operation`. **If a call's result is lost — a timeout, a dropped\n" +
+	"connection, a tool error you cannot read — do not send it again. Look\n" +
+	"first:** `list_messages` on the conversation, or `list_operations`, will\n" +
+	"tell you whether it went. Sending again because you did not see an answer\n" +
+	"is how a person gets the same text twice. If a send times out with\n" +
+	"`phone_not_responding`, the operation is `pending`, not failed: the server\n" +
+	"accepted it and the phone may still send it when it wakes. **Poll\n" +
+	"`get_operation`; do not resend.**\n" +
 	"\n" +
 	"The phone has to be awake and online for anything to happen.\n" +
 	"`list_accounts` and `get_session` tell you whether it is: `state` and\n" +

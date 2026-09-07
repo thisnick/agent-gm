@@ -35,7 +35,8 @@ type Request struct {
 	// AuthorizationID scopes the idempotency tuple. Two clients may use the
 	// same key value.
 	AuthorizationID string
-	// Key is the Idempotency-Key header or client_request_id from the body.
+	// Key is the Idempotency-Key header, and empty when the caller sent
+	// none -- which is the ordinary case (D38).
 	// It is REQUIRED on every mutation.
 	Key string
 	// Body is the request body exactly as it arrived. The fingerprint is a
@@ -98,11 +99,14 @@ type Result struct {
 func (a *Account) runOperation(ctx context.Context, kind string, req Request, call Call) (Result, error) {
 	var out Result
 
-	// 7a. The key is required, and its shape is checked before anything is
-	// written.
+	// 7a. A key is OPTIONAL (D38). If one is present its shape is checked
+	// before anything is written; if none is, steps 7b and 7c have nothing to
+	// look up and the call goes straight to a new operation with a
+	// server-minted ID.
 	if err := ValidateIdempotencyKey(req.Key); err != nil {
 		return out, err
 	}
+	keyed := req.Key != ""
 
 	fingerprint, err := store.RequestFingerprint(req.Body)
 	if err != nil {
@@ -114,23 +118,32 @@ func (a *Account) runOperation(ctx context.Context, kind string, req Request, ca
 	// rather than obeyed: obeying it sends a second real message to a real
 	// person. The refusal names the account the key was first used with, so
 	// the caller can see what it actually did.
-	if other, used, err := a.Store.KeyUsedByAnotherAccount(ctx, req.AuthorizationID, kind, req.Key, a.ID); err != nil {
-		return out, err
-	} else if used {
-		return out, idempotencyKeyCrossedAccounts(req.Key, other, a.ID)
+	if keyed {
+		if other, used, err := a.Store.KeyUsedByAnotherAccount(ctx, req.AuthorizationID, kind, req.Key, a.ID); err != nil {
+			return out, err
+		} else if used {
+			return out, idempotencyKeyCrossedAccounts(req.Key, other, a.ID)
+		}
 	}
 
 	// 7c. Same key + same fingerprint returns the existing operation, and its
 	// message_id, and sends nothing. Same key + a different body is
 	// idempotency_conflict and sends nothing either.
-	existing, err := a.Store.OperationByKey(ctx, req.AuthorizationID, a.ID, kind, req.Key)
-	switch {
-	case err == nil && existing.RequestFingerprint == fingerprint:
-		return Result{Operation: existing, HasOperation: true, Replayed: true, Changed: false}, nil
-	case err == nil:
-		return out, apierr.IdempotencyConflict(req.Key)
-	case !errors.Is(err, store.ErrOperationNotFound):
-		return out, err
+	//
+	// Without a key there is no replay and no conflict: two identical
+	// keyless sends are two messages, which is what "send this twice" has
+	// always meant everywhere else, and a caller that wants the protection
+	// asks for it with the header.
+	if keyed {
+		existing, err := a.Store.OperationByKey(ctx, req.AuthorizationID, a.ID, kind, req.Key)
+		switch {
+		case err == nil && existing.RequestFingerprint == fingerprint:
+			return Result{Operation: existing, HasOperation: true, Replayed: true, Changed: false}, nil
+		case err == nil:
+			return out, apierr.IdempotencyConflict(req.Key)
+		case !errors.Is(err, store.ErrOperationNotFound):
+			return out, err
+		}
 	}
 
 	// 8. INSERT running and COMMIT. The tmp_id is minted and written HERE,
@@ -225,21 +238,23 @@ func tmpIDFor(kind string) string {
 	}
 }
 
-// ValidateIdempotencyKey is section 6.3's shape rule. An empty key, a key
-// over 200 bytes, or a key containing control characters is invalid_request
-// naming client_request_id in details.field, and writes nothing.
+// ValidateIdempotencyKey is section 6.3's shape rule for a key that is
+// PRESENT. An empty key is not an error any more (D38): it means the caller
+// sent no `Idempotency-Key` header, which is the ordinary case, and the
+// operation gets a server-minted ID instead. A key over 200 bytes, not valid
+// UTF-8, or carrying control characters is still invalid_request naming
+// Idempotency-Key in details.field, and writes nothing.
 func ValidateIdempotencyKey(key string) error {
 	switch {
 	case key == "":
-		return idempotencyKeyInvalid("an idempotency key is required on every mutation; " +
-			"send it as the Idempotency-Key header or as client_request_id in the body")
+		return nil
 	case len(key) > MaxIdempotencyKeyBytes:
 		return idempotencyKeyInvalid(fmt.Sprintf(
-			"client_request_id must be at most %d bytes", MaxIdempotencyKeyBytes))
+			"Idempotency-Key must be at most %d bytes", MaxIdempotencyKeyBytes))
 	case !utf8.ValidString(key):
-		return idempotencyKeyInvalid("client_request_id must be valid UTF-8")
+		return idempotencyKeyInvalid("Idempotency-Key must be valid UTF-8")
 	case strings.ContainsFunc(key, isControl):
-		return idempotencyKeyInvalid("client_request_id must not contain control characters")
+		return idempotencyKeyInvalid("Idempotency-Key must not contain control characters")
 	}
 	return nil
 }
@@ -248,7 +263,7 @@ func isControl(r rune) bool { return r < 0x20 || r == 0x7f }
 
 func idempotencyKeyInvalid(msg string) *apierr.Error {
 	e := apierr.New(apierr.CodeInvalidRequest, msg)
-	e.Details = map[string]any{"field": "client_request_id"}
+	e.Details = map[string]any{"field": "Idempotency-Key"}
 	return e
 }
 
@@ -258,12 +273,12 @@ func idempotencyKeyInvalid(msg string) *apierr.Error {
 // person's phone.
 func idempotencyKeyCrossedAccounts(key, firstAccount, thisAccount string) *apierr.Error {
 	e := apierr.New(apierr.CodeInvalidRequest, fmt.Sprintf(
-		"client_request_id %q was already used for this kind against account %s; "+
+		"Idempotency-Key %q was already used for this kind against account %s; "+
 			"reusing it against %s is not a replay -- it would send a second real message "+
 			"to a real person. Use a fresh key for a genuinely new send.",
 		key, firstAccount, thisAccount))
 	e.Details = map[string]any{
-		"field":            "client_request_id",
+		"field":            "Idempotency-Key",
 		"account_id":       firstAccount,
 		"other_account_id": thisAccount,
 	}

@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 
 	"github.com/thisnick/agent-gm/internal/apierr"
 )
@@ -48,6 +47,15 @@ type Env struct {
 	HTTP *http.Client
 	// Version is what `agm version` prints.
 	Version string
+	// Commit is the source commit `agm version` prints beside the version.
+	// It is stamped at link time by the release build; a checkout build
+	// reads it from the VCS stamp instead, and a build with neither says
+	// "unknown" rather than inventing one. Section 1.4 makes the commit the
+	// AGPL section 13 source offer, and an offer of an unknown commit is not
+	// an offer -- but that is the SERVER's obligation, discharged by
+	// `GET /v1/health`; on the client side the commit is here so that an
+	// owner reporting a bug can say which build they ran.
+	Commit string
 	// PollInterval is how often a wait re-reads an operation. Zero means one
 	// second; a test sets it small so a wait is not a sleep.
 	PollInterval time.Duration
@@ -83,6 +91,9 @@ func (e *Env) normalise() {
 	}
 	if e.Version == "" {
 		e.Version = "dev"
+	}
+	if e.Commit == "" {
+		e.Commit = "unknown"
 	}
 }
 
@@ -510,14 +521,17 @@ func flagValue(inv *invocation, f flagDef) (any, error) {
 	}
 }
 
-// idempotencyKey is --idempotency-key, or one minted for this invocation.
-// Minting one per invocation is what makes re-running a send send again,
-// which docs/cli.md states plainly: to retry, pass the SAME key.
+// idempotencyKey is --idempotency-key, and nothing else (D38).
+//
+// It used to mint a UUID per invocation when the flag was absent, because the
+// key was mandatory on every mutation. It is not any more, and a minted key
+// was never protection: a fresh key every run is exactly a run with no key,
+// with one more field on the wire. So an ordinary `agm messages send` now
+// sends NO `Idempotency-Key` header at all, and the flag is what an
+// automation reaches for when it wants the protection -- pass the SAME key
+// to make a retry a retry.
 func (r *runner) idempotencyKey() string {
-	if r.g.idempotencyKey != "" {
-		return r.g.idempotencyKey
-	}
-	return uuid.NewString()
+	return r.g.idempotencyKey
 }
 
 // emitAllPages walks a listing to the end and emits one value, so `--all`

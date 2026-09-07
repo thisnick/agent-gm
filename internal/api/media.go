@@ -68,7 +68,6 @@ type uploadCreateBody struct {
 	MimeType        string `json:"mime_type"`
 	SizeBytes       *int64 `json:"size_bytes"`
 	SHA256          string `json:"sha256"`
-	ClientRequestID string `json:"client_request_id"`
 }
 
 type uploadLimitsDTO struct {
@@ -104,7 +103,7 @@ func (d *HandlerDeps) uploadsCreate(r *Request) (*Response, error) {
 	if e := r.DecodeBody(&body); e != nil {
 		return nil, e
 	}
-	key, e := idempotency(r, body.ClientRequestID)
+	key, e := idempotency(r)
 	if e != nil {
 		return nil, e
 	}
@@ -139,7 +138,7 @@ func (d *HandlerDeps) uploadsCreate(r *Request) (*Response, error) {
 
 	expiresAt := d.now().Add(uploadTokenLife)
 
-	// `client_request_id` makes the reservation idempotent, and **each
+	// An `Idempotency-Key` makes the reservation idempotent, and **each
 	// attempt returns a fresh token**: the first token's value left the
 	// process and cannot be recovered. A token minted on a repeat never
 	// outlives the reservation it fills, which is what

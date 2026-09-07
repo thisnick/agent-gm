@@ -68,12 +68,13 @@ type Route struct {
 	// Body is every JSON body field this route accepts. Anything else is
 	// invalid_request naming it.
 	Body []string
-	// IdempotencyKey marks a mutation, which requires a key by way of the
-	// Idempotency-Key header or the client_request_id body field (spec
-	// section 6.3). There is no `?client_request_id=` query parameter on any
-	// route, and one presented as a query parameter is invalid_request like
-	// any other unknown parameter (spec section 7.1) -- which is true here
-	// by construction, because Query never contains it.
+	// IdempotencyKey marks a mutation, which ACCEPTS an optional key by way
+	// of the `Idempotency-Key` header and by no other transport (spec
+	// section 6.3, D38). There is no `client_request_id` body field and no
+	// `?idempotency_key=` query parameter on any route: one presented as
+	// either is invalid_request like any other unknown parameter (spec
+	// section 7.1) -- which is true here by construction, because neither
+	// Body nor Query ever contains it.
 	IdempotencyKey bool
 	// Paginated marks a listing: `cursor` and `limit`, newest first, limit
 	// defaulting to 50 and capping at 100 (spec section 7.4).
@@ -295,14 +296,14 @@ var Routes = []Route{
 	// --- writes -------------------------------------------------------------
 	{
 		Method: http.MethodPost, Path: "/v1/conversations", Name: "conversations_start", Scope: ScopeWrite,
-		Body:           []string{"account_id", "recipients", "name", "client_request_id"},
+		Body:           []string{"account_id", "recipients", "name"},
 		IdempotencyKey: true,
 		Notes:          "the ONE write whose target is a phone number rather than an ID, so nothing else can imply the account: account_id is required when more than one account exists (7.3).",
 	},
 	{
 		Method: http.MethodPost, Path: "/v1/conversations/{conversation_id}/messages",
 		Name: "messages_send", Scope: ScopeWrite,
-		Body:           []string{"text", "upload_ids", "reply_to_message_id", "force_rcs", "client_request_id"},
+		Body:           []string{"text", "upload_ids", "reply_to_message_id", "force_rcs"},
 		IdempotencyKey: true,
 		Notes:          "upload_ids is an array but currently accepts exactly one element; two is invalid_request naming the limit (10.2).",
 	},
@@ -314,36 +315,35 @@ var Routes = []Route{
 	{
 		Method: http.MethodPost, Path: "/v1/conversations/{conversation_id}/read",
 		Name: "conversations_mark_read", Scope: ScopeWrite,
-		Body:           []string{"message_id", "client_request_id"},
+		Body:           []string{"message_id"},
 		IdempotencyKey: true,
 	},
 	{
 		Method: http.MethodPatch, Path: "/v1/conversations/{conversation_id}",
 		Name: "conversations_update", Scope: ScopeWrite,
-		Body:           []string{"folder", "pinned", "unread", "client_request_id"},
+		Body:           []string{"folder", "pinned", "unread"},
 		IdempotencyKey: true,
 		Notes:          "returns operation:null and changed:false when already in the requested state, and calls the backend zero times (16 Slice 2 test 16).",
 	},
 	{
 		Method: http.MethodPost, Path: "/v1/messages/{message_id}/reactions", Name: "reactions_add",
-		Scope: ScopeWrite, Body: []string{"emoji", "client_request_id"}, IdempotencyKey: true,
+		Scope: ScopeWrite, Body: []string{"emoji"}, IdempotencyKey: true,
 		Notes: "ADD, or SWITCH when the owner already has a different reaction (D23). emoji is canonicalised first (3.7).",
 	},
 	{
 		Method: http.MethodDelete, Path: "/v1/messages/{message_id}/reactions/{emoji}",
 		Name: "reactions_remove", Scope: ScopeWrite,
-		Body:           []string{"client_request_id"},
 		IdempotencyKey: true,
 		Notes:          "the path segment is canonicalised before matching, so ❤ and ❤️ address the same reaction.",
 	},
 	{
 		Method: http.MethodDelete, Path: "/v1/reactions/{reaction_id}", Name: "reactions_remove_by_id",
-		Scope: ScopeWrite, Body: []string{"client_request_id"}, IdempotencyKey: true,
+		Scope: ScopeWrite, IdempotencyKey: true,
 		Notes: "somebody else's reaction is unsupported_capability with reason not_my_reaction.",
 	},
 	{
 		Method: http.MethodPost, Path: "/v1/uploads", Name: "uploads_create", Scope: ScopeWrite,
-		Body:           []string{"filename", "mime_type", "size_bytes", "sha256", "client_request_id"},
+		Body:           []string{"filename", "mime_type", "size_bytes", "sha256"},
 		IdempotencyKey: true,
 	},
 	{
@@ -359,13 +359,13 @@ var Routes = []Route{
 	// --- deletes: messages:delete, and only these two -----------------------
 	{
 		Method: http.MethodDelete, Path: "/v1/messages/{message_id}", Name: "messages_delete",
-		Scope: ScopeDelete, Body: []string{"client_request_id"}, IdempotencyKey: true,
+		Scope: ScopeDelete, IdempotencyKey: true,
 		Notes: "carries the effect sentence. There is no other delete and no delete option: a request carrying an action or scope switch is invalid_request naming it (D14).",
 	},
 	{
 		Method: http.MethodDelete, Path: "/v1/conversations/{conversation_id}",
 		Name: "conversations_delete", Scope: ScopeDelete,
-		Body: []string{"client_request_id"}, IdempotencyKey: true,
+		IdempotencyKey: true,
 		Notes: "carries the effect sentence.",
 	},
 

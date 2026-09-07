@@ -75,7 +75,6 @@ func TestSlice2_15_EmojiCanonicalisationBothWays(t *testing.T) {
 
 			added := s.call("POST", "/v1/messages/"+msg.ID+"/reactions", map[string]any{
 				"emoji":             order.add,
-				"client_request_id": key("add"),
 			}).ok(t, 200)
 			if added.Data["operation"] == nil {
 				t.Fatal("adding a reaction produced no operation")
@@ -98,7 +97,7 @@ func TestSlice2_15_EmojiCanonicalisationBothWays(t *testing.T) {
 			// Removing by the OTHER spelling addresses the same row.
 			s.call("DELETE",
 				"/v1/messages/"+msg.ID+"/reactions/"+url.PathEscape(order.remove),
-				map[string]any{"client_request_id": key("remove")}).ok(t, 200)
+				map[string]any{}).ok(t, 200)
 
 			if left := s.reactionsOf(t, msg.ID); len(left) != 0 {
 				t.Fatalf("removing %q did not remove the reaction added as %q: %d rows left",
@@ -122,10 +121,10 @@ func TestSlice2_15_ASecondEmojiReplacesTheFirst(t *testing.T) {
 	msg := s.seedMessage(accountID, "conv-a", "m0001", s.Clock.Now(), false)
 
 	s.call("POST", "/v1/messages/"+msg.ID+"/reactions", map[string]any{
-		"emoji": heartBare, "client_request_id": key("first"),
+		"emoji": heartBare,
 	}).ok(t, 200)
 	s.call("POST", "/v1/messages/"+msg.ID+"/reactions", map[string]any{
-		"emoji": thumbsUp, "client_request_id": key("second"),
+		"emoji": thumbsUp,
 	}).ok(t, 200)
 
 	rows := s.reactionsOf(t, msg.ID)
@@ -151,7 +150,7 @@ func TestSlice2_15_ASecondEmojiReplacesTheFirst(t *testing.T) {
 	// Adding exactly the reaction the owner already has is a no-op: changed
 	// false, operation null, and the backend is not called a third time.
 	repeat := s.call("POST", "/v1/messages/"+msg.ID+"/reactions", map[string]any{
-		"emoji": thumbsUp, "client_request_id": key("third"),
+		"emoji": thumbsUp,
 	}).ok(t, 200)
 	if repeat.Data["changed"] != false || repeat.Data["operation"] != nil {
 		t.Errorf("re-adding the same reaction answered changed=%v operation=%v, "+
@@ -221,14 +220,14 @@ func TestSlice2_15_RemoveByIDAndSomebodyElsesReaction(t *testing.T) {
 
 	// The owner's own reaction, removed by ID.
 	s.call("POST", "/v1/messages/"+msg.ID+"/reactions", map[string]any{
-		"emoji": thumbsUp, "client_request_id": key("mine"),
+		"emoji": thumbsUp,
 	}).ok(t, 200)
 	mine := s.reactionsOf(t, msg.ID)
 	if len(mine) != 1 {
 		t.Fatalf("want one reaction, have %d", len(mine))
 	}
 	s.call("DELETE", "/v1/reactions/"+mine[0].ID,
-		map[string]any{"client_request_id": key("by-id")}).ok(t, 200)
+		map[string]any{}).ok(t, 200)
 	if left := s.reactionsOf(t, msg.ID); len(left) != 0 {
 		t.Fatalf("DELETE /v1/reactions/{id} left %d rows", len(left))
 	}
@@ -262,7 +261,7 @@ func TestSlice2_15_RemoveByIDAndSomebodyElsesReaction(t *testing.T) {
 	}
 
 	env := s.call("DELETE", "/v1/reactions/"+theirs[0].ID,
-		map[string]any{"client_request_id": key("theirs")}).
+		map[string]any{}).
 		refused(t, "unsupported_capability")
 	if got := env.detail("reason"); got != "not_my_reaction" {
 		t.Errorf("details.reason is %v, want \"not_my_reaction\"", got)

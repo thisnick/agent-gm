@@ -64,9 +64,11 @@ type Invocation struct {
 	Source string
 	// RequestID is the `req_` ID this call is correlated by.
 	RequestID string
-	// IdempotencyKeyHeader is the Idempotency-Key a caller presented, if
-	// any. MCP has no headers, so it is normally empty and the key arrives
-	// as the `client_request_id` body field instead.
+	// IdempotencyKeyHeader is the optional Idempotency-Key a caller
+	// presented, if any. It is the ONLY transport for a key (D38); MCP has
+	// no headers, so on that surface it is always empty and every write is a
+	// new operation with a server-minted ID -- which is exactly what D38
+	// decided an agent should get.
 	IdempotencyKeyHeader string
 }
 

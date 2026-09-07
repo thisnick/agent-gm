@@ -61,8 +61,9 @@ a filename — is accepted, cleaned, and reported in `warnings` as
 **Every `/v1` route rejects an unknown query parameter or an unknown JSON body
 field with `invalid_request`, naming it** in `details.parameter` or
 `details.field`. Nothing is allowlisted. A cache-busting `?_=1757150000` is an
-unknown parameter like any other, and so is `?client_request_id=` — the
-idempotency key has two transports and neither is a query parameter.
+unknown parameter like any other, and so is `?idempotency_key=` — the
+idempotency key has one transport, the `Idempotency-Key` header, and it is
+not a query parameter or a body field.
 
 ```console
 $ curl -s -H "Authorization: Bearer $TOKEN" \
@@ -188,22 +189,26 @@ Uploads are the exception, and [Media](#media) says why.
 
 ## Idempotency
 
-**Every mutation requires an idempotency key** (§6.3). Its two transports:
+**An idempotency key is optional** (§6.3, D38). It has exactly one transport:
 
-- the `Idempotency-Key` request header, or
-- the `client_request_id` body field.
+- the `Idempotency-Key` request header.
 
-There is **no `?client_request_id=` query parameter on any route**; one
-presented as a query parameter is `invalid_request` naming it, like any other
-unknown parameter. The two `DELETE` routes that would otherwise have no body
-accept a JSON body carrying it. Supplying both transports with *different*
-values is `invalid_request`: that is a contradiction, not a preference. An
-empty key, a key over 200 bytes, or a key containing control characters is
-`invalid_request` naming `client_request_id`, and writes nothing.
+Send no header and the mutation is a new operation with a **server-minted
+id**, returned in the result. That is the ordinary case, and the one every
+agent uses: an agent regenerates its arguments on a retry and so cannot
+supply a stable key across one, which made the old mandatory
+`client_request_id` friction without protection.
 
-Uniqueness is scoped to **(authorization, account, operation kind, key)**. Two
-clients may use the same key value; one client may use one key for a send and
-another for a mark-read.
+There is **no `client_request_id` body field** and no query-parameter form on
+any route. One presented as either is `invalid_request` naming it, like any
+other unknown field. A key over 200 bytes, not valid UTF-8, or containing
+control characters is `invalid_request` naming `Idempotency-Key`, and writes
+nothing.
+
+**When you do send one**, the protection is unchanged. Uniqueness is scoped
+to **(authorization, account, operation kind, key)**. Two clients may use the
+same key value; one client may use one key for a send and another for a
+mark-read.
 
 **A replay returns the same operation and its `message_id`, and sends
 nothing.** Sameness is decided by a SHA-256 over the canonically serialised
@@ -212,10 +217,17 @@ changed body under the same key is `idempotency_conflict`.
 
 **A fresh key is a different call, not a repeat.** This is the mistake that
 sends a second text message to a real person. If a send times out, retry it
-**with the same key**; do not mint a new one to "try again".
+**with the same key**; do not mint a new one to "try again". A script that
+retries on a timeout is exactly the caller this header is for.
 
 Keys are retained for `operations.idempotency_ttl`, 30 days by default. A
 replay of a swept key is a new operation.
+
+**If you sent no key and the response never arrived, do not send it again —
+look first.** `GET /v1/conversations/{id}/messages`, or
+`GET /v1/operations`, will tell you whether it went. Sending again because
+you did not see an answer is the same mistake as a fresh key, arrived at from
+the other direction.
 
 **The mirror hazard.** Because the account is part of the tuple, reusing a key
 against a *different* `account_id` is not a replay — it would be a new
@@ -223,7 +235,7 @@ operation, and it would send a **second real message to a real person**. This
 is the direction a caller reaches for when it "retries" a failed send by
 switching accounts. So the API refuses it rather than obeying it: **a key
 already used by this authorization for this kind against a different account is
-`invalid_request`**, with `details.field = "client_request_id"` and the account
+`invalid_request`**, with `details.field = "Idempotency-Key"` and the account
 the key was first used with. A genuinely new send to another account uses a new
 key.
 
@@ -349,19 +361,19 @@ during backfill is not read as an absent message.
 
 | Method | Path | Scope | Parameters | Notes |
 |---|---|---|---|---|
-| `POST` | `/v1/conversations` | `messages:write` | body `account_id`, `recipients`, `name`, `client_request_id` | The one write whose target is a phone number rather than an ID, so nothing else can imply the account. `name` is accepted only for two or more recipients. Zero recipients, or two that normalise to one number, is `invalid_request` **before** an operation row exists |
-| `POST` | `/v1/conversations/{conversation_id}/messages` | `messages:write` | body `text`, `upload_ids`, `reply_to_message_id`, `force_rcs`, `client_request_id` | At least `text` or one upload. `upload_ids` is an array but currently accepts exactly one element; two is `invalid_request` naming the limit |
+| `POST` | `/v1/conversations` | `messages:write` | body `account_id`, `recipients`, `name` | The one write whose target is a phone number rather than an ID, so nothing else can imply the account. `name` is accepted only for two or more recipients. Zero recipients, or two that normalise to one number, is `invalid_request` **before** an operation row exists |
+| `POST` | `/v1/conversations/{conversation_id}/messages` | `messages:write` | body `text`, `upload_ids`, `reply_to_message_id`, `force_rcs` | At least `text` or one upload. `upload_ids` is an array but currently accepts exactly one element; two is `invalid_request` naming the limit |
 | `POST` | `/v1/conversations/{conversation_id}/typing` | `messages:write` | — | `204`. Fire-and-forget: no operation and no idempotency key, because it has no lasting effect |
-| `POST` | `/v1/conversations/{conversation_id}/read` | `messages:write` | body `message_id`, `client_request_id` | Marks the conversation read through that message |
-| `PATCH` | `/v1/conversations/{conversation_id}` | `messages:write` | body `folder`, `pinned`, `unread`, `client_request_id` | Archive, unarchive, pin, unpin and mark-unread. Returns `operation: null` and `changed: false` when the conversation is already in the requested state, and calls Google zero times |
-| `POST` | `/v1/messages/{message_id}/reactions` | `messages:write` | body `emoji`, `client_request_id` | Adds, or switches when the owner already has a different reaction. `operation: null` when the owner already has exactly that one. `emoji` is canonicalised first |
-| `DELETE` | `/v1/messages/{message_id}/reactions/{emoji}` | `messages:write` | body `client_request_id` | Removes. `operation: null` when there is nothing to remove. The path segment is canonicalised before matching, so `❤` and `❤️` address the same reaction |
-| `DELETE` | `/v1/reactions/{reaction_id}` | `messages:write` | body `client_request_id` | The same removal by `react_` ID. Somebody else's reaction is `unsupported_capability` with reason `not_my_reaction` |
-| `POST` | `/v1/uploads` | `messages:write` | body `filename`, `mime_type`, `size_bytes`, `sha256`, `client_request_id` | `201` with an upload ticket. `sha256` is optional and is verified if given |
+| `POST` | `/v1/conversations/{conversation_id}/read` | `messages:write` | body `message_id` | Marks the conversation read through that message |
+| `PATCH` | `/v1/conversations/{conversation_id}` | `messages:write` | body `folder`, `pinned`, `unread` | Archive, unarchive, pin, unpin and mark-unread. Returns `operation: null` and `changed: false` when the conversation is already in the requested state, and calls Google zero times |
+| `POST` | `/v1/messages/{message_id}/reactions` | `messages:write` | body `emoji` | Adds, or switches when the owner already has a different reaction. `operation: null` when the owner already has exactly that one. `emoji` is canonicalised first |
+| `DELETE` | `/v1/messages/{message_id}/reactions/{emoji}` | `messages:write` | — | Removes. `operation: null` when there is nothing to remove. The path segment is canonicalised before matching, so `❤` and `❤️` address the same reaction |
+| `DELETE` | `/v1/reactions/{reaction_id}` | `messages:write` | — | The same removal by `react_` ID. Somebody else's reaction is `unsupported_capability` with reason `not_my_reaction` |
+| `POST` | `/v1/uploads` | `messages:write` | body `filename`, `mime_type`, `size_bytes`, `sha256` | `201` with an upload ticket. `sha256` is optional and is verified if given |
 | `DELETE` | `/v1/uploads/{upload_id}` | `messages:write` | — | `204`. Drops the reservation and its staged bytes |
 | `PUT` | `/v1/uploads/{upload_id}/content` | `none` | — | Raw bytes, authenticated by the **upload token** rather than the access token. Redemption re-checks the issuing authorization's `messages:write` scope and revocation state |
-| `DELETE` | `/v1/messages/{message_id}` | `messages:delete` | body `client_request_id` | Carries the `effect` sentence. There is no other delete and no delete option: a request carrying an `action` or `scope` switch is `invalid_request` naming it |
-| `DELETE` | `/v1/conversations/{conversation_id}` | `messages:delete` | body `client_request_id` | Carries the `effect` sentence |
+| `DELETE` | `/v1/messages/{message_id}` | `messages:delete` | — | Carries the `effect` sentence. There is no other delete and no delete option: a request carrying an `action` or `scope` switch is `invalid_request` naming it |
+| `DELETE` | `/v1/conversations/{conversation_id}` | `messages:delete` | — | Carries the `effect` sentence |
 | `GET` | `/v1/admin/settings` | `admin` | — | Effective value, source (`default`, `environment` or `database`), mutability, restart requirement |
 | `GET` | `/v1/admin/settings/{key}` | `admin` | — | One key, the same shape |
 | `PATCH` | `/v1/admin/settings` | `admin` | — | Validates the **whole** body: any invalid key rejects the request and changes nothing. Its body fields are the settings keys themselves, validated against the settings registry rather than a fixed list |
@@ -650,7 +662,7 @@ values with no Agent GM meaning and are never IDs.
 
 | Code | HTTP | Retryable | Meaning |
 |---|---|---|---|
-| `invalid_request` | 400 | no | Malformed, unknown parameter or field, wrong ID prefix, contradictory idempotency key |
+| `invalid_request` | 400 | no | Malformed, unknown parameter or field, wrong ID prefix, unusable idempotency key |
 | `invalid_token` | 401 | no | Absent, expired, unknown or wrong-audience bearer |
 | `insufficient_scope` | 403 | no | Valid token, wrong scope |
 | `not_found` | 404 | no | No such object. Byte-identical whether it never existed or the caller may not see it |
@@ -728,8 +740,7 @@ to dial.
 $ curl -s -X POST https://gm.example.test/v1/uploads \
     -H "Authorization: Bearer $TOKEN" \
     -H 'Content-Type: application/json' \
-    -d '{"filename":"IMG_0421.jpg","mime_type":"image/jpeg","size_bytes":184320,
-         "client_request_id":"01k4z2p8w5"}'
+    -d '{"filename":"IMG_0421.jpg","mime_type":"image/jpeg","size_bytes":184320}'
 ```
 
 ```json
@@ -769,8 +780,7 @@ retry the `PUT`.**
 $ curl -s -X POST https://gm.example.test/v1/conversations/conv_01k4z2p8vq/messages \
     -H "Authorization: Bearer $TOKEN" \
     -H 'Content-Type: application/json' \
-    -d '{"upload_ids":["upl_01k4z2p8w6"],"text":"the photo",
-         "client_request_id":"01k4z2p8w7"}'
+    -d '{"upload_ids":["upl_01k4z2p8w6"],"text":"the photo"}'
 ```
 
 Only the authorization that owns an upload may send it, and an upload can be
@@ -821,7 +831,7 @@ An attachment whose full-size bytes are still being fetched is
   immediately kills every ticket it minted.
 - Every refusal is the same message whatever the reason, so a status code
   teaches an attacker nothing about which guesses were once valid.
-- `client_request_id` makes a reservation idempotent, but **each attempt
+- An `Idempotency-Key` makes a reservation idempotent, but **each attempt
   returns a fresh token**: the first token's value left the process and cannot
   be recovered. A token minted on a repeat never outlives the reservation it
   fills, which is what `limits.expires_in_seconds` counts down to.

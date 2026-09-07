@@ -33,7 +33,6 @@ func TestSlice2_AnOutgoingAttachmentCarriesTheSizeTheReservationCounted(t *testi
 		"filename":          "fixture.jpg",
 		"mime_type":         "image/jpeg",
 		"size_bytes":        len(body),
-		"client_request_id": key("size-reserve"),
 	}).ok(t, 201)
 	uploadID := getString(t, upload.Data, "upload_id")
 	token := getString(t, upload.Data, "token")
@@ -42,7 +41,6 @@ func TestSlice2_AnOutgoingAttachmentCarriesTheSizeTheReservationCounted(t *testi
 
 	s.call("POST", "/v1/conversations/"+conv.ID+"/messages", map[string]any{
 		"upload_ids":        []string{uploadID},
-		"client_request_id": key("size-send"),
 	}).ok(t, 200)
 
 	drainEcho(t, s, accountID)

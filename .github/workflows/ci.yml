@@ -124,6 +124,21 @@ jobs:
           enable-cache: "true"
       - run: devbox run lint-names
 
+  # Spec section 15.2, performed rather than described. A backup nobody has
+  # restored is a file, not a backup -- and the restore path is the one path
+  # in the system that is only ever exercised on the worst day of the year,
+  # so it is exercised on every push instead. It also asserts the documented
+  # FAILURE mode: with the wrong data key the accounts come back signed_out
+  # and the history is intact, and the server still serves.
+  restore-drill:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jetify-com/devbox-install-action@v0.13.0
+        with:
+          enable-cache: "true"
+      - run: devbox run restore-drill
+
   # The container image of spec sections 14.1 and 14.2. It builds for
   # linux/amd64 AND linux/arm64 on every run, and pushes to GHCR on a push to
   # `main` (tagged `sha-<short>` and `main`) and on a `vX.Y.Z` tag (tagged

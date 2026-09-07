@@ -253,9 +253,11 @@ func TestTest25ConcurrencyBudget(t *testing.T) {
 			h.rawCall(h.Token, "tools/call", map[string]any{
 				"name": "send_message",
 				"arguments": map[string]any{
-					"conversation_id":   conv.ID,
-					"text":              "held",
-					"client_request_id": fmt.Sprintf("budget-%d", i),
+					"conversation_id": conv.ID,
+					// D38: no key. Eight keyless sends are eight
+					// operations, which is exactly what filling a
+					// concurrency budget needs them to be.
+					"text": fmt.Sprintf("held-%d", i),
 				},
 			})
 		}()

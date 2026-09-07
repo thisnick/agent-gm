@@ -114,12 +114,18 @@ Neither secret ever appears in `argv`. The admin secret is presented over
 ## Backup and restore
 
 `agm admin backup` (`POST /v1/admin/backup`) writes
-`<data_dir>/backups/agent-gm-<timestamp>-<id>.sqlite3` using the **SQLite
-backup API**, not a file copy. Pages are copied under the database's own
-locking and the copy restarts if a writer changes a page it has already
-taken, so the result is a usable database while the server keeps serving. The
-snapshot has no `-wal` sidecar and opens on its own. The caller does not
-choose the path.
+`<data_dir>/backups/agent-gm-<timestamp>-<id>.sqlite3` **inside the database's
+own transaction, not as a file copy** (`VACUUM INTO`). It runs in one read
+transaction, does not block writers in WAL mode, and produces a single
+standalone file, so the result is a consistent snapshot taken while the server
+keeps serving. The snapshot has no `-wal` sidecar and opens on its own. The
+caller does not choose the path.
+
+A file copy is ruled out for a reason worth stating plainly: **a copy of a
+WAL-mode database without its log is missing every transaction still in the
+log, and it opens perfectly well while quietly being out of date.** That is
+the worst kind of backup, because nothing about it looks wrong until the day
+it is needed.
 
 **Retention counts calls, not days.** After each successful backup the newest
 `backup.keep` snapshots are kept and older ones deleted, each removal
@@ -167,6 +173,91 @@ Re-pairing keeps every existing `conv_` and `msg_` ID, **including onto a
 different phone**, because the account identifier is derived from the Google
 account address rather than from the device. That is the whole reason the
 identifier was chosen that way.
+
+### The drill
+
+A backup nobody has restored is a file, not a backup. `devbox run
+restore-drill` performs the whole of this section against a throwaway server
+on the fake backend, and CI runs it on every push:
+
+1. it pairs an account, starts a conversation and sends one message, so the
+   restore has content to be judged on;
+2. it takes a snapshot through `POST /v1/admin/backup`, and asserts the
+   snapshot has **no `-wal` sidecar** and passes `pragma integrity_check`;
+3. it stops that server, copies the snapshot in as `agent-gm.sqlite3` and the
+   **whole `sessions/` directory** into an empty data directory, starts a
+   second server with **the same `AGENT_GM_DATA_KEY`**, and asserts the
+   conversations, the messages and the mutated settings are all there and the
+   account is `connected`;
+4. it then does it again with the **wrong** key, and asserts the documented
+   failure mode below rather than trusting it.
+
+Run it before you need it. It takes about half a minute and it is the only
+thing that turns this page from a plan into a fact.
+
+To restore by hand, the same three steps:
+
+```bash
+# 1. the snapshot, into an EMPTY data directory
+cp agent-gm-20260907T152323Z-c310acf5.sqlite3 /new/data/agent-gm.sqlite3
+# 2. the whole sessions/ directory
+cp -R /old/data/sessions /new/data/sessions && chmod 700 /new/data/sessions
+# 3. the same AGENT_GM_DATA_KEY, then start the server
+```
+
+The snapshot is restored **as `agent-gm.sqlite3`**, and nothing else is
+copied beside it: no `-wal`, no `-shm`. Those belong to the database it came
+from and not to this one.
+
+## Moving a bind-mounted data directory into a named volume
+
+The cutover a first deployment eventually needs: a `/data` that started as a
+bind mount on the host becomes a Docker named volume, with no loss and no
+re-pairing. It is the restore procedure above with a container in the middle,
+and it is done **stopped**, because copying a live SQLite database is the one
+thing this page keeps saying not to do.
+
+```bash
+# 0. A snapshot first, while the server is still up. If anything below goes
+#    wrong this is the way back.
+agm admin backup
+
+# 1. Stop the service. Not "quiesce it" -- stop it.
+docker compose stop agent-gm
+
+# 2. Create the volume and copy the directory in, ownership preserved.
+#    The helper container is throwaway and has nothing else in it.
+docker volume create agent-gm-data
+docker run --rm \
+  -v /srv/agent-gm/data:/from:ro \
+  -v agent-gm-data:/to \
+  alpine:3 sh -c 'cp -a /from/. /to/ && ls -la /to'
+
+# 3. Point the service at the volume: in compose.yml, replace
+#      - /srv/agent-gm/data:/data
+#    with
+#      - agent-gm-data:/data
+#    and declare `volumes: { agent-gm-data: {} }`.
+
+# 4. Start it and read the health endpoint, not the logs.
+docker compose up -d agent-gm
+agm health
+```
+
+What to check before you delete anything:
+
+- `agm health` reports every account in the state it was in before, **not**
+  `signed_out`. `signed_out` here means `sessions/` did not come across, or
+  `AGENT_GM_DATA_KEY` is not the same one — check the key first, because it is
+  the likelier mistake and the easier fix.
+- `agm conversations list` returns the conversations you had.
+- The image runs as `nonroot`, so the volume's contents must be readable by
+  it. `cp -a` preserves the ownership the bind mount had; if the bind mount
+  was root-owned because it was created by hand, fix it in the helper
+  container (`chown -R 65532:65532 /to`) rather than after the fact.
+
+**Keep the bind mount for a few days.** It costs nothing and it is a rollback
+that needs no restore: stop, put the old volume line back, start.
 
 ## Health and diagnosis
 
@@ -327,6 +418,112 @@ slice that must:
 A bump that changes `ConfigVersion` is expected to be urgent, because a stale
 `ConfigVersion` breaks conversation creation with an undocumented status and
 no other symptom.
+
+Step by step, so that the next bump does not have to rediscover it:
+
+```bash
+# 1. All three places, in one commit. Nothing else in that commit.
+GOFLAGS= go get go.mau.fi/mautrix-gmessages@<new-commit>   # the ONLY time this is allowed
+GOFLAGS= go mod tidy
+#    internal/gm/pin.go: PinnedUpstreamCommit and PinnedUpstreamCommitFull
+#    plans/AGENT_GM_SPEC.md section 3.6: `commit:`
+devbox run pin-consistency
+
+# 2. What actually changed in the surface Agent GM uses.
+git -C <mautrix-gmessages-clone> diff <old>..<new> -- pkg/libgm pkg/connector
+
+# 3. The twenty-one assertions, against the NEW tree.
+devbox run fixture-validation
+
+# 4. Everything else.
+devbox run check && devbox run conformance
+
+# 5. The live gate (section 3.6): pair, list, send one text to the approved
+#    direct number, receive a reply. The COORDINATOR runs this, not an
+#    implementer, and not CI.
+```
+
+Record the result in `upstream-pin.md`: the old and new commits, every change
+to a symbol in spec §3.1, the `ConfigVersion` before and after, every added,
+removed or renamed enum value in the delivery-state or event vocabularies, and
+the live gate that accepted it. A bump with no entry there is a bump nobody
+can review later.
+
+### The `go-sdk` pin
+
+`github.com/modelcontextprotocol/go-sdk` is pinned in `go.mod` and nowhere
+else, so it has no three-place consistency rule — but it is a **wire**
+contract, not an internal library, and the check that matters is the same
+shape:
+
+```bash
+GOFLAGS= go get github.com/modelcontextprotocol/go-sdk@vX.Y.Z
+GOFLAGS= go mod tidy
+devbox run check
+devbox run conformance     # the MCP conformance run, against the baseline
+```
+
+`devbox run conformance` is the gate. It runs the pinned
+`@modelcontextprotocol/conformance` suite against the server **in both
+directions**, so a change in what the SDK puts on the wire fails there rather
+than in a client six weeks later. If the diff is only in the baseline, read
+every baseline line that moved before accepting it: a baseline edited to make
+a run green is a contract quietly rewritten. Both pins are recorded in every
+release note (§14.3), so which SDK a given binary speaks is answerable
+without a clone.
+
+## Releases
+
+Releases are cut by **tagging**, and by nothing else. `scripts/release.sh` is
+the whole mechanism, and `devbox run release-dry-run` runs on every push to
+main so the release path cannot rot between releases.
+
+| Command | What it does |
+|---|---|
+| `devbox run build-matrix` | cross-compiles the six archives into `dist/`, writes `checksums.txt`, and verifies each: the ones this machine can execute are executed, the darwin ones are checked for architecture and for loading only libraries macOS ships |
+| `devbox run release-dry-run` | the above, plus `npm pack` and a real install of the tarball, asserting the exit codes survive the shim. Publishes nothing |
+| `devbox run release` | build, cosign-sign `checksums.txt`, pack, and create the GitHub release. **Refuses off a `vX.Y.Z` tag** |
+
+A release note records the **GHCR digest** and both dependency pins, read out
+of the tree rather than typed, because a deployment pins by digest and a
+reader has to be able to tell which upstream a binary was built against
+without cloning anything.
+
+Four things are refused before anything permanent happens, because the tag
+path is the one path CI cannot rehearse:
+
+- a tag that is not `vMAJOR.MINOR.PATCH` — `vtest` would otherwise build,
+  sign with a real keyless certificate and create a public release before npm
+  rejected the version, and a sigstore entry cannot be withdrawn;
+- a tagged commit that is not an ancestor of `main`, or whose `ci` run is not
+  green;
+- an image digest that is absent, is not `sha256:<64 hex>`, or does not
+  resolve on the registry;
+- an image whose `org.opencontainers.image.revision` is not the commit being
+  released — a tag that was pushed, built, moved and re-pushed resolves
+  immediately to the *previous* image, and the note would pin source nobody
+  released.
+
+**No release is cut from a commit that has not passed a live gate.**
+
+### After the first release: trusted publishing
+
+`@agent-gm/cli` is published today with an `NPM_TOKEN` repository secret,
+because npm's trusted publishing has to be configured against a package that
+already exists. **Once `v1.0.0` is on npm, switch:**
+
+1. On npmjs.com, open `@agent-gm/cli` → *Settings* → *Trusted publisher*, and
+   add this repository with workflow `release.yml` (GitHub Actions, OIDC).
+2. Delete the `NPM_TOKEN` secret from the repository. A long-lived token that
+   nobody needs is a long-lived token nobody rotates.
+3. Drop `NODE_AUTH_TOKEN` from the *Publish `@agent-gm/cli`* step in
+   `.github/workflows/release.yml`. The job already has `id-token: write` for
+   cosign, which is the same permission OIDC publishing needs, and
+   `--provenance` keeps working.
+
+Do it as its own commit, and prove it on the next release rather than
+assuming: a publish that silently falls back to an absent token fails at the
+end of a release, which is the worst place to find out.
 
 ## Logging
 

@@ -1,0 +1,34 @@
+{
+  "name": "@agent-gm/cli",
+  "version": "0.0.0-dev",
+  "description": "agm, the Agent GM command line. A thin wrapper that downloads the release binary for your platform.",
+  "license": "AGPL-3.0-or-later",
+  "homepage": "https://github.com/thisnick/agent-gm",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thisnick/agent-gm.git"
+  },
+  "bugs": {
+    "url": "https://github.com/thisnick/agent-gm/issues"
+  },
+  "bin": {
+    "agm": "bin/agm.js"
+  },
+  "files": [
+    "bin/agm.js",
+    "scripts/postinstall.js",
+    "scripts/platform.js",
+    "checksums.txt",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

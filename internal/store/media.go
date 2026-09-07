@@ -108,6 +108,14 @@ func (s *Store) UploadByTokenHash(ctx context.Context, tokenHash string) (Upload
 // UploadByIdempotencyKey finds a caller's earlier reservation for the same
 // key, so a repeat returns the same reservation with a fresh token.
 func (s *Store) UploadByIdempotencyKey(ctx context.Context, authorizationID, key string) (Upload, error) {
+	// A keyless reservation stores NULL and is not addressable by key (D38).
+	// The guard is explicit for the same reason it is on OperationByKey: the
+	// query below answers "no rows" for the empty key only because `= NULL`
+	// is never true, which is right by accident and stops being right the
+	// moment somebody rewrites it as `IS ?`.
+	if key == "" {
+		return Upload{}, ErrUploadNotFound
+	}
 	u, err := scanUpload(s.read.QueryRowContext(ctx,
 		`SELECT `+uploadColumns+` FROM uploads
 		  WHERE authorization_id = ? AND idempotency_key = ?`, authorizationID, key))

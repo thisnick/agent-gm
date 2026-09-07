@@ -68,8 +68,8 @@ type Request struct {
 	// PUT of section 10.2 and nothing else.
 	RawBody     []byte
 	ContentType string
-	// IdempotencyKey sets the Idempotency-Key header (spec section 6.3). The
-	// CLI uses the header transport rather than the client_request_id body
+	// IdempotencyKey sets the Idempotency-Key header (spec section 6.3). It
+	// is set only by --idempotency-key; the header is the only transport
 	// field so that one code path covers every mutation, including the two
 	// DELETEs whose body would otherwise be empty.
 	IdempotencyKey string

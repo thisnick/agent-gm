@@ -74,8 +74,8 @@ account only — the other person keeps their copy, always.
    back as `cursor` for the next page; page size defaults to 50 and caps at
    100. `search_messages` needs `q`; it searches **every** account unless
    you pass `account_id`.
-3. **Reply.** `send_message` with the `conversation_id`, `text`, and a
-   `client_request_id` you invent. Add `reply_to_message_id` to thread a
+3. **Reply.** `send_message` with the `conversation_id` and `text`.
+   Add `reply_to_message_id` to thread a
    reply — **but replies are an RCS feature; on an `sms_mms` conversation
    that argument is refused with `unsupported_capability` and
    `reason: "reply_not_supported"`.** Check the conversation's `type` first,
@@ -108,18 +108,16 @@ account only — the other person keeps their copy, always.
    `delete_conversation` delete from **this account only** — the recipient
    keeps their copy. There is no delete-for-everyone and no mode to choose.
 
-**Every write needs a `client_request_id` that you invent.** Repeating a
-call with the same one returns the same operation and sends nothing
-further. A **fresh** `client_request_id` is a different call, not a repeat
-— reusing this to "retry" is how a person gets the same text twice.
-**Changing `account_id` while keeping the same `client_request_id` is also a
-different call**, not a retry: it would send a second real message from the
-other account. The server refuses that combination with `invalid_request`
-rather than obeying it, so if a send fails, retry it **against the same
-account** with the same key, or use a new key. If a
-send times out with `phone_not_responding`, the operation is `pending`, not
-failed: the server accepted it and the phone may still send it when it
-wakes. **Poll `get_operation`; do not resend.**
+**There is no idempotency key to invent.** Every write returns an
+`operation` with an id, and status is checked by that id with
+`get_operation`. **If a call's result is lost — a timeout, a dropped
+connection, a tool error you cannot read — do not send it again. Look
+first:** `list_messages` on the conversation, or `list_operations`, will
+tell you whether it went. Sending again because you did not see an answer
+is how a person gets the same text twice. If a send times out with
+`phone_not_responding`, the operation is `pending`, not failed: the server
+accepted it and the phone may still send it when it wakes. **Poll
+`get_operation`; do not resend.**
 
 The phone has to be awake and online for anything to happen.
 `list_accounts` and `get_session` tell you whether it is: `state` and
@@ -324,13 +322,13 @@ Twenty-one tools: eleven reads, eight writes, two deletes.
 
 | Tool | REST route | Arguments |
 |---|---|---|
-| `send_message` | `POST /v1/conversations/{conversation_id}/messages` | `conversation_id` **(required)**, `text`, `upload_ids`, `reply_to_message_id`, `force_rcs`, `client_request_id` **(required)** |
-| `start_conversation` | `POST /v1/conversations` | `account_id`, `recipients` **(required)**, `name`, `client_request_id` **(required)** |
-| `mark_read` | `POST /v1/conversations/{conversation_id}/read` | `conversation_id` **(required)**, `message_id`, `client_request_id` **(required)** |
-| `add_reaction` | `POST /v1/messages/{message_id}/reactions` | `message_id` **(required)**, `emoji` **(required)**, `client_request_id` **(required)** |
-| `remove_reaction` | `DELETE /v1/messages/{message_id}/reactions/{emoji}` or `DELETE /v1/reactions/{reaction_id}` | `reaction_id`, `message_id`, `emoji`, `client_request_id` **(required)** |
-| `update_conversation` | `PATCH /v1/conversations/{conversation_id}` | `conversation_id` **(required)**, `folder`, `pinned`, `unread`, `client_request_id` **(required)** |
-| `create_upload` | `POST /v1/uploads` | `filename`, `mime_type` **(required)**, `size_bytes` **(required)**, `sha256`, `client_request_id` **(required)** |
+| `send_message` | `POST /v1/conversations/{conversation_id}/messages` | `conversation_id` **(required)**, `text`, `upload_ids`, `reply_to_message_id`, `force_rcs` |
+| `start_conversation` | `POST /v1/conversations` | `account_id`, `recipients` **(required)**, `name` |
+| `mark_read` | `POST /v1/conversations/{conversation_id}/read` | `conversation_id` **(required)**, `message_id` |
+| `add_reaction` | `POST /v1/messages/{message_id}/reactions` | `message_id` **(required)**, `emoji` **(required)** |
+| `remove_reaction` | `DELETE /v1/messages/{message_id}/reactions/{emoji}` or `DELETE /v1/reactions/{reaction_id}` | `reaction_id`, `message_id`, `emoji` |
+| `update_conversation` | `PATCH /v1/conversations/{conversation_id}` | `conversation_id` **(required)**, `folder`, `pinned`, `unread` |
+| `create_upload` | `POST /v1/uploads` | `filename`, `mime_type` **(required)**, `size_bytes` **(required)**, `sha256` |
 | `get_operation` | `GET /v1/operations/{operation_id}` | `operation_id` **(required)** |
 
 `get_operation` is a read, but it is gated on `messages:write` because it
@@ -346,8 +344,8 @@ and nothing to infer.
 
 | Tool | REST route | Arguments |
 |---|---|---|
-| `delete_message` | `DELETE /v1/messages/{message_id}` | `message_id` **(required)**, `client_request_id` **(required)** |
-| `delete_conversation` | `DELETE /v1/conversations/{conversation_id}` | `conversation_id` **(required)**, `client_request_id` **(required)** |
+| `delete_message` | `DELETE /v1/messages/{message_id}` | `message_id` **(required)** |
+| `delete_conversation` | `DELETE /v1/conversations/{conversation_id}` | `conversation_id` **(required)** |
 
 Both deletes are **delete-for-me**. The other person keeps their copy, always.
 There is no delete-for-everyone and nothing to choose.
@@ -372,12 +370,13 @@ There is no delete-for-everyone and nothing to choose.
 - Every tool declares an `outputSchema` describing the envelope it really
   returns, with `data` typed by that tool's own DTO.
 
-Every write tool requires a `client_request_id` you invent, and every write
-tool's description ends with the same sentence:
+No write tool takes an idempotency key of any spelling: the server mints the
+operation id and returns it. Every write tool's description ends with the same
+sentence, byte for byte:
 
-> Repeating this call with the same client_request_id returns the same
-> operation and sends nothing further. A fresh client_request_id is a
-> different call, not a repeat.
+> The result carries an operation id; check status by that id. If a call's
+> result is lost, check the conversation or list operations before sending
+> again.
 
 ## Annotations
 

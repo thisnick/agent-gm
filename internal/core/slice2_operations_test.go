@@ -26,15 +26,16 @@ func sendInput(h *harness, key, text string) core.SendTextInput {
 }
 
 // TestSlice2Test7IdempotencyIsPerKeyAndPerBody is section 16 Slice 2
-// acceptance test 7: the same client_request_id with the same body returns
+// acceptance test 7: the same `Idempotency-Key` with the same body returns
 // the same operation and calls the backend ONCE, asserted on the fake's call
 // counter; with a different body it is idempotency_conflict and calls it
 // ZERO times.
 //
-// The third clause of test 7 -- a key supplied as a query parameter is
+// The third clause of test 7 -- a key supplied anywhere but the header is
 // invalid_request -- is a route-parsing rule and lives in internal/api, which
-// is not this package's to write. What core owns and asserts here is that the
-// key is required at all: a mutation without one writes nothing.
+// is not this package's to write. What core owns and asserts here is the
+// other half of D38: a mutation with NO key is not an error, it is a new
+// operation with a server-minted ID, and it reaches the backend exactly once.
 func TestSlice2Test7IdempotencyIsPerKeyAndPerBody(t *testing.T) {
 	h := newHarness(t)
 	h.seedConversation(convA, false)
@@ -100,17 +101,38 @@ func TestSlice2Test7IdempotencyIsPerKeyAndPerBody(t *testing.T) {
 			h.Backend.CallCount("SendText")-before)
 	}
 
-	// No key at all is invalid_request naming client_request_id, and writes
-	// nothing.
-	_, err = h.Account.SendText(h.ctx(), sendInput(h, "", "hello"))
-	if !errors.As(err, &apiErr) || apiErr.Code != apierr.CodeInvalidRequest {
-		t.Fatalf("err = %v, want invalid_request", err)
+	// No key at all (D38): a NEW operation with a server-minted ID, one
+	// backend call, and no replay of anything above.
+	keyless, err := h.Account.SendText(h.ctx(), sendInput(h, "", "hello"))
+	if err != nil {
+		t.Fatalf("a keyless send was refused: %v", err)
 	}
-	if apiErr.Details["field"] != "client_request_id" {
-		t.Fatalf("details.field = %v, want client_request_id", apiErr.Details["field"])
+	if !keyless.HasOperation || keyless.Operation.ID == "" {
+		t.Fatal("a keyless send returned no operation ID; there would be nothing to check status by")
 	}
-	if h.Backend.CallCount("SendText") != before {
-		t.Fatal("a keyless mutation reached the backend")
+	if keyless.Replayed {
+		t.Fatal("a keyless send was reported as a replay")
+	}
+	if keyless.Operation.IdempotencyKey != "" {
+		t.Fatalf("a keyless operation stored the key %q", keyless.Operation.IdempotencyKey)
+	}
+	if got := h.Backend.CallCount("SendText"); got != before+1 {
+		t.Fatalf("a keyless send called the backend %d times, want once", got-before)
+	}
+
+	// And a SECOND keyless send is a second operation and a second message,
+	// not a replay of the first. Two keyless calls that collapsed into one
+	// would be far worse than the old missing-key error: it would silently
+	// drop the second text.
+	second, err := h.Account.SendText(h.ctx(), sendInput(h, "", "hello"))
+	if err != nil {
+		t.Fatalf("a second keyless send was refused: %v", err)
+	}
+	if second.Operation.ID == keyless.Operation.ID {
+		t.Fatal("two keyless sends returned the same operation; the second message was dropped")
+	}
+	if got := h.Backend.CallCount("SendText"); got != before+2 {
+		t.Fatalf("two keyless sends made %d backend calls, want two", got-before)
 	}
 }
 
@@ -145,8 +167,8 @@ func TestSlice2Test35IdempotencyIsPerAccount(t *testing.T) {
 	if !errors.As(err, &apiErr) || apiErr.Code != apierr.CodeInvalidRequest {
 		t.Fatalf("err = %v, want invalid_request for the mirror hazard", err)
 	}
-	if apiErr.Details["field"] != "client_request_id" {
-		t.Fatalf("details.field = %v, want client_request_id", apiErr.Details["field"])
+	if apiErr.Details["field"] != "Idempotency-Key" {
+		t.Fatalf("details.field = %v, want Idempotency-Key", apiErr.Details["field"])
 	}
 	if apiErr.Details["account_id"] != a.Account.ID {
 		t.Fatalf("the refusal names account %v, want the first-use account %s",

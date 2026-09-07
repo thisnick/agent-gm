@@ -153,14 +153,13 @@ func TestRouteNamesAreUniqueAndPresent(t *testing.T) {
 	}
 }
 
-// There is no `?client_request_id=` query parameter on any route. The
-// idempotency key has exactly two transports -- the Idempotency-Key header
-// and the client_request_id body field -- and one presented as a query
-// parameter is invalid_request naming it, like any other unknown parameter
-// (spec section 7.1).
+// The idempotency key has exactly ONE transport, the `Idempotency-Key`
+// header (D38). There is no `client_request_id` body field and no query
+// parameter form on any route; one presented as either is invalid_request
+// naming it, like any other unknown parameter (spec section 7.1).
 //
-// Plant: add "client_request_id" to any route's Query and this test fails.
-// Planted 2026-09-06.
+// Plant: add "client_request_id" to any route's Query or Body and this test
+// fails. Planted 2026-09-06, re-planted 2026-09-07 for D38.
 func TestNoRouteTakesTheIdempotencyKeyAsAQueryParameter(t *testing.T) {
 	for _, r := range api.Routes {
 		for _, q := range r.Query {
@@ -168,14 +167,19 @@ func TestNoRouteTakesTheIdempotencyKeyAsAQueryParameter(t *testing.T) {
 				t.Errorf("%s accepts %q as a query parameter", r, q)
 			}
 		}
+		for _, b := range r.Body {
+			if b == "client_request_id" || b == "idempotency_key" {
+				t.Errorf("%s accepts %q as a body field; D38 removed the body transport", r, b)
+			}
+		}
 	}
 }
 
-// Every mutation requires an idempotency key (D7), and the two transports of
-// it are the header and the body field. Typing is the one deliberate
+// Every mutation ACCEPTS an idempotency key, by way of the `Idempotency-Key`
+// header and no other transport (D38). Typing is the one deliberate
 // exception: it has no lasting effect, so there is nothing to make
 // idempotent (D15).
-func TestEveryMutationRequiresAnIdempotencyKey(t *testing.T) {
+func TestEveryMutationAcceptsAnIdempotencyKey(t *testing.T) {
 	mutations := map[string]bool{}
 	for _, r := range api.Routes {
 		switch r.Method {
@@ -211,11 +215,11 @@ func TestEveryMutationRequiresAnIdempotencyKey(t *testing.T) {
 			continue
 		}
 		if !hasKey {
-			t.Errorf("%s is a mutation with no idempotency key", name)
+			t.Errorf("%s is a mutation that does not accept an idempotency key", name)
 		}
 		r, _ := api.RouteByName(name)
-		if !r.AllowsBody("client_request_id") {
-			t.Errorf("%s does not accept client_request_id in its body", name)
+		if r.AllowsBody("client_request_id") {
+			t.Errorf("%s still accepts client_request_id in its body; D38 removed it", name)
 		}
 	}
 }
@@ -274,7 +278,7 @@ func TestParametersCoversPathQueryAndBody(t *testing.T) {
 	}
 	for _, want := range []string{
 		"conversation_id", "text", "upload_ids", "reply_to_message_id",
-		"force_rcs", "client_request_id",
+		"force_rcs",
 	} {
 		found := false
 		for _, p := range got {

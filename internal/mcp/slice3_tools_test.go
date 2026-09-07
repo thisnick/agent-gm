@@ -86,7 +86,7 @@ func TestSlice3Test14ScopeGating(t *testing.T) {
 	// learned elsewhere, and the call is refused again -- as a RESULT the
 	// model can act on, naming the scope it would have needed.
 	result := h.toolWith(readOnly, "delete_message", map[string]any{
-		"message_id": "msg_whatever", "client_request_id": "cri-1",
+		"message_id": "msg_whatever",
 	})
 	if !isError(result) {
 		t.Fatal("delete_message under messages:read alone was not refused at call time")
@@ -106,7 +106,7 @@ func TestSlice3Test14ScopeGating(t *testing.T) {
 //
 // Every tool has a description; **every argument has a description**; every
 // schema is `additionalProperties: false`; every write tool requires
-// `client_request_id`; every write tool's description ends with the fresh-key
+// no idempotency key at all (D38); every write tool's description ends with the lost-result
 // sentence of section 8.2.
 func TestSlice3Test15CatalogueClaims(t *testing.T) {
 	h := newHarness(t)
@@ -151,14 +151,15 @@ func TestSlice3Test15CatalogueClaims(t *testing.T) {
 			}
 		}
 
-		// A write tool is one that requires `client_request_id`.
-		if _, hasKey := props["client_request_id"]; hasKey {
-			if !contains(required, "client_request_id") {
-				t.Errorf("%s takes client_request_id but does not require it", name)
+		// D38: no tool takes an idempotency key of any spelling. The server
+		// mints the operation ID, and a schema that still asked for one
+		// would be asking a model for a value it cannot produce stably.
+		for _, banned := range []string{"client_request_id", "idempotency_key", "Idempotency-Key"} {
+			if _, has := props[banned]; has {
+				t.Errorf("%s still takes %q; D38 removed the idempotency key from every tool", name, banned)
 			}
-			if !strings.HasSuffix(description, mcp.FreshKeySentence) {
-				t.Errorf("%s's description does not end with the fresh-key sentence of section 8.2; it ends %q",
-					name, tailOf(description))
+			if contains(required, banned) {
+				t.Errorf("%s still requires %q", name, banned)
 			}
 		}
 	}
@@ -174,26 +175,32 @@ func TestSlice3Test15CatalogueClaims(t *testing.T) {
 	t.Logf("tools/list served %d tools and %d arguments, each with a description", len(listed), arguments)
 
 	// The nine write tools of section 8.2, named, so a tool that quietly
-	// stopped requiring a key is caught by name rather than by a count.
-	wantKeyed := []string{
+	// changed sides is caught by name rather than by a count. Each one's
+	// description ends with the lost-result sentence, byte for byte -- the
+	// sentence that replaced "invent a key" when D38 removed the key.
+	wantWrites := []string{
 		"add_reaction", "create_upload", "delete_conversation", "delete_message",
 		"mark_read", "remove_reaction", "send_message", "start_conversation",
 		"update_conversation",
 	}
-	var keyed []string
+	var writes []string
 	for _, tool := range mcp.Tools {
-		if tool.RequiresClientRequestID() {
-			keyed = append(keyed, tool.Name)
+		if tool.IsWrite() {
+			writes = append(writes, tool.Name)
+			if !strings.HasSuffix(tool.Description, mcp.LostResultSentence) {
+				t.Errorf("%s's description does not end with the lost-result sentence of section 8.2; it ends %q",
+					tool.Name, tailOf(tool.Description))
+			}
 		}
 	}
-	sort.Strings(keyed)
-	if !equalStrings(keyed, wantKeyed) {
-		t.Fatalf("the tools requiring client_request_id are %v, want %v", keyed, wantKeyed)
+	sort.Strings(writes)
+	if !equalStrings(writes, wantWrites) {
+		t.Fatalf("the write tools are %v, want %v", writes, wantWrites)
 	}
 	// `get_operation` is gated on messages:write and is NOT one: it creates
 	// nothing, so there is nothing to repeat.
-	if contains(keyed, "get_operation") {
-		t.Fatal("get_operation requires a client_request_id, which it has nothing to do with")
+	if contains(writes, "get_operation") {
+		t.Fatal("get_operation is classed as a write, which it is not")
 	}
 }
 

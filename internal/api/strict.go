@@ -92,29 +92,20 @@ func isJSONNull(raw []byte) bool {
 	return json.Unmarshal(raw, &v) == nil && v == nil
 }
 
-// IdempotencyKeyFrom returns the key for a mutation, from the two transports
-// spec section 6.3 gives it and no others: the `Idempotency-Key` header, or
-// the `client_request_id` body field.
+// IdempotencyKeyFrom returns the key for a mutation from the one transport
+// spec section 6.3 gives it: the `Idempotency-Key` header. It is OPTIONAL
+// (D38), so an absent header returns an empty key and no error, and the
+// operation gets a server-minted ID.
 //
-// **Supplying both with different values is `invalid_request`**, because it
-// is a contradiction rather than a preference: a server that picked one
-// would be guessing which of two things the caller meant, and the cost of
-// guessing wrong is a second real text message to a real person.
-//
-// An empty key, a key over 200 bytes, or a key containing control characters
-// is `invalid_request` naming `client_request_id` in `details.field`, and
-// writes nothing.
-func IdempotencyKeyFrom(header, bodyField string) (string, *apierr.Error) {
-	switch {
-	case header != "" && bodyField != "" && header != bodyField:
-		return "", apierr.ContradictoryIdempotencyKey()
-	case header != "":
-		return header, validateIdempotencyKey(header)
-	case bodyField != "":
-		return bodyField, validateIdempotencyKey(bodyField)
-	default:
-		return "", apierr.MissingIdempotencyKey()
+// A key over 200 bytes or carrying a control character is `invalid_request`
+// naming `Idempotency-Key` in `details.field`, and writes nothing. A present
+// but unusable key is a caller mistake worth reporting; an absent one is not
+// a mistake at all.
+func IdempotencyKeyFrom(header string) (string, *apierr.Error) {
+	if header == "" {
+		return "", nil
 	}
+	return header, validateIdempotencyKey(header)
 }
 
 // MaxIdempotencyKeyBytes is spec section 6.3's bound.

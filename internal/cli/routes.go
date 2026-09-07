@@ -81,7 +81,7 @@ var routeTable = map[string]route{
 
 	// The OAuth surface of sections 9.5 and 9.6, which section 7.7 defers to
 	// section 9. None of these is idempotent in the section 6.3 sense: they
-	// take no client_request_id, and the one place a repeat matters --
+	// take no idempotency key, and the one place a repeat matters --
 	// approving a request that is no longer pending -- is answered with
 	// idempotency_conflict by the server's own state machine.
 	"admin_enrollment_codes_create":        {method: http.MethodPost, path: "/v1/admin/enrollment-codes", idempotent: false},

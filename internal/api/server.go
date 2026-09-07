@@ -51,9 +51,10 @@ type Request struct {
 	// Source is the resolved client source (spec section 12.3). It is never
 	// the empty string.
 	Source string
-	// IdempotencyKeyHeader is the Idempotency-Key header as presented. A
-	// handler passes it, with its body's client_request_id, to
-	// IdempotencyKeyFrom rather than reading either alone.
+	// IdempotencyKeyHeader is the Idempotency-Key header as presented, and
+	// the only transport a key has (D38). A handler passes it to
+	// IdempotencyKeyFrom rather than reading it raw, so the 200-byte and
+	// control-character rules of section 6.3 have one home.
 	IdempotencyKeyHeader string
 	// RequestID is the `req_` ID in this request's envelope.
 	RequestID string

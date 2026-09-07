@@ -103,7 +103,6 @@ func TestSlice2_41_NoSentinelSecretReachesDiskOrALog(t *testing.T) {
 	conv := s.seedConversation(accountA, "conv-sentinel")
 	send := s.call("POST", "/v1/conversations/"+conv.ID+"/messages", map[string]any{
 		"text":              bodyText,
-		"client_request_id": key("sentinel-send"),
 	}).ok(t, 200)
 	if send.Data["operation"] == nil {
 		t.Fatal("the send returned no operation")
@@ -111,7 +110,6 @@ func TestSlice2_41_NoSentinelSecretReachesDiskOrALog(t *testing.T) {
 	s.call("POST", "/v1/conversations", map[string]any{
 		"account_id":        accountB,
 		"recipients":        []string{"+12025550147"},
-		"client_request_id": key("sentinel-start"),
 	}).ok(t, 200)
 	s.call("PATCH", "/v1/admin/settings", map[string]any{"backfill.concurrency": 3}).ok(t, 200)
 	s.call("POST", "/v1/admin/backup", nil).ok(t, 200)
@@ -231,7 +229,6 @@ func TestSlice2_41_PhoneNumbersInAuditPayloadsAreHashed(t *testing.T) {
 	s.call("POST", "/v1/conversations", map[string]any{
 		"account_id":        accountA,
 		"recipients":        []string{number},
-		"client_request_id": key("hash-start"),
 	}).ok(t, 200)
 
 	// Every audit row, not only the one kind: a number can reach a payload

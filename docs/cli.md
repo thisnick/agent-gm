@@ -11,6 +11,53 @@ read [api.md](api.md).
 Pairing has a page of its own — [pairing.md](pairing.md) — because most of what
 there is to say about `agm pair` happens on the phone.
 
+## Installing
+
+```sh
+npm i -g @agent-gm/cli
+agm version
+# agm 1.0.0 (121648dd0fa089443752558866e53e707640e2dc)
+```
+
+`@agent-gm/cli` is a **thin wrapper**, not a bundle. Installing it downloads
+the `agm` archive for your platform from the matching GitHub release and
+verifies it against a copy of `checksums.txt` that was pinned inside the npm
+tarball when it was published — so a release page edited afterwards cannot
+hand an already-published version a different binary. The package version
+equals the Go release version: `@agent-gm/cli@1.4.2` installs `agm 1.4.2`.
+
+Supported platforms are `linux/x64`, `linux/arm64`, `darwin/x64` and
+`darwin/arm64`. Anything else **fails the install** with a message naming the
+platform, rather than leaving a shim that cannot run. Windows is not in the
+v1 matrix; download a binary from the release page or build from source.
+
+Two environment variables belong to the wrapper alone:
+
+| Variable | Effect |
+|---|---|
+| `AGENT_GM_CLI_SKIP_DOWNLOAD=1` | skip the postinstall download, for a CI image that supplies the binary itself |
+| `AGENT_GM_CLI_BINARY=<path>` | run this binary instead of the vendored one |
+
+Or take the archive directly, which is the same binary:
+
+```sh
+v=1.0.0; os=darwin; arch=arm64
+base=https://github.com/thisnick/agent-gm/releases/download/v$v
+curl -fsSLO $base/agm_${v}_${os}_${arch}.tar.gz
+curl -fsSLO $base/checksums.txt
+shasum -a 256 -c checksums.txt --ignore-missing
+tar -xzf agm_${v}_${os}_${arch}.tar.gz agm && chmod 0755 agm
+```
+
+`checksums.txt` is signed with cosign, keyless, over GitHub OIDC; the release
+notes carry the exact `cosign verify-blob` invocation, the GHCR digest of the
+matching image, and the `libgm` and `go-sdk` pins the binary was built
+against.
+
+**The exit codes survive the wrapper.** `agm --nonsense` exits `2` through npm
+exactly as it does natively, and `1` stays unassigned so that a `1` is always
+the wrapper's, the shell's or the runtime's — never Agent GM's.
+
 ## Global flags
 
 Available on every command.
@@ -26,7 +73,8 @@ Available on every command.
 --timeout <duration>    Bound the request, and any operation wait.
 --quiet                 Suppress non-result output.
 --verbose               Diagnostic detail on stderr.
---idempotency-key <k>   Resume one logical state-changing request.
+--idempotency-key <k>   Resume one logical state-changing request. Optional,
+                        and off by default: an ordinary command sends no key.
 --yes                   Skip the confirmation prompt on a destructive command.
 --credentials-file <p>  Override the credentials file.
 ```
@@ -261,11 +309,21 @@ agm messages remove-reaction <msg-id> <emoji> | --reaction <react-id>
   **`agm messages remove-reaction <msg-id> <emoji>`** — both positional.
   `--reaction <react-id>` removes by ID instead. There is no `unreact`.
 
-Every mutation takes `--idempotency-key`. Omit it and `agm` mints one per
-invocation — which means **re-running the command sends again**. To retry a
-send that timed out, re-run it with the *same* key; do not let a fresh one be
-minted. Reusing a key against a *different* `--account` is refused rather than
-obeyed, because obeying it would send a second real message to a real person.
+Every mutation accepts `--idempotency-key`, and **omitting it is the ordinary
+case**: `agm` then sends no `Idempotency-Key` header at all and the server
+mints the operation ID. Re-running the command sends again, which is what
+re-running a send has always meant.
+
+`agm` never mints a key for you. It used to, and that was a fiction: a fresh
+key on every run is exactly a run with no key, with one more field on the
+wire. The flag is for **automation that retries** — pass the *same* value on
+the retry and the second call returns the first operation and sends nothing.
+Reusing a key against a *different* `--account` is refused rather than obeyed,
+because obeying it would send a second real message to a real person.
+
+If a send times out and you sent no key, **do not just re-run it**:
+`agm messages list --conversation <conv-id>` or `agm operations list` first.
+The send may well have gone.
 
 ### Attachments and contacts
 
@@ -410,7 +468,12 @@ once, so the client's next call is a `401` and it cannot refresh its way back.
 revoking every authorization it holds.
 
 `agm completion bash|zsh|fish` and `agm version` drive no route and are not
-listed above.
+listed above. `agm version` prints the release version and the **source
+commit** — `agm 1.0.0 (121648d…)`, or `{"version":…,"commit":…}` under
+`--json`. Both are stamped from the tag at release time; a build from a
+working tree says `dev` and reads the commit from the VCS stamp instead. The
+server's own `agent-gm version` and `GET /v1/health` report the same two facts
+plus the `libgm` pin, so a bug report can name exactly what was running.
 
 ## Destructive commands
 

@@ -7,3 +7,5 @@
 *.local
 /.claude/settings.local.json
 /.claude/worktrees/
+/npm/vendor/
+/npm/checksums.txt

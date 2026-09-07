@@ -35,14 +35,12 @@ func TestSlice2_R11_UploadedBytesComeBackDown(t *testing.T) {
 		"filename":          "fixture.jpg",
 		"mime_type":         "image/jpeg",
 		"size_bytes":        len(body),
-		"client_request_id": key("r11-reserve"),
 	}).ok(t, 201)
 	uploadID := getString(t, upload.Data, "upload_id")
 	s.put(getString(t, upload.Data, "upload_url"), getString(t, upload.Data, "token"), body).ok(t, 200)
 
 	s.call("POST", "/v1/conversations/"+conv.ID+"/messages", map[string]any{
 		"upload_ids":        []string{uploadID},
-		"client_request_id": key("r11-send"),
 	}).ok(t, 200)
 	drainEcho(t, s, accountID)
 
