@@ -44,8 +44,17 @@ Rules:
   `/home/nick/code/agent-mx-trial`, port `8787`, `127.0.0.1:8008`,
   `/home/nick/code/openclaw-custom/.env`, or `openclaw-custom/matrix`.
   `/home/nick/code/agent-mx` is read-only reference.
-- Never kill a process by name pattern. Use `pkill -x agent-gm` or a PID from
-  `pgrep -x`; `pkill -f` matches the calling shell and kills your session.
+- **Never enumerate processes.** Capture the PID of anything you start
+  (`cmd & pid=$!`), signal only that variable, and signal nothing whose PID you
+  did not capture yourself. `pgrep`, `pkill` and `killall` are forbidden in
+  every form — including `pgrep -x` and `pkill -x`, because a name is not an
+  identity. The production container shares the host PID namespace, so a
+  `serve` process you did not start is the owner's deployment. (In Slice 3b an
+  agent cleaned up with `pgrep -x agent-gm` and killed production; Docker
+  restarted it and nothing was lost.) `pkill -f` additionally matches your own
+  shell and kills your session.
+- **Never bind ports 8080, 8081, 8090 or 8787.** They belong to the owner's
+  running services. Pick an unclaimed port and say which one in your report.
 - Finish with a report listing: files changed, commands run with their real
   output, tests added and what each proves, and anything left incomplete with
   the reason.
