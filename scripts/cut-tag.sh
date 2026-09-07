@@ -82,6 +82,13 @@ fi
 if [ "${AGENT_GM_TAG_CHECK_REMOTE:-0}" = 1 ]; then
   remote_sha="$(git ls-remote --tags origin "refs/tags/$tag^{}" "refs/tags/$tag" 2>/dev/null | head -1 | cut -f1)"
   if [ -n "$remote_sha" ]; then
+    # `ls-remote` answers with the tag OBJECT's sha for an annotated tag, not
+    # with the commit it points at. That is fine on purpose rather than by
+    # luck: `^{commit}` peels it below, and `merge-base --is-ancestor` peels
+    # it too, so an annotated and a lightweight tag are asked the same
+    # question. The `refs/tags/$tag^{}` pattern is listed first for the same
+    # reason -- when the peeled ref is there it is the better answer.
+    #
     # Reachability is asked of the object only if this checkout has it; a tag
     # on origin whose commit is not here cannot be in this history either.
     git cat-file -e "${remote_sha}^{commit}" 2>/dev/null || remote_sha=""

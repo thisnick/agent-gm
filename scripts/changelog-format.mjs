@@ -68,10 +68,16 @@ if (src.includes(`## [${version}]`)) {
 // The bullets, without the bump-size subheadings. The size is already visible
 // in the version that came out of it, and `### Patch Changes` above a single
 // bullet is a heading with no readers.
+// The default changelog generator prefixes a bullet with the short commit of
+// the changeset file when it knows one -- so a changeset committed in an
+// earlier pull request gets `- 7fae2a9: …` and one added in this one does
+// not, which is two shapes in one list. The commit is already recorded by git
+// and by the release note; the changelog is prose.
 const body = block
   .split("\n")
   .slice(1)
   .filter((l) => !/^### (Major|Minor|Patch) Changes[ \t]*$/.test(l))
+  .map((l) => l.replace(/^(\s*-\s+)[0-9a-f]{7,40}: /, "$1"))
   .join("\n")
   .replace(/\n{3,}/g, "\n\n")
   .trim();
