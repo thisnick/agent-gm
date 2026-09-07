@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/thisnick/agent-gm/internal/apierr"
+	"github.com/thisnick/agent-gm/internal/authz"
 	"github.com/thisnick/agent-gm/internal/cli"
 )
 
@@ -178,7 +179,12 @@ func (s *stub) dataFor(r *http.Request) any {
 	case path == "/v1/auth/admin-session":
 		return map[string]any{
 			"access_token": "agm_at_stub", "refresh_token": "agm_rt_stub",
-			"scopes":                  []string{"admin", "messages:read", "messages:write", "messages:delete"},
+			// Derived, not copied: this stub stands in for what the server
+			// mints for an un-narrowed admin session, and a third
+			// hand-written copy of the four strings would go on agreeing with
+			// the CLI after the server had moved on (R-3). The import is
+			// test-only and is not in the `agm` binary's import graph.
+			"scopes":                  authz.AdminBootstrapScopes().Strings(),
 			"access_token_expires_at": "2099-01-01T00:00:00Z",
 			"authorization_id":        "auth_01k4z2p8w8",
 		}

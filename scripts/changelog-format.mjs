@@ -73,6 +73,12 @@ if (src.includes(`## [${version}]`)) {
 // earlier pull request gets `- 7fae2a9: …` and one added in this one does
 // not, which is two shapes in one list. The commit is already recorded by git
 // and by the release note; the changelog is prose.
+//
+// Known collision, left in: a bullet a human deliberately opened with a short
+// commit -- `- be48a58: bumped the pin` -- loses that prefix too. Both are
+// seven-to-forty hex characters before a colon and there is nothing in the
+// text to tell them apart; the generated prefix is the common case by a wide
+// margin, and a pin bump can write `the pin moved to be48a58` instead.
 const body = block
   .split("\n")
   .slice(1)
