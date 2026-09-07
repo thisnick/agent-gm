@@ -1,7 +1,6 @@
 # Operations
 
-Serves spec §3.6, §11.2, §12.1, §12.2, §12.3, §15.1–§15.6, and decisions
-D32 and D33.
+Serves spec §3.6, §11.2, §12.1, §12.2, §12.3 and §15.1–§15.6.
 
 This is the page to read at 3am. It says what each knob does, what breaks
 when it is wrong, and what to do about the handful of things that go wrong in
@@ -27,7 +26,7 @@ no config file, and there is no plan for one.
 | `AGENT_GM_UNSAFE_TRACE` | unset | `1` permits `libgm` trace logging, which base64-logs decrypted message payloads. See "logging" |
 | `AGENT_GM_BACKEND` | `libgm` | `libgm` \| `fake` |
 | `AGENT_GM_ALLOW_FAKE` | unset | `1` permits `AGENT_GM_BACKEND=fake`. Without it a `fake` backend refuses to start, so a production deployment cannot be talked into serving an empty in-memory phone |
-| `AGENT_GM_LIVE_NUMBERS` | unset | Live-gate targets, `direct,group1,group2`. Read only by `-tags live` tests, never committed |
+| `AGENT_GM_LIVE_NUMBERS` | unset | Targets for the `-tags live` tests, `direct,group1,group2`. Read by nothing else, and never committed |
 | `AGENT_GM_PAIRING_TIMEOUT` | `5m` | How long a started pairing may sit unconfirmed before Agent GM discards the half-built session and deletes any `pairing` row. Distinct from upstream's own 20-second init timeout and from Google's `pairing_timeout` |
 | `AGENT_GM_ACCOUNT` | unset | CLI only. Default `acct_` ID for `--account` |
 | `AGENT_GM_CHROME` | unset | CLI only. Path to a Chrome or Chromium binary for pairing; searched **before** the platform's usual locations and `PATH` |
@@ -96,8 +95,8 @@ key, the key that signs media tickets, and the key that signs pagination
 cursors. One key covers every account; there is no per-account key.
 
 Rotation would mean re-encrypting every session and every attachment key
-atomically across a restart, and it is not implemented — that is a recorded
-decision, not an oversight. The operational consequences are:
+atomically across a restart, and there is no command that does it. The
+operational consequences are:
 
 - A database restored **without** the key that sealed it cannot decrypt any
   session file or any attachment key.
@@ -121,11 +120,10 @@ standalone file, so the result is a consistent snapshot taken while the server
 keeps serving. The snapshot has no `-wal` sidecar and opens on its own. The
 caller does not choose the path.
 
-A file copy is ruled out for a reason worth stating plainly: **a copy of a
-WAL-mode database without its log is missing every transaction still in the
-log, and it opens perfectly well while quietly being out of date.** That is
-the worst kind of backup, because nothing about it looks wrong until the day
-it is needed.
+**Never copy the database file instead.** A copy of a WAL-mode database
+without its log is missing every transaction still in the log, and it opens
+perfectly well while quietly being out of date — nothing about it looks wrong
+until the day it is needed.
 
 **Retention counts calls, not days.** After each successful backup the newest
 `backup.keep` snapshots are kept and older ones deleted, each removal
@@ -171,14 +169,12 @@ corruption:
 
 Re-pairing keeps every existing `conv_` and `msg_` ID, **including onto a
 different phone**, because the account identifier is derived from the Google
-account address rather than from the device. That is the whole reason the
-identifier was chosen that way.
+account address rather than from the device.
 
 ### The drill
 
-A backup nobody has restored is a file, not a backup. `devbox run
-restore-drill` performs the whole of this section against a throwaway server
-on the fake backend, and CI runs it on every push:
+`devbox run restore-drill` performs the whole of this section against a
+throwaway server on the fake backend, and CI runs it on every push:
 
 1. it pairs an account, starts a conversation and sends one message, so the
    restore has content to be judged on;
@@ -192,8 +188,7 @@ on the fake backend, and CI runs it on every push:
 4. it then does it again with the **wrong** key, and asserts the documented
    failure mode below rather than trusting it.
 
-Run it before you need it. It takes about half a minute and it is the only
-thing that turns this page from a plan into a fact.
+Run it before you need it: it takes about half a minute.
 
 To restore by hand, the same three steps:
 
@@ -321,7 +316,7 @@ are diagnosable without reading logs.
 | Every write is `not_paired` | There are **no accounts at all** | `agm pair`. A server with zero accounts is healthy; it just cannot send |
 | A write is refused `unsupported_capability` / `not_signed_in` | **That one account** is not usable; the rest may be fine | Read the account's `state` in `agm accounts list` and follow the matching row below |
 | An account goes to `error` with `RevokePairData` in the audit log | That phone revoked the pairing | `agm pair --account <acct-id>`; history resumes |
-| Starting a conversation fails and `agm health` shows `config_version_stale: true` | The pinned `libgm` `ConfigVersion` is older than Google's | **Bump the pin** as its own slice with its own live gate. Retrying does not help |
+| Starting a conversation fails and `agm health` shows `config_version_stale: true` | The pinned `libgm` `ConfigVersion` is older than Google's | **Bump the pin**, with its live gate. Retrying does not help |
 | Starting a conversation fails with `google_undocumented_status` and the ConfigVersions **match** | Google returned a status the pinned proto has no name for | Record `details.status` and the request, and report it upstream. **Do not invent a meaning** |
 | One account is `signed_out`, others fine | Its cookies expired, or the owner signed it out | `agm pair --refresh-cookies --account <acct-id>`, or `agm pair` again. Its history was never touched |
 | An account's Google address changed | The owner renamed the Google account | A re-pair creates a **second** account. Confirm, then `agm accounts remove` the stale one — that is the only command that deletes |
@@ -346,8 +341,7 @@ pages checkpointed, which is indistinguishable from having done nothing.
 
 ## `config_version_stale` is informational, not a fault
 
-This one deserves its own section because it looks alarming and usually is
-not (D32).
+It looks alarming and usually is not.
 
 Google ships a new `ConfigVersion` on its own schedule. Agent GM's is
 compiled in, pinned to a `libgm` commit. So the two drift apart the moment
@@ -357,20 +351,17 @@ error, and on its own it calls for no action at all.
 
 There are exactly three cases:
 
-1. **Everything works, `config_version_stale` is `true`.** Do nothing. Note
-   it and carry on. The Slice 1 live gate paired, listed, sent and received
-   an echo with a live version ahead of the pin.
+1. **Everything works, `config_version_stale` is `true`.** Do nothing. Pairing,
+   listing, sending and receiving all work with a live version ahead of the
+   pin.
 
 2. **A conversation-creating call fails *and* the versions differ.** The
    error is still Google's own status — `google_error` or
    `google_undocumented_status` — and the two versions arrive in `details` as
    **context**, with a sentence saying a pin bump is worth trying. There is
-   no `config_version_stale` error code: it was retired because relabelling
-   every failure that happened to coincide with a version difference told an
-   operator to bump the pin for failures that had nothing to do with the pin,
-   and threw away the status that did fail. A pin bump is a reasonable next
-   move here, as its own slice with its own live gate, but **retrying the
-   same request is not** — it will carry the same version next time.
+   no `config_version_stale` error code. A pin bump is a reasonable next move
+   here, with its live gate, but **retrying the same request is not** — it will
+   carry the same version next time.
 
 3. **A conversation-creating call fails and the versions match.** Then the
    version is not even context. It is `google_undocumented_status`: Google
@@ -403,8 +394,8 @@ that must agree — `go.mod`, `internal/gm/pin.go`, and spec §3.6 — and CI
 fails if they diverge. `GOFLAGS=-mod=readonly` is set so an accidental
 `go get` cannot silently move it.
 
-**Bumping the pin is never part of a routine upgrade.** It is a deliberate
-slice that must:
+**Bumping the pin is never part of a routine upgrade.** It is a change of its
+own, and it must:
 
 1. update all three places;
 2. diff `pkg/libgm` and `pkg/connector` between the old and new commits, and
@@ -412,8 +403,8 @@ slice that must:
    every change to `ConfigVersion`, and every added, removed or renamed enum
    value in the delivery-state or event vocabularies;
 3. re-run the fixture-validation job;
-4. **pass a live gate** — pair, list, send one text to the approved direct
-   number, receive a reply — run by the coordinator, not by an implementer.
+4. **pass a live gate** — pair, list, send one text to a real number the
+   maintainer owns, receive a reply — run by the maintainer, by hand.
 
 A bump that changes `ConfigVersion` is expected to be urgent, because a stale
 `ConfigVersion` breaks conversation creation with an undocumented status and
@@ -432,18 +423,17 @@ devbox run pin-consistency
 # 2. What actually changed in the surface Agent GM uses.
 git -C <mautrix-gmessages-clone> diff <old>..<new> -- pkg/libgm pkg/connector
 
-# 3. The twenty-one assertions, against the NEW tree.
+# 3. The fixture assertions, against the NEW tree.
 devbox run fixture-validation
 
 # 4. Everything else.
 devbox run check && devbox run conformance
 
-# 5. The live gate (section 3.6): pair, list, send one text to the approved
-#    direct number, receive a reply. The COORDINATOR runs this, not an
-#    implementer, and not CI.
+# 5. The live gate (section 3.6): pair, list, send one text, receive a reply.
+#    The maintainer runs this by hand. CI cannot.
 ```
 
-Record the result in `upstream-pin.md`: the old and new commits, every change
+Record the result in `docs/upstream-pin.md`, creating it on the first bump: the old and new commits, every change
 to a symbol in spec §3.1, the `ConfigVersion` before and after, every added,
 removed or renamed enum value in the delivery-state or event vocabularies, and
 the live gate that accepted it. A bump with no entry there is a bump nobody
@@ -489,8 +479,7 @@ of the tree rather than typed, because a deployment pins by digest and a
 reader has to be able to tell which upstream a binary was built against
 without cloning anything.
 
-Four things are refused before anything permanent happens, because the tag
-path is the one path CI cannot rehearse:
+Four things are refused before anything permanent happens:
 
 - a tag that is not `vMAJOR.MINOR.PATCH` — `vtest` would otherwise build,
   sign with a real keyless certificate and create a public release before npm
@@ -506,17 +495,45 @@ path is the one path CI cannot rehearse:
 
 **No release is cut from a commit that has not passed a live gate.**
 
-### After the first release: trusted publishing
+### Cutting one
 
-**Done on 2026-09-07.** `@agent-gm/cli` was first published with an npm
-token (v1.0.0); the owner then enabled npm trusted publishing for this
-repository and the `release.yml` workflow, the `NPM_TOKEN` secret was
-deleted, and the publish step now authenticates with the job's OIDC identity
-only (`id-token: write`), with provenance mandatory. There is no npm
-credential stored anywhere for this project. If a future publish fails with
-an authentication error, the fix is on npm's side (the trusted publisher
-entry: owner `thisnick`, repository `agent-gm`, workflow `release.yml`, no
-environment), never a new token.
+```bash
+# 1. On main, with ci green for the exact commit you are about to tag.
+#    Update CHANGELOG.md: a new heading for the version, the GHCR digest
+#    once you have it, and both pins.
+devbox run check
+devbox run release-dry-run          # builds everything, publishes nothing
+
+# 2. Tag the reviewed commit and push the tag. This is the whole release.
+git tag -a v1.2.3 -m "agent-gm v1.2.3"
+git push origin v1.2.3
+```
+
+Pushing the tag starts `.github/workflows/release.yml`, which asserts the tag
+is `vMAJOR.MINOR.PATCH`, that the commit is an ancestor of `main` and that a
+`ci` push run for that exact commit went green; waits for the GHCR image whose
+`org.opencontainers.image.revision` label **is** that commit; then builds,
+signs `checksums.txt` with cosign, creates the GitHub release with generated
+notes, and publishes `@agent-gm/cli`. Nothing is published by hand.
+
+The version comes from the tag and from nowhere else, so off a tag a build is
+`0.0.0-dev.<short>` — a valid semver prerelease that sorts below every release
+and makes a dry run's artefacts unmistakable.
+
+Afterwards, record the digest the release notes name in `CHANGELOG.md`, and
+deploy that digest.
+
+### npm trusted publishing
+
+`@agent-gm/cli` is published with npm trusted publishing: the publish step
+authenticates with the job's OIDC identity (`id-token: write`) and provenance
+is mandatory. **There is no npm token stored anywhere** — not in secrets, not
+in an env block. Trusted publishing needs npm ≥ 11.5.1, which the workflow
+installs into a scratch prefix and passes to `release.sh` as `AGENT_GM_NPM`;
+an older npm publishes unauthenticated and the registry answers `404`. If a
+publish fails with an authentication error the fix is on npm's side — the
+trusted publisher entry is owner `thisnick`, repository `agent-gm`, workflow
+`release.yml`, no environment — never a new token.
 
 ### What is redacted
 
@@ -552,9 +569,8 @@ is the guarantee you are relying on.
 `libgm`'s logger is tagged **`component=libgm`** and is **floored at
 `warn`**, and a one-shot CLI command silences it altogether. Upstream's
 narration of the long poll is a commentary on a protocol Agent GM does not
-control, is not a diagnosis you can act on, and printed inline with a
-command's output at the Slice 1 live gate. **`AGENT_GM_LOG_LEVEL=debug` does
-not lower that floor.**
+control and is not a diagnosis you can act on. **`AGENT_GM_LOG_LEVEL=debug`
+does not lower that floor.**
 
 ### The one way past the floor
 
