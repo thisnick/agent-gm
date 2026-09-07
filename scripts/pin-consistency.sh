@@ -63,13 +63,35 @@ if ! grep -q "^[[:space:]]*${mod_path} v" go.mod; then
   fail=1
 fi
 
+# 6. The MCP Go SDK pin (spec section 18.1, D36). It is bumped the same way
+# the libgm pin is -- a deliberate slice, never a drive-by -- so the version
+# go.mod resolves and the version D36 states must agree, or one of them is a
+# claim nobody kept.
+sdk_module="github.com/modelcontextprotocol/go-sdk"
+sdk_mod=$(sed -n "s|^[[:space:]]*${sdk_module} \(v[0-9][^[:space:]]*\)[[:space:]]*\$|\1|p" go.mod)
+if [ -z "$sdk_mod" ]; then
+  echo "pin-consistency: go.mod does not require $sdk_module" >&2
+  fail=1
+else
+  sdk_spec=$(grep -o "${sdk_module}\`, pinned at \`v[0-9][^\`]*" plans/AGENT_GM_SPEC.md | head -1 | sed 's/.*pinned at `//')
+  if [ -z "$sdk_spec" ]; then
+    echo "pin-consistency: spec decision D36 does not state a $sdk_module version" >&2
+    fail=1
+  elif [ "$sdk_spec" != "$sdk_mod" ]; then
+    echo "pin-consistency: go.mod pins $sdk_module $sdk_mod, spec D36 states $sdk_spec" >&2
+    fail=1
+  fi
+fi
+
 if [ "$fail" -ne 0 ]; then
   cat >&2 <<'MSG'
 
 Bumping the pin is a deliberate slice with its own live gate (spec section
-3.6), never a drive-by commit. All three places move together, or none do.
+3.6; the MCP Go SDK pin, section 18.1 D36), never a drive-by commit. Every
+place that states a pin moves together, or none of them do.
 MSG
   exit 1
 fi
 
 echo "pin-consistency: go.mod, internal/gm/pin.go and spec section 3.6 all name $pin_go"
+echo "pin-consistency: go.mod and spec D36 both pin $sdk_module at $sdk_mod"
