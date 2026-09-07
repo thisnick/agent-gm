@@ -75,6 +75,16 @@ can stay `'self'` and no page needs a nonce or `unsafe-inline`.
 }
 ```
 
+Both protected-resource paths are served by the MCP Go SDK's own RFC 9728
+handler, so both carry the CORS headers RFC 9728 §3.1 asks for —
+`Access-Control-Allow-Origin: *`, `Access-Control-Allow-Methods: GET, OPTIONS`,
+`Access-Control-Allow-Headers: Content-Type` — and both answer an `OPTIONS`
+preflight with `204` and no body. This document is public discovery data, and a
+browser-based MCP client cannot read it without that. The values in it are
+unchanged, `resource` is still `AGENT_GM_PUBLIC_URL` plus `/mcp` byte for byte,
+and these two paths are the **only** ones on this server meant to be read
+cross-origin.
+
 `GET /.well-known/oauth-authorization-server` (RFC 8414):
 
 ```json
@@ -102,10 +112,17 @@ and two URLs that parse the same are not the same bytes.
 The `401` challenge on `/mcp`:
 
 ```http
-WWW-Authenticate: Bearer realm="agent-gm",
+WWW-Authenticate: Bearer
   resource_metadata="https://gm.agent-wx.app/.well-known/oauth-protected-resource/mcp",
   scope="messages:read messages:write"
 ```
+
+There is no `realm` and no `error` parameter here. `/mcp` is served by the MCP
+Go SDK's bearer middleware and this is the format that middleware emits; the
+SDK owns it. The `/v1` challenge of §7.2 is a **different string** — it does
+carry `realm="agent-gm"` and an `error` parameter — so a client that parses one
+of the two must not assume the other. See [api.md](api.md) and
+[mcp.md](mcp.md#transport).
 
 A valid token carrying **no** messaging scope gets `403 insufficient_scope`
 with the *same* challenge — deliberately distinct from the `401`, because a

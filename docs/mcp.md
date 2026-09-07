@@ -3,6 +3,9 @@
 Serves spec §8. The endpoint is `AGENT_GM_PUBLIC_URL` plus `/mcp` —
 `https://gm.example.test/mcp` in the examples below — over streamable HTTP,
 protocol revision `2026-07-28`, with `2025-11-25` accepted for compatibility.
+The protocol layer is the official MCP Go SDK, at a pinned version:
+[The SDK underneath](#the-sdk-underneath) says which behaviours on this page
+are therefore the SDK's.
 
 Every tool here is a facade over the REST route that serves the same data
 ([api.md](api.md)). The filters, the validation, the error codes and the DTOs
@@ -149,37 +152,99 @@ and `get_operation`. `messages:delete` adds `delete_message` and
 
 ## Transport
 
-`POST /mcp` only. There is no server-initiated stream to open and no session
-to delete, because the server is stateless at the application layer: every
-request carries its own bearer token and its own protocol metadata, and
-durable state lives in SQLite. `GET` and `DELETE` answer `405`.
+`POST /mcp` only, served by the SDK's `StreamableHTTPHandler` in its
+**stateless** mode. There is no server-initiated stream to open and no session
+to delete: every request carries its own bearer token and its own protocol
+metadata, and durable state lives in SQLite. `GET` and `DELETE` on `/mcp` are
+`405` with `Allow: POST` **once the caller is authenticated**, and `401`
+before — authentication comes first, so an anonymous request never learns
+which methods exist.
 
-These are checked **before the transport parses anything**, in this order:
+Stateless is not a preference. The SDK refuses protocol `2026-07-28` on a
+stateful transport, because that revision is sessionless by design and drops
+resumability, so sessions and this revision cannot both be had.
+
+The checks, in this order. The first two run **before the transport parses
+anything**; the last two are the SDK's own and run after authentication,
+because the SDK owns the parse.
 
 | Check | Refusal |
 |---|---|
 | `Origin`, when present, must equal `AGENT_GM_PUBLIC_URL`. A non-browser client sending none is supported | `403` |
 | The body is at most 1 MiB | `413` |
-| `Content-Type` is `application/json` | `400` |
-| `Accept` admits `application/json` or `text/event-stream` | `400` |
 | Exactly one `Authorization` header, and only the `Bearer` scheme. Two headers, another scheme, or a value carrying two tokens are refused rather than resolved to whichever happens to be first | `401` |
 | The token carries at least one messaging scope | `401` with no token; `403 insufficient_scope` for a valid token that carries none |
 | At most 8 requests in flight per authorization and 32 across the process | `429` with `Retry-After` |
+| `Content-Type` is `application/json` | `415` |
+| `Accept` admits **both** `application/json` and `text/event-stream` | `400` |
+
+`Accept` is *both* rather than *either* because the server chooses which of the
+two to answer with, so a client admitting only one is refusing an answer the
+server is entitled to give. A refusal at any of these carries the §7.1 error
+envelope, on this surface as on every other.
 
 The `401` and the `403` are deliberately distinct. A client that retried the
 authorization flow on a `403` would loop for ever, and one that gave up on a
 `401` would never authorize at all. Both carry the same challenge:
 
 ```http
-WWW-Authenticate: Bearer realm="agent-gm",
+WWW-Authenticate: Bearer
   resource_metadata="https://gm.example.test/.well-known/oauth-protected-resource/mcp",
   scope="messages:read messages:write"
 ```
 
-`serverInfo` carries `name: "agent-gm"`, the version, the built commit and
-`source_url` pointing at this repository at that commit. That last pair is the
-AGPL §13 obligation of spec §1.4, not a nicety: a deployment reachable over a
-network must offer its corresponding source.
+There is no `realm` parameter and no `error` parameter. That is the exact
+string the SDK's bearer middleware emits, and the SDK owns the format here. The
+`/v1` challenge of §7.2 is a different string and still carries both — see
+[api.md](api.md) — so a client that parses one must not assume the other.
+
+`serverInfo` carries `name: "agent-gm"` and `version`: the release version with
+the built commit as **semver build metadata**, `0.1.0+abc1234`. The source URL
+is `serverInfo.websiteUrl`. That pair is the AGPL §13 obligation of spec §1.4,
+not a nicety: a deployment reachable over a network must offer its
+corresponding source.
+
+There is no `serverInfo.commit` and no `serverInfo.source_url`. The SDK's
+`serverInfo` type has a field for neither, and a build fact placed in `_meta`
+does not reach a reference client, which keeps exactly one `_meta` key of the
+`server/discover` result and discards the rest. A licence obligation no client
+can read is not met, so it goes where a client reads. The `_meta` keys
+`app.agent-gm/commit` and `app.agent-gm/source_url` are written on both
+handshakes as well, for a caller reading the wire directly.
+
+## The SDK underneath
+
+The protocol layer is the official MCP Go SDK,
+`github.com/modelcontextprotocol/go-sdk`, pinned in `go.mod` at **v1.7.0**.
+Nothing here reimplements the API: every tool call still runs the REST handler.
+
+**What the SDK decides** — so when you read these on this page you are reading
+its behaviour, not a choice made here: JSON-RPC framing, error objects and
+their codes; protocol-version negotiation, including revisions older than the
+two §8.1 names; the `tools/list` and `tools/call` wire shapes;
+`resources/list`, `resources/templates/list` and `resources/read`; the bearer
+middleware and the format of the `WWW-Authenticate` challenge above; the RFC
+9728 protected-resource document's handler, which is why that document carries
+CORS headers and answers an `OPTIONS` preflight ([oauth.md](oauth.md)); and
+every method this server does not implement but the SDK does — a client asking
+for one gets the SDK's answer rather than a `-32601` chosen here.
+
+**What is not the SDK's:** the twenty-one tools and every schema, description
+and enum in them; the translation onto the REST routes, so that both surfaces
+answer from one handler; the `isError` envelope; scope gating; the `Origin`
+check; the single-`Authorization`-header rule; the "at least one messaging
+scope" rule; the concurrency budget; the §7.1 envelope on every refusal; and
+the whole authorization server of [oauth.md](oauth.md).
+
+**The pin is bumped the way the `libgm` pin of spec §3.6 is bumped: as its own
+deliberate slice, never as a drive-by commit.** A bump re-runs the MCP
+acceptance tests, re-baselines `devbox run conformance` in both directions, and
+drives a real server with the SDK's own client and with the official TypeScript
+client. It does not need §3.6's live gate, because nothing here touches Google.
+For an operator the consequence is narrow and worth knowing: a status code, a
+header or an error code on this page can change under you when that pin moves,
+and nothing else can. If a connector stops working after an upgrade, the pinned
+version is the first thing to read.
 
 ## Scopes and what you see
 
@@ -373,15 +438,26 @@ JSON-RPC error as a transport failure and never hand it to the model, so a
 `not_found` reported that way is a fact the model never learns and cannot
 correct itself from.
 
-Only four things are JSON-RPC errors:
+Only these are JSON-RPC errors, and the code on each is the SDK's:
 
 | JSON-RPC error | Code |
 |---|---|
-| a malformed request | `-32700` |
 | an unknown method | `-32601` |
 | an unknown tool name | `-32602` |
+| any `resources/read` failure | `-32602` — the SDK's resource-not-found code — for a URI this server does not serve, a missing attachment, or a scope refusal; otherwise the SDK's own code for the failure |
 | an authorization failure at the transport | answered as an HTTP status, before any JSON-RPC frame exists |
-| any `resources/read` failure | `-32002` for a URI this server does not serve, `-32600` for a scope refusal, `-32603` otherwise |
+
+A body that is **not a JSON-RPC message at all** is neither: it is `400` with
+the §7.1 envelope, because it carries no `id` and there is nothing to answer.
+
+**Every JSON-RPC error is delivered with HTTP `200`.** That is the one place
+the SDK is deliberately not the authority. From protocol `2026-07-28` the SDK
+gives some JSON-RPC errors a 4xx status of their own, and the SDK's own client
+treats any non-2xx as a connection failure and tears the session down — so a
+model naming a tool that does not exist, which is an everyday thing for a model
+to do, would disconnect the connector rather than be told. The error object is
+passed through unchanged, code and all; only the status is demoted, which is
+what every protocol revision before `2026-07-28` did anyway.
 
 **The `isError` rule is about `tools/call`, and `resources/read` is the
 boundary of its scope.** A `CallToolResult` has an `isError` field, and
@@ -408,7 +484,7 @@ fetch them without putting them through the model's context.
 |---|---|
 | `resources/templates/list` | one template, `agm://attachments/{attachment_id}`, offered only to a caller holding `messages:read` |
 | `resources/list` | **empty, on purpose.** Attachments are addressed by template, not enumerated |
-| `resources/read` on an unknown URI or a missing attachment | `-32002`, a JSON-RPC error, for the reason above |
+| `resources/read` on an unknown URI or a missing attachment | `-32602`, a JSON-RPC error carried on HTTP `200`, for the reason above. A caller without `messages:read` gets the same answer: to it the resource does not exist |
 | `resources/read` | the bytes of one attachment, under `messages:read`, with the same media limit and cache path as `GET /v1/attachments/{id}/content`. Text media comes back as `text`; everything else as a base64 `blob` |
 
 `get_attachment` decides its content form by **size and type, not

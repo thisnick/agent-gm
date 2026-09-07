@@ -202,9 +202,11 @@ what a rollback can and cannot undo and the `libgm` pin policy.
 
 Agent GM is **AGPL-3.0-or-later**, and it is reachable over a network, so
 AGPL §13 applies: whoever interacts with it must be offered the corresponding
-source. Agent GM satisfies this itself — `GET /v1/health` and the MCP
-`serverInfo` report `commit` and a `source_url` pointing at
-`https://github.com/thisnick/agent-gm` at the **exact built commit**.
+source. Agent GM satisfies this itself. `GET /v1/health` reports `commit` and
+`source_url`; the MCP `serverInfo` reports the same two facts in the two fields
+the protocol has for them — the commit as **semver build metadata on
+`version`** (`0.1.0+abc1234`), and the source URL as `websiteUrl`. Both point
+at `https://github.com/thisnick/agent-gm` at the **exact built commit**.
 
 That is why `COMMIT` is a build argument and why a build that reports
 `unknown` is a defect and not a cosmetic one. Verify it on a deployed
