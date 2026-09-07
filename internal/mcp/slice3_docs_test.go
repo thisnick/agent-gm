@@ -134,7 +134,7 @@ func TestSlice3DocsCoverTheServedCatalogue(t *testing.T) {
 
 	// The fresh-key sentence appears on the page, so a reviewer who mutates
 	// the served constant sees this fail as well as the catalogue test.
-	if !strings.Contains(normaliseSpaces(page), normaliseSpaces(mcp.FreshKeySentence)) {
+	if !strings.Contains(normaliseSpaces(page), normaliseSpaces(mcp.LostResultSentence)) {
 		t.Error("docs/mcp.md does not carry the fresh-key sentence of section 8.2")
 	}
 

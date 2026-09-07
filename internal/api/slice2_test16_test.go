@@ -28,7 +28,8 @@ func TestSlice2_16_PatchConversationIsIdempotentAndCallsTheBackendZeroTimes(t *t
 
 	patch := func(name string, body map[string]any) envelope {
 		t.Helper()
-		full := map[string]any{"client_request_id": key(name)}
+		_ = name
+		full := map[string]any{}
 		for k, v := range body {
 			full[k] = v
 		}
@@ -121,12 +122,12 @@ func TestSlice2_16_PatchRefusesAnEmptyChange(t *testing.T) {
 	conv := s.seedConversation(accountID, "conv-a")
 
 	s.call("PATCH", "/v1/conversations/"+conv.ID,
-		map[string]any{"client_request_id": key("empty")}).
+		map[string]any{}).
 		refused(t, "invalid_request")
 
 	// `spam_blocked` is Google's own classification, not something a caller
 	// may assert, so offering it would be a route that silently did nothing.
 	s.call("PATCH", "/v1/conversations/"+conv.ID,
-		map[string]any{"folder": "spam_blocked", "client_request_id": key("spam")}).
+		map[string]any{"folder": "spam_blocked", }).
 		refused(t, "invalid_request")
 }

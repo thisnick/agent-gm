@@ -24,7 +24,6 @@ func TestSlice2_R14_SenderMeWorksOnAConversationTheAPICreated(t *testing.T) {
 	started := s.call("POST", "/v1/conversations", map[string]any{
 		"account_id":        accountID,
 		"recipients":        []string{"+12025550166"},
-		"client_request_id": key("r14-start"),
 	}).ok(t, 200)
 	conv, _ := started.Data["conversation"].(map[string]any)
 	if conv == nil {
@@ -49,7 +48,6 @@ func TestSlice2_R14_SenderMeWorksOnAConversationTheAPICreated(t *testing.T) {
 
 	s.call("POST", "/v1/conversations/"+convID+"/messages", map[string]any{
 		"text":              "hello",
-		"client_request_id": key("r14-send"),
 	}).ok(t, 200)
 	drainEcho(t, s, accountID)
 

@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 
 	"github.com/thisnick/agent-gm/internal/apierr"
 )
@@ -522,14 +521,17 @@ func flagValue(inv *invocation, f flagDef) (any, error) {
 	}
 }
 
-// idempotencyKey is --idempotency-key, or one minted for this invocation.
-// Minting one per invocation is what makes re-running a send send again,
-// which docs/cli.md states plainly: to retry, pass the SAME key.
+// idempotencyKey is --idempotency-key, and nothing else (D38).
+//
+// It used to mint a UUID per invocation when the flag was absent, because the
+// key was mandatory on every mutation. It is not any more, and a minted key
+// was never protection: a fresh key every run is exactly a run with no key,
+// with one more field on the wire. So an ordinary `agm messages send` now
+// sends NO `Idempotency-Key` header at all, and the flag is what an
+// automation reaches for when it wants the protection -- pass the SAME key
+// to make a retry a retry.
 func (r *runner) idempotencyKey() string {
-	if r.g.idempotencyKey != "" {
-		return r.g.idempotencyKey
-	}
-	return uuid.NewString()
+	return r.g.idempotencyKey
 }
 
 // emitAllPages walks a listing to the end and emits one value, so `--all`

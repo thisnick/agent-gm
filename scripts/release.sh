@@ -226,11 +226,10 @@ do_npm_check() {
   local tarball prefix
   tarball="$(cat "$dist/npm-tarball.txt")"
   prefix="$(mktemp -d)"
-  trap 'rm -rf "$prefix"' RETURN
 
   note "installing $(basename "$tarball") into a throwaway prefix"
   AGENT_GM_CLI_BASE_URL="file://$dist" \
-    npm install --prefix "$prefix" --no-audit --no-fund --global-style=false "$tarball" >/dev/null
+    npm install --prefix "$prefix" --no-audit --no-fund "$tarball" >/dev/null
 
   local shim="$prefix/node_modules/.bin/agm"
   [ -x "$shim" ] || die "npm install left no agm shim at $shim"
@@ -251,6 +250,12 @@ do_npm_check() {
   set -e
   [ "$rc" = 2 ] || die "'agm --nonsense' exited $rc through the shim, want 2"
   note "agm --nonsense exits 2 through the shim"
+
+  # Cleaned up here rather than in a RETURN trap: a RETURN trap is not scoped
+  # to the function that sets it, so it fired again when the script itself
+  # returned, with $prefix long out of scope, and `set -u` turned a passing
+  # dry run into a failure after every assertion had already succeeded.
+  rm -rf "$prefix"
 }
 
 do_dry_run() {

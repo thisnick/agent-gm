@@ -64,10 +64,11 @@ func mutationFrom(res core.Result) mutationDTO {
 	return out
 }
 
-// idempotency reads the key from the two transports spec section 6.3 gives it
-// and no others, and refuses a contradiction rather than picking one.
-func idempotency(r *Request, clientRequestID string) (string, *apierr.Error) {
-	return IdempotencyKeyFrom(r.IdempotencyKeyHeader, clientRequestID)
+// idempotency reads the key from the one transport spec section 6.3 gives it,
+// the `Idempotency-Key` header, and no others. It is optional (D38): no
+// header means no key, which means a new operation with a server-minted ID.
+func idempotency(r *Request) (string, *apierr.Error) {
+	return IdempotencyKeyFrom(r.IdempotencyKeyHeader)
 }
 
 // mutationTarget resolves the conversation a mutation names and returns the
@@ -96,7 +97,6 @@ type startConversationBody struct {
 	AccountID       string   `json:"account_id"`
 	Recipients      []string `json:"recipients"`
 	Name            string   `json:"name"`
-	ClientRequestID string   `json:"client_request_id"`
 }
 
 // conversationsStart is `POST /v1/conversations`: **the one write whose
@@ -108,7 +108,7 @@ func (d *HandlerDeps) conversationsStart(r *Request) (*Response, error) {
 	if e := r.DecodeBody(&body); e != nil {
 		return nil, e
 	}
-	key, e := idempotency(r, body.ClientRequestID)
+	key, e := idempotency(r)
 	if e != nil {
 		return nil, e
 	}
@@ -171,7 +171,6 @@ type sendBody struct {
 	UploadIDs        []string `json:"upload_ids"`
 	ReplyToMessageID string   `json:"reply_to_message_id"`
 	ForceRCS         bool     `json:"force_rcs"`
-	ClientRequestID  string   `json:"client_request_id"`
 }
 
 // MaxUploadsPerMessage is spec section 10.2's "one attachment per message".
@@ -182,7 +181,7 @@ func (d *HandlerDeps) messagesSend(r *Request) (*Response, error) {
 	if e := r.DecodeBody(&body); e != nil {
 		return nil, e
 	}
-	key, e := idempotency(r, body.ClientRequestID)
+	key, e := idempotency(r)
 	if e != nil {
 		return nil, e
 	}
@@ -280,7 +279,6 @@ func (d *HandlerDeps) conversationsTyping(r *Request) (*Response, error) {
 
 type markReadBody struct {
 	MessageID       string `json:"message_id"`
-	ClientRequestID string `json:"client_request_id"`
 }
 
 func (d *HandlerDeps) conversationsMarkRead(r *Request) (*Response, error) {
@@ -288,7 +286,7 @@ func (d *HandlerDeps) conversationsMarkRead(r *Request) (*Response, error) {
 	if e := r.DecodeBody(&body); e != nil {
 		return nil, e
 	}
-	key, e := idempotency(r, body.ClientRequestID)
+	key, e := idempotency(r)
 	if e != nil {
 		return nil, e
 	}
@@ -320,7 +318,6 @@ type patchBody struct {
 	Folder          *string `json:"folder"`
 	Pinned          *bool   `json:"pinned"`
 	Unread          *bool   `json:"unread"`
-	ClientRequestID string  `json:"client_request_id"`
 }
 
 // conversationsUpdate is archive, unarchive, pin, unpin and mark-unread.
@@ -335,7 +332,7 @@ func (d *HandlerDeps) conversationsUpdate(r *Request) (*Response, error) {
 	if e := r.DecodeBody(&body); e != nil {
 		return nil, e
 	}
-	key, e := idempotency(r, body.ClientRequestID)
+	key, e := idempotency(r)
 	if e != nil {
 		return nil, e
 	}
@@ -384,7 +381,6 @@ func (d *HandlerDeps) conversationsUpdate(r *Request) (*Response, error) {
 
 type reactionBody struct {
 	Emoji           string `json:"emoji"`
-	ClientRequestID string `json:"client_request_id"`
 }
 
 // reactionTargetEngine resolves the message a reaction names and the engine
@@ -410,7 +406,7 @@ func (d *HandlerDeps) reactionsAdd(r *Request) (*Response, error) {
 	if e := r.DecodeBody(&body); e != nil {
 		return nil, e
 	}
-	key, e := idempotency(r, body.ClientRequestID)
+	key, e := idempotency(r)
 	if e != nil {
 		return nil, e
 	}
@@ -440,7 +436,7 @@ func (d *HandlerDeps) reactionsRemove(r *Request) (*Response, error) {
 	if e := r.DecodeBody(&body); e != nil {
 		return nil, e
 	}
-	key, e := idempotency(r, body.ClientRequestID)
+	key, e := idempotency(r)
 	if e != nil {
 		return nil, e
 	}
@@ -467,7 +463,7 @@ func (d *HandlerDeps) reactionsRemoveByID(r *Request) (*Response, error) {
 	if e := r.DecodeBody(&body); e != nil {
 		return nil, e
 	}
-	key, e := idempotency(r, body.ClientRequestID)
+	key, e := idempotency(r)
 	if e != nil {
 		return nil, e
 	}
@@ -504,7 +500,6 @@ func (d *HandlerDeps) reactionsRemoveByID(r *Request) (*Response, error) {
 // --- deletes: messages:delete, and only these two ---------------------------
 
 type deleteBody struct {
-	ClientRequestID string `json:"client_request_id"`
 }
 
 // messagesDelete carries the effect sentence. There is no other delete and no
@@ -516,7 +511,7 @@ func (d *HandlerDeps) messagesDelete(r *Request) (*Response, error) {
 	if e := r.DecodeBody(&body); e != nil {
 		return nil, e
 	}
-	key, e := idempotency(r, body.ClientRequestID)
+	key, e := idempotency(r)
 	if e != nil {
 		return nil, e
 	}
@@ -548,7 +543,7 @@ func (d *HandlerDeps) conversationsDelete(r *Request) (*Response, error) {
 	if e := r.DecodeBody(&body); e != nil {
 		return nil, e
 	}
-	key, e := idempotency(r, body.ClientRequestID)
+	key, e := idempotency(r)
 	if e != nil {
 		return nil, e
 	}

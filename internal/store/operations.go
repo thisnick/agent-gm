@@ -122,15 +122,18 @@ const operationColumns = `id, account_id, kind, authorization_id, idempotency_ke
 
 func scanOperation(sc interface{ Scan(...any) error }) (Operation, error) {
 	var o Operation
-	var conv, msg, tmp, code, message sql.NullString
+	var key, conv, msg, tmp, code, message sql.NullString
 	var terminalAt, correctedAt, retryable, googleRaw, mediaSize sql.NullInt64
-	err := sc.Scan(&o.ID, &o.AccountID, &o.Kind, &o.AuthorizationID, &o.IdempotencyKey,
+	err := sc.Scan(&o.ID, &o.AccountID, &o.Kind, &o.AuthorizationID, &key,
 		&o.RequestFingerprint, &conv, &msg, &tmp, &o.Status, &o.Terminal,
 		&terminalAt, &correctedAt, &code, &message, &retryable,
 		&googleRaw, &o.RequestPayloadJSON, &mediaSize, &o.CreatedAtMS, &o.UpdatedAtMS)
 	if err != nil {
 		return o, err
 	}
+	// NULL is "the caller supplied no key" (D38, migration 0007), and the Go
+	// zero value says the same thing.
+	o.IdempotencyKey = key.String
 	o.ConversationID = conv.String
 	o.MessageID = msg.String
 	o.TmpID = tmp.String
@@ -232,7 +235,7 @@ func (s *Store) InsertOperation(ctx context.Context, o Operation) error {
 			    request_fingerprint, conversation_id, message_id, tmp_id, status, terminal,
 			    request_payload_json, created_at_ms, updated_at_ms)
 			VALUES (?,?,?,?,?,?,?,?,?,'running',0,?,?,?)`,
-			o.ID, o.AccountID, o.Kind, o.AuthorizationID, o.IdempotencyKey,
+			o.ID, o.AccountID, o.Kind, o.AuthorizationID, nullString(o.IdempotencyKey),
 			o.RequestFingerprint, nullString(o.ConversationID), nullString(o.MessageID),
 			nullString(o.TmpID), o.RequestPayloadJSON, now, now)
 		return err
@@ -257,6 +260,15 @@ func (s *Store) Operation(ctx context.Context, id string) (Operation, error) {
 // is two operations, because it is two messages to two people
 // (spec section 6.3).
 func (s *Store) OperationByKey(ctx context.Context, authorizationID, accountID, kind, key string) (Operation, error) {
+	// A keyless operation is not addressable by key, and asking for one with
+	// the empty string must not match the NULLs of every other keyless
+	// operation. This is a guard rather than a comment because `= NULL` is
+	// never true in SQL, so the query below would silently answer "no rows"
+	// and the caller would read that as "no replay" -- which is right by
+	// accident, and stops being right the moment someone rewrites the query.
+	if key == "" {
+		return Operation{}, ErrOperationNotFound
+	}
 	row := s.read.QueryRowContext(ctx,
 		`SELECT `+operationColumns+` FROM operations
 		  WHERE authorization_id = ? AND account_id = ? AND kind = ? AND idempotency_key = ?`,
@@ -278,6 +290,10 @@ func (s *Store) OperationByKey(ctx context.Context, authorizationID, accountID, 
 // query names the account the key was first used with, so the refusal can say
 // which one.
 func (s *Store) KeyUsedByAnotherAccount(ctx context.Context, authorizationID, kind, key, accountID string) (string, bool, error) {
+	if key == "" {
+		// No key, no mirror hazard: there is nothing to reuse.
+		return "", false, nil
+	}
 	var other string
 	err := s.read.QueryRowContext(ctx,
 		`SELECT account_id FROM operations

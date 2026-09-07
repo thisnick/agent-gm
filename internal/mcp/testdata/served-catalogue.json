@@ -1,7 +1,7 @@
 [
   {
     "name": "add_reaction",
-    "description": "React to a message with an emoji. One reaction per person per message: adding a second replaces the first, which is a change the recipient sees. Repeating this call with the same client_request_id returns the same operation and sends nothing further. A fresh client_request_id is a different call, not a repeat.",
+    "description": "React to a message with an emoji. One reaction per person per message: adding a second replaces the first, which is a change the recipient sees. The result carries an operation id; check status by that id. If a call's result is lost, check the conversation or list operations before sending again.",
     "scope": "messages:write",
     "annotations": {
       "readOnlyHint": false,
@@ -12,10 +12,6 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "client_request_id": {
-          "type": "string",
-          "description": "An idempotency key you invent for this call -- any string up to 200 bytes; a UUID is the obvious choice. Repeating this call with the same client_request_id returns the same operation and sends nothing further. A fresh client_request_id is a different call, not a repeat."
-        },
         "emoji": {
           "type": "string",
           "description": "A bare emoji. Google's own picker offers eleven -- 👍 😍 😂 😮 😥 😠 👎 🤔 😢 😡 ❤️ -- and anything else is sent as a custom reaction that may not render on the recipient's phone. Skin-tone and variation selectors are canonicalised before anything else happens, so ❤ and ❤️ address the same reaction."
@@ -26,7 +22,6 @@
         }
       },
       "required": [
-        "client_request_id",
         "emoji",
         "message_id"
       ],
@@ -407,7 +402,7 @@
   },
   {
     "name": "create_upload",
-    "description": "Reserve an upload for a file you want to send, and get back a ticket and a ready-made `curl` command. Run that command with `FILE` replaced by the path, then pass the `upl_` ID to `send_message` as `upload_ids`. An upload is not tied to an account -- the thread you send it into decides that -- and it can be sent only once. This is the only way to attach a file; base64 through the model is not accepted. Nothing leaves the building until you send it. Repeating this call with the same client_request_id returns the same operation and sends nothing further. A fresh client_request_id is a different call, not a repeat.",
+    "description": "Reserve an upload for a file you want to send, and get back a ticket and a ready-made `curl` command. Run that command with `FILE` replaced by the path, then pass the `upl_` ID to `send_message` as `upload_ids`. An upload is not tied to an account -- the thread you send it into decides that -- and it can be sent only once. This is the only way to attach a file; base64 through the model is not accepted. Nothing leaves the building until you send it. The result carries an operation id; check status by that id. If a call's result is lost, check the conversation or list operations before sending again.",
     "scope": "messages:write",
     "annotations": {
       "readOnlyHint": false,
@@ -418,10 +413,6 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "client_request_id": {
-          "type": "string",
-          "description": "An idempotency key you invent for this call -- any string up to 200 bytes; a UUID is the obvious choice. Repeating this call with the same client_request_id returns the same operation and sends nothing further. A fresh client_request_id is a different call, not a repeat."
-        },
         "filename": {
           "type": [
             "string",
@@ -446,7 +437,6 @@
         }
       },
       "required": [
-        "client_request_id",
         "mime_type",
         "size_bytes"
       ],
@@ -590,7 +580,7 @@
   },
   {
     "name": "delete_conversation",
-    "description": "Delete a whole thread and its messages from this account only. **The other person keeps their copy, always.** This cannot be undone from here. Repeating this call with the same client_request_id returns the same operation and sends nothing further. A fresh client_request_id is a different call, not a repeat.",
+    "description": "Delete a whole thread and its messages from this account only. **The other person keeps their copy, always.** This cannot be undone from here. The result carries an operation id; check status by that id. If a call's result is lost, check the conversation or list operations before sending again.",
     "scope": "messages:delete",
     "annotations": {
       "readOnlyHint": false,
@@ -601,17 +591,12 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "client_request_id": {
-          "type": "string",
-          "description": "An idempotency key you invent for this call -- any string up to 200 bytes; a UUID is the obvious choice. Repeating this call with the same client_request_id returns the same operation and sends nothing further. A fresh client_request_id is a different call, not a repeat."
-        },
         "conversation_id": {
           "type": "string",
           "description": "The thread to delete, as a `conv_` ID."
         }
       },
       "required": [
-        "client_request_id",
         "conversation_id"
       ],
       "additionalProperties": false
@@ -991,7 +976,7 @@
   },
   {
     "name": "delete_message",
-    "description": "Delete one message from this account only. **The recipient keeps their copy, always** -- there is no delete-for-everyone and nothing to choose. Repeating this call with the same client_request_id returns the same operation and sends nothing further. A fresh client_request_id is a different call, not a repeat.",
+    "description": "Delete one message from this account only. **The recipient keeps their copy, always** -- there is no delete-for-everyone and nothing to choose. The result carries an operation id; check status by that id. If a call's result is lost, check the conversation or list operations before sending again.",
     "scope": "messages:delete",
     "annotations": {
       "readOnlyHint": false,
@@ -1002,17 +987,12 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "client_request_id": {
-          "type": "string",
-          "description": "An idempotency key you invent for this call -- any string up to 200 bytes; a UUID is the obvious choice. Repeating this call with the same client_request_id returns the same operation and sends nothing further. A fresh client_request_id is a different call, not a repeat."
-        },
         "message_id": {
           "type": "string",
           "description": "The message to delete, as a `msg_` ID."
         }
       },
       "required": [
-        "client_request_id",
         "message_id"
       ],
       "additionalProperties": false
@@ -3904,7 +3884,7 @@
   },
   {
     "name": "mark_read",
-    "description": "Mark a thread read up to and including one message. This tells the other side, on an RCS thread where they have read receipts on, that the owner has seen it. Repeating this call with the same client_request_id returns the same operation and sends nothing further. A fresh client_request_id is a different call, not a repeat.",
+    "description": "Mark a thread read up to and including one message. This tells the other side, on an RCS thread where they have read receipts on, that the owner has seen it. The result carries an operation id; check status by that id. If a call's result is lost, check the conversation or list operations before sending again.",
     "scope": "messages:write",
     "annotations": {
       "readOnlyHint": false,
@@ -3915,10 +3895,6 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "client_request_id": {
-          "type": "string",
-          "description": "An idempotency key you invent for this call -- any string up to 200 bytes; a UUID is the obvious choice. Repeating this call with the same client_request_id returns the same operation and sends nothing further. A fresh client_request_id is a different call, not a repeat."
-        },
         "conversation_id": {
           "type": "string",
           "description": "The thread to mark, as a `conv_` ID."
@@ -3932,7 +3908,6 @@
         }
       },
       "required": [
-        "client_request_id",
         "conversation_id"
       ],
       "additionalProperties": false
@@ -5000,7 +4975,7 @@
   },
   {
     "name": "remove_reaction",
-    "description": "Take back a reaction the owner sent. Address it either by `reaction_id`, or by `message_id` plus `emoji`; supplying neither is `invalid_request`. Removing somebody else's reaction is refused. Repeating this call with the same client_request_id returns the same operation and sends nothing further. A fresh client_request_id is a different call, not a repeat.",
+    "description": "Take back a reaction the owner sent. Address it either by `reaction_id`, or by `message_id` plus `emoji`; supplying neither is `invalid_request`. Removing somebody else's reaction is refused. The result carries an operation id; check status by that id. If a call's result is lost, check the conversation or list operations before sending again.",
     "scope": "messages:write",
     "annotations": {
       "readOnlyHint": false,
@@ -5011,10 +4986,6 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "client_request_id": {
-          "type": "string",
-          "description": "An idempotency key you invent for this call -- any string up to 200 bytes; a UUID is the obvious choice. Repeating this call with the same client_request_id returns the same operation and sends nothing further. A fresh client_request_id is a different call, not a repeat."
-        },
         "emoji": {
           "type": [
             "string",
@@ -5037,9 +5008,6 @@
           "description": "The reaction to remove, as a `react_` ID read from the message. Supply this, or `message_id` plus `emoji`."
         }
       },
-      "required": [
-        "client_request_id"
-      ],
       "additionalProperties": false
     },
     "outputSchema": {
@@ -6013,7 +5981,7 @@
   },
   {
     "name": "send_message",
-    "description": "Send a text, an attachment, or both into an existing thread. **This sends a real SMS, MMS or RCS message to a real person. There is no sandbox and no undo.** The result carries a `message_id` and an `operation`; watch the message's `delivery.state` to learn whether it arrived, remembering that on SMS and on groups it usually stops at `sent`. Repeating this call with the same client_request_id returns the same operation and sends nothing further. A fresh client_request_id is a different call, not a repeat.",
+    "description": "Send a text, an attachment, or both into an existing thread. **This sends a real SMS, MMS or RCS message to a real person. There is no sandbox and no undo.** The result carries a `message_id` and an `operation`; watch the message's `delivery.state` to learn whether it arrived, remembering that on SMS and on groups it usually stops at `sent`. The result carries an operation id; check status by that id. If a call's result is lost, check the conversation or list operations before sending again.",
     "scope": "messages:write",
     "annotations": {
       "readOnlyHint": false,
@@ -6024,10 +5992,6 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "client_request_id": {
-          "type": "string",
-          "description": "An idempotency key you invent for this call -- any string up to 200 bytes; a UUID is the obvious choice. Repeating this call with the same client_request_id returns the same operation and sends nothing further. A fresh client_request_id is a different call, not a repeat."
-        },
         "conversation_id": {
           "type": "string",
           "description": "The thread to send into, as a `conv_` ID. It already names its own account, so there is no `account_id` here."
@@ -6066,7 +6030,6 @@
         }
       },
       "required": [
-        "client_request_id",
         "conversation_id"
       ],
       "additionalProperties": false
@@ -6446,7 +6409,7 @@
   },
   {
     "name": "start_conversation",
-    "description": "Start a thread with one or more phone numbers, or find the one that already exists. **If a thread with exactly those recipients already exists you get that thread back and nothing is sent** -- starting is safe, sending is not. This is the one write whose target is a phone number rather than an ID, so it is the one that needs `account_id` when the server holds more than one account. Repeating this call with the same client_request_id returns the same operation and sends nothing further. A fresh client_request_id is a different call, not a repeat.",
+    "description": "Start a thread with one or more phone numbers, or find the one that already exists. **If a thread with exactly those recipients already exists you get that thread back and nothing is sent** -- starting is safe, sending is not. This is the one write whose target is a phone number rather than an ID, so it is the one that needs `account_id` when the server holds more than one account. The result carries an operation id; check status by that id. If a call's result is lost, check the conversation or list operations before sending again.",
     "scope": "messages:write",
     "annotations": {
       "readOnlyHint": false,
@@ -6463,10 +6426,6 @@
             "null"
           ],
           "description": "The Google account to work in, as an `acct_` ID from `list_accounts`. Required when the server holds more than one account; omitting it then is `invalid_request` listing the accounts to choose from. With exactly one account you may leave it out."
-        },
-        "client_request_id": {
-          "type": "string",
-          "description": "An idempotency key you invent for this call -- any string up to 200 bytes; a UUID is the obvious choice. Repeating this call with the same client_request_id returns the same operation and sends nothing further. A fresh client_request_id is a different call, not a repeat."
         },
         "name": {
           "type": [
@@ -6485,7 +6444,6 @@
         }
       },
       "required": [
-        "client_request_id",
         "recipients"
       ],
       "additionalProperties": false
@@ -6865,7 +6823,7 @@
   },
   {
     "name": "update_conversation",
-    "description": "Change a thread's own filing: which folder it is in, whether it is pinned, and whether it counts as unread. This changes the owner's copy only and nothing leaves the building. A change to a state the thread is already in answers `changed: false` and does nothing. Repeating this call with the same client_request_id returns the same operation and sends nothing further. A fresh client_request_id is a different call, not a repeat.",
+    "description": "Change a thread's own filing: which folder it is in, whether it is pinned, and whether it counts as unread. This changes the owner's copy only and nothing leaves the building. A change to a state the thread is already in answers `changed: false` and does nothing. The result carries an operation id; check status by that id. If a call's result is lost, check the conversation or list operations before sending again.",
     "scope": "messages:write",
     "annotations": {
       "readOnlyHint": false,
@@ -6876,10 +6834,6 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "client_request_id": {
-          "type": "string",
-          "description": "An idempotency key you invent for this call -- any string up to 200 bytes; a UUID is the obvious choice. Repeating this call with the same client_request_id returns the same operation and sends nothing further. A fresh client_request_id is a different call, not a repeat."
-        },
         "conversation_id": {
           "type": "string",
           "description": "The thread to change, as a `conv_` ID."
@@ -6930,7 +6884,6 @@
         }
       },
       "required": [
-        "client_request_id",
         "conversation_id"
       ],
       "additionalProperties": false

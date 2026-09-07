@@ -149,7 +149,6 @@ var bodyValues = map[string]any{
 	"secret":              testAdminSecret,
 	"scopes":              []string{},
 	"refresh_token":       "",
-	"client_request_id":   "",
 }
 
 // bodyFor builds a body from exactly the fields a route declares.

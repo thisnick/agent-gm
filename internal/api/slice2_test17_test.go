@@ -55,7 +55,6 @@ func (s *server) reserve(t *testing.T, name string, size int64, mime, sha string
 		"filename":          "photo.jpg",
 		"mime_type":         mime,
 		"size_bytes":        size,
-		"client_request_id": key(name),
 	}
 	if sha != "" {
 		body["sha256"] = sha
@@ -108,7 +107,6 @@ func TestSlice2_17_UploadsAreAccountAgnosticAndSendOnce(t *testing.T) {
 	sent := s.call("POST", "/v1/conversations/"+convB.ID+"/messages", map[string]any{
 		"upload_ids":        []string{id},
 		"text":              "the photograph",
-		"client_request_id": key("send-b"),
 	}).ok(t, 200)
 	if sent.Data["operation"] == nil {
 		t.Fatal("the send produced no operation")
@@ -128,10 +126,10 @@ func TestSlice2_17_UploadsAreAccountAgnosticAndSendOnce(t *testing.T) {
 	// A second send -- into EITHER account -- is refused. It cannot be fanned
 	// out, which is what makes an account-agnostic reservation safe.
 	s.call("POST", "/v1/conversations/"+convB.ID+"/messages", map[string]any{
-		"upload_ids": []string{id}, "client_request_id": key("send-b-again"),
+		"upload_ids": []string{id},
 	}).refused(t, "invalid_request")
 	s.call("POST", "/v1/conversations/"+convA.ID+"/messages", map[string]any{
-		"upload_ids": []string{id}, "client_request_id": key("send-a"),
+		"upload_ids": []string{id},
 	}).refused(t, "invalid_request")
 }
 
@@ -150,7 +148,6 @@ func TestSlice2_17_TwoUploadIDsIsInvalidRequestNamingTheLimit(t *testing.T) {
 
 	env := s.call("POST", "/v1/conversations/"+conv.ID+"/messages", map[string]any{
 		"upload_ids":        []string{first, second},
-		"client_request_id": key("two"),
 	}).refused(t, "invalid_request")
 
 	if got := env.detail("field"); got != "upload_ids" {
@@ -291,7 +288,6 @@ func TestSlice2_17_ReservationRefusesAnUnsupportedTypeAndReservesNothing(t *test
 		// gm.SupportedMIME rather than looking for an exact match.
 		"mime_type":         "font/woff2",
 		"size_bytes":        10,
-		"client_request_id": key("unsupported"),
 	}).refused(t, "media_unsupported_type")
 	if env.Status != 415 {
 		t.Errorf("status %d, want 415", env.Status)
@@ -320,11 +316,11 @@ func TestSlice2_17_AnotherAuthorizationsUploadIsNotFound(t *testing.T) {
 
 	s.callWith(other.AccessToken, "GET", "/v1/uploads/"+id, nil, nil).refused(t, "not_found")
 	s.callWith(other.AccessToken, "POST", "/v1/conversations/"+conv.ID+"/messages",
-		map[string]any{"upload_ids": []string{id}, "client_request_id": key("steal")}, nil).
+		map[string]any{"upload_ids": []string{id}, }, nil).
 		refused(t, "not_found")
 
 	// And the owner can still send it, so the refusal did not consume it.
 	s.call("POST", "/v1/conversations/"+conv.ID+"/messages", map[string]any{
-		"upload_ids": []string{id}, "client_request_id": key("owner-send"),
+		"upload_ids": []string{id},
 	}).ok(t, 200)
 }

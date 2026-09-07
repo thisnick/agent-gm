@@ -21,19 +21,19 @@ import (
 // the route inventory against tools, resources and that list, so a route in
 // none of the three fails rather than being noticed later.
 
-// FreshKeySentence closes every write tool's description, byte for byte
+// LostResultSentence closes every write tool's description, byte for byte
 // (spec section 8.2).
 //
 // It is a constant rather than nine copies because a reviewer's planted
 // mutation -- putting a wrong sentence back into a served description -- has
 // to be caught by a lint test, and a lint can only compare against one
 // authority.
-const FreshKeySentence = "Repeating this call with the same client_request_id returns the same operation and sends nothing further. A fresh client_request_id is a different call, not a repeat."
-
-// clientRequestIDDescription is the argument's own description. It ends with
-// the same sentence the tool description does, so a model that reads only the
-// argument still reads the rule.
-const clientRequestIDDescription = "An idempotency key you invent for this call -- any string up to 200 bytes; a UUID is the obvious choice. " + FreshKeySentence
+//
+// It replaced the fresh-key sentence when D38 removed the idempotency key
+// from every tool. The sentence a model needs is no longer "invent a key",
+// which it cannot do stably across a retry; it is what to do when the result
+// of a call never arrived, and the answer is to LOOK before sending again.
+const LostResultSentence = "The result carries an operation id; check status by that id. If a call's result is lost, check the conversation or list operations before sending again."
 
 // ArgIn is where an argument goes on the REST route.
 type ArgIn int
@@ -130,25 +130,17 @@ type Tool struct {
 	Annotations
 }
 
-// argByName finds an argument.
-func (t Tool) argByName(name string) (Arg, bool) {
-	for _, a := range t.Args {
-		if a.Name == name {
-			return a, true
-		}
-	}
-	return Arg{}, false
-}
-
-// RequiresClientRequestID reports whether this is a **write tool** in the
-// sense section 8.2 uses the phrase: one that requires `client_request_id`,
-// and whose description therefore ends with FreshKeySentence.
+// IsWrite reports whether this is a **write tool** in the sense section 8.2
+// uses the phrase: one that changes something, and whose description
+// therefore ends with LostResultSentence.
 //
-// `get_operation` is gated on `messages:write` and is not one: it creates
-// nothing, so there is nothing to repeat.
-func (t Tool) RequiresClientRequestID() bool {
-	a, ok := t.argByName("client_request_id")
-	return ok && a.Required
+// It is decided by the annotations the tool actually serves rather than by a
+// list kept beside them, because a list beside them is a list that can
+// disagree with them -- and the annotations are the thing a client reads.
+// `get_operation` is gated on `messages:write` and is not one: it carries the
+// read annotations because it creates nothing, so there is nothing to repeat.
+func (t Tool) IsWrite() bool {
+	return t.Annotations != readAnnotations
 }
 
 // InputSchema renders the tool's closed input schema.
@@ -253,14 +245,6 @@ func limitArg() Arg {
 		Name: "limit", In: InQuery,
 		Description: "How many rows to return. Defaults to 50 and caps at 100.",
 		Schema:      nullableInt(""),
-	}
-}
-
-func clientRequestIDArg() Arg {
-	return Arg{
-		Name: "client_request_id", In: InBody, Required: true,
-		Description: clientRequestIDDescription,
-		Schema:      str(""),
 	}
 }
 
@@ -468,7 +452,7 @@ var Tools = []Tool{
 		Route: "messages_send",
 		Description: "Send a text, an attachment, or both into an existing thread. **This sends a real SMS, MMS or RCS message to a real person. There is no sandbox and no undo.** " +
 			"The result carries a `message_id` and an `operation`; watch the message's `delivery.state` to learn whether it arrived, remembering that on SMS and on groups it usually stops at `sent`. " +
-			FreshKeySentence,
+			LostResultSentence,
 		Annotations: outboundWriteAnnotations,
 		Args: []Arg{
 			{Name: "conversation_id", In: InPath, Required: true, Schema: str(""),
@@ -482,7 +466,6 @@ var Tools = []Tool{
 				Description: "The `msg_` ID this is a reply to. Replies are an RCS feature: on an `sms_mms` thread this argument is refused with `unsupported_capability` and `reason: \"reply_not_supported\"`, so check the thread's `type` or its `capabilities.reply` first."},
 			{Name: "force_rcs", In: InBody, Schema: nullableBool(""),
 				Description: "True to refuse to fall back to SMS: if the thread cannot carry RCS the send is refused rather than quietly downgraded."},
-			clientRequestIDArg(),
 		},
 	},
 	{
@@ -492,7 +475,7 @@ var Tools = []Tool{
 		Description: "Start a thread with one or more phone numbers, or find the one that already exists. " +
 			"**If a thread with exactly those recipients already exists you get that thread back and nothing is sent** -- starting is safe, sending is not. " +
 			"This is the one write whose target is a phone number rather than an ID, so it is the one that needs `account_id` when the server holds more than one account. " +
-			FreshKeySentence,
+			LostResultSentence,
 		Annotations: outboundWriteAnnotations,
 		Args: []Arg{
 			accountIDArg(InBody, "Required when the server holds more than one account; omitting it then is `invalid_request` listing the accounts to choose from. With exactly one account you may leave it out."),
@@ -501,7 +484,6 @@ var Tools = []Tool{
 				Description: "The phone numbers to address, in E.164 form such as `+15105550123`. One recipient is a direct chat; two or more is a group."},
 			{Name: "name", In: InBody, Schema: nullableStr(""),
 				Description: "A name for the new group. Accepted only for a group; supplying it with a single recipient is refused."},
-			clientRequestIDArg(),
 		},
 	},
 	{
@@ -509,14 +491,13 @@ var Tools = []Tool{
 		Scope: authz.ScopeMessagesWrite,
 		Route: "conversations_mark_read",
 		Description: "Mark a thread read up to and including one message. This tells the other side, on an RCS thread where they have read receipts on, that the owner has seen it. " +
-			FreshKeySentence,
+			LostResultSentence,
 		Annotations: outboundWriteAnnotations,
 		Args: []Arg{
 			{Name: "conversation_id", In: InPath, Required: true, Schema: str(""),
 				Description: "The thread to mark, as a `conv_` ID."},
 			{Name: "message_id", In: InBody, Schema: nullableStr(""),
 				Description: "Mark read up to and including this `msg_` ID. Omit it to mark the whole thread read up to its latest message."},
-			clientRequestIDArg(),
 		},
 	},
 	{
@@ -524,14 +505,13 @@ var Tools = []Tool{
 		Scope: authz.ScopeMessagesWrite,
 		Route: "reactions_add",
 		Description: "React to a message with an emoji. One reaction per person per message: adding a second replaces the first, which is a change the recipient sees. " +
-			FreshKeySentence,
+			LostResultSentence,
 		Annotations: outboundWriteAnnotations,
 		Args: []Arg{
 			{Name: "message_id", In: InPath, Required: true, Schema: str(""),
 				Description: "The message to react to, as a `msg_` ID."},
 			{Name: "emoji", In: InBody, Required: true, Schema: str(""),
 				Description: emojiDescription},
-			clientRequestIDArg(),
 		},
 	},
 	{
@@ -540,7 +520,7 @@ var Tools = []Tool{
 		Routes: []string{"reactions_remove", "reactions_remove_by_id"},
 		Description: "Take back a reaction the owner sent. Address it either by `reaction_id`, or by `message_id` plus `emoji`; supplying neither is `invalid_request`. " +
 			"Removing somebody else's reaction is refused. " +
-			FreshKeySentence,
+			LostResultSentence,
 		Annotations: removeReactionAnnotations,
 		Args: []Arg{
 			{Name: "reaction_id", In: InPath, Schema: nullableStr(""),
@@ -549,7 +529,6 @@ var Tools = []Tool{
 				Description: "The message the reaction is on, as a `msg_` ID. Supply this with `emoji`, or supply `reaction_id` instead."},
 			{Name: "emoji", In: InPath, PathParam: "emoji", Schema: nullableStr(""),
 				Description: "Which reaction to remove, as the same bare emoji that was added. " + emojiDescription},
-			clientRequestIDArg(),
 		},
 	},
 	{
@@ -558,7 +537,7 @@ var Tools = []Tool{
 		Route: "conversations_update",
 		Description: "Change a thread's own filing: which folder it is in, whether it is pinned, and whether it counts as unread. This changes the owner's copy only and nothing leaves the building. " +
 			"A change to a state the thread is already in answers `changed: false` and does nothing. " +
-			FreshKeySentence,
+			LostResultSentence,
 		Annotations: localWriteAnnotations,
 		Args: []Arg{
 			{Name: "conversation_id", In: InPath, Required: true, Schema: str(""),
@@ -570,7 +549,6 @@ var Tools = []Tool{
 				Description: "True to pin the thread to the top of the owner's list, false to unpin it. Omit it to leave pinning alone."},
 			{Name: "unread", In: InBody, Schema: nullableBool(""),
 				Description: "True to mark the thread unread, false to mark it read. Omit it to leave the flag alone."},
-			clientRequestIDArg(),
 		},
 	},
 	{
@@ -581,7 +559,7 @@ var Tools = []Tool{
 			"Run that command with `FILE` replaced by the path, then pass the `upl_` ID to `send_message` as `upload_ids`. " +
 			"An upload is not tied to an account -- the thread you send it into decides that -- and it can be sent only once. " +
 			"This is the only way to attach a file; base64 through the model is not accepted. Nothing leaves the building until you send it. " +
-			FreshKeySentence,
+			LostResultSentence,
 		Annotations: localWriteAnnotations,
 		Args: []Arg{
 			{Name: "filename", In: InBody, Schema: nullableStr(""),
@@ -592,7 +570,6 @@ var Tools = []Tool{
 				Description: "The file's exact byte length. Required. A body that is longer or shorter than this spends the reservation and is refused, so measure the file rather than estimating."},
 			{Name: "sha256", In: InBody, Schema: nullableStr(""),
 				Description: "The file's SHA-256, lowercase hex. Optional; when given, a body whose digest differs is refused."},
-			clientRequestIDArg(),
 		},
 	},
 	{
@@ -615,12 +592,11 @@ var Tools = []Tool{
 		Scope: authz.ScopeMessagesDelete,
 		Route: "messages_delete",
 		Description: "Delete one message from this account only. **The recipient keeps their copy, always** -- there is no delete-for-everyone and nothing to choose. " +
-			FreshKeySentence,
+			LostResultSentence,
 		Annotations: deleteAnnotations,
 		Args: []Arg{
 			{Name: "message_id", In: InPath, Required: true, Schema: str(""),
 				Description: "The message to delete, as a `msg_` ID."},
-			clientRequestIDArg(),
 		},
 	},
 	{
@@ -628,12 +604,11 @@ var Tools = []Tool{
 		Scope: authz.ScopeMessagesDelete,
 		Route: "conversations_delete",
 		Description: "Delete a whole thread and its messages from this account only. **The other person keeps their copy, always.** This cannot be undone from here. " +
-			FreshKeySentence,
+			LostResultSentence,
 		Annotations: deleteAnnotations,
 		Args: []Arg{
 			{Name: "conversation_id", In: InPath, Required: true, Schema: str(""),
 				Description: "The thread to delete, as a `conv_` ID."},
-			clientRequestIDArg(),
 		},
 	},
 }

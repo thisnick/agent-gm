@@ -29,6 +29,7 @@ var migrations = []migration{
 	migration0004,
 	migration0005,
 	migration0006,
+	migration0007,
 }
 
 var migration0001 = migration{
@@ -776,5 +777,76 @@ var migration0006 = migration{
 		    created_at_ms    INTEGER NOT NULL
 		)`,
 		`CREATE INDEX authorization_codes_request ON authorization_codes(request_id)`,
+	},
+}
+
+// Migration 0007 makes the idempotency key OPTIONAL (owner decision D38).
+//
+// Until now `operations.idempotency_key` was `NOT NULL` and part of an inline
+// `UNIQUE (authorization_id, account_id, kind, idempotency_key)`, because
+// every mutation was required to carry a key. It is not any more: an agent
+// cannot invent a stable key across a retry, so the key was friction without
+// protection, and a call that supplies none now gets a new operation with a
+// server-minted ID.
+//
+// The column therefore has to be nullable, and the uniqueness has to become a
+// PARTIAL index. `''` was not an option: an empty string is a value, so a
+// second keyless send by the same authorization to the same account would
+// have collided with the first and been refused as a duplicate -- silently
+// turning "no key" into "one call, ever". `NULL` is never equal to `NULL` in
+// SQLite's unique indexes, and `WHERE idempotency_key IS NOT NULL` states the
+// same thing twice on purpose, so the intent survives a reader who does not
+// remember that rule.
+//
+// SQLite cannot drop a NOT NULL or an inline UNIQUE, so the table is rebuilt.
+// Nothing references `operations`, so the rename-copy-drop is safe.
+var migration0007 = migration{
+	version: 7,
+	name:    "operations.idempotency_key becomes optional (D38)",
+	stmts: []string{
+		`ALTER TABLE operations RENAME TO operations_pre0007`,
+
+		`CREATE TABLE operations (
+		    id                    TEXT PRIMARY KEY,
+		    account_id            TEXT NOT NULL REFERENCES accounts(id),
+		    kind                  TEXT NOT NULL,
+		    authorization_id      TEXT NOT NULL,
+		    idempotency_key       TEXT,
+		    request_fingerprint   TEXT NOT NULL,
+		    conversation_id       TEXT,
+		    message_id            TEXT,
+		    tmp_id                TEXT,
+		    status                TEXT NOT NULL,
+		    terminal              INTEGER NOT NULL DEFAULT 0,
+		    terminal_at_ms        INTEGER,
+		    corrected_at_ms       INTEGER,
+		    error_code            TEXT,
+		    error_message         TEXT,
+		    error_retryable       INTEGER,
+		    google_status_raw     INTEGER,
+		    request_payload_json  TEXT NOT NULL,
+		    media_size_bytes      INTEGER,
+		    created_at_ms         INTEGER NOT NULL,
+		    updated_at_ms         INTEGER NOT NULL
+		)`,
+
+		`INSERT INTO operations (id, account_id, kind, authorization_id, idempotency_key,
+		    request_fingerprint, conversation_id, message_id, tmp_id, status, terminal,
+		    terminal_at_ms, corrected_at_ms, error_code, error_message, error_retryable,
+		    google_status_raw, request_payload_json, media_size_bytes, created_at_ms, updated_at_ms)
+		 SELECT id, account_id, kind, authorization_id, idempotency_key,
+		    request_fingerprint, conversation_id, message_id, tmp_id, status, terminal,
+		    terminal_at_ms, corrected_at_ms, error_code, error_message, error_retryable,
+		    google_status_raw, request_payload_json, media_size_bytes, created_at_ms, updated_at_ms
+		   FROM operations_pre0007`,
+
+		`DROP TABLE operations_pre0007`,
+
+		`CREATE INDEX operations_pending ON operations(status) WHERE terminal = 0`,
+		`CREATE INDEX operations_caller  ON operations(authorization_id, created_at_ms DESC)`,
+		`CREATE INDEX operations_tmp_id  ON operations(account_id, tmp_id) WHERE tmp_id IS NOT NULL`,
+		`CREATE UNIQUE INDEX operations_idempotency
+		    ON operations(authorization_id, account_id, kind, idempotency_key)
+		    WHERE idempotency_key IS NOT NULL`,
 	},
 }

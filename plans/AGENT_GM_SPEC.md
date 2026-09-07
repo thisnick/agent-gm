@@ -1282,7 +1282,7 @@ CREATE TABLE operations (
     account_id            TEXT NOT NULL REFERENCES accounts(id),
     kind                  TEXT NOT NULL,
     authorization_id      TEXT NOT NULL,
-    idempotency_key       TEXT NOT NULL,
+    idempotency_key       TEXT,           -- NULL when the caller sent none (D38)
     request_fingerprint   TEXT NOT NULL,
     conversation_id       TEXT,
     message_id            TEXT,
@@ -1311,7 +1311,16 @@ CREATE TABLE operations (
     -- it does not license one caller to reuse a key across accounts, which
     -- 6.3 refuses as invalid_request because it would send a second real
     -- message to a different person.
-    UNIQUE (authorization_id, account_id, kind, idempotency_key)
+    --
+    -- The uniqueness is a PARTIAL index because the key is NULLable (D38,
+    -- migration 0007): a keyless mutation stores NULL, and NULL is never
+    -- equal to NULL, so two keyless sends are two rows. An empty string in
+    -- its place would be a value, and the second keyless send by one caller
+    -- to one account would collide with the first and be refused -- silently
+    -- dropping a real message.
+    UNIQUE INDEX operations_idempotency
+      ON operations(authorization_id, account_id, kind, idempotency_key)
+      WHERE idempotency_key IS NOT NULL
 );
 CREATE INDEX operations_pending ON operations(status) WHERE terminal = 0;
 CREATE INDEX operations_caller  ON operations(authorization_id, created_at_ms DESC);
@@ -1938,19 +1947,23 @@ retried. **Agent GM never re-sends a message on behalf of a crashed request.**
 
 ### 6.3 Idempotency
 
-Carried over from Agent MX, unchanged in substance:
+**The idempotency key is optional, and its only transport is the
+`Idempotency-Key` header** (owner decision D38, 2026-09-07). A mutation that
+carries no key is a new operation with a **server-minted `op_` ID**, returned
+in the result; that is the ordinary case.
 
-- **The idempotency key is required on every mutation.** It comes from the
-  `Idempotency-Key` header or from `client_request_id` in the body. Supplying
-  both with *different* values is `invalid_request`, because it is a
-  contradiction rather than a preference. An empty key, a key over 200 bytes,
-  or a key containing control characters is `invalid_request` naming
-  `client_request_id` in `details.field`, and writes nothing.
-- Uniqueness is scoped to **(authorization, account, operation kind, key)**.
-  Two clients may use the same key value; one client may use one key for a send
-  and for a mark-read; and the same key sending to two different accounts is
-  two different operations, because it is two different messages to two
-  different people.
+- There is **no `client_request_id` body field** and no query-parameter form
+  on any route. One presented as either is `invalid_request` naming it, like
+  any other unknown parameter (§7.1). A key over 200 bytes, not valid UTF-8,
+  or containing control characters is `invalid_request` naming
+  `Idempotency-Key` in `details.field`, and writes nothing. An **absent** key
+  is not an error.
+- **When a key is present, everything below is unchanged.** Uniqueness is
+  scoped to **(authorization, account, operation kind, key)**. Two clients may
+  use the same key value; one client may use one key for a send and for a
+  mark-read; and the same key sending to two different accounts is two
+  different operations, because it is two different messages to two different
+  people.
 - "The same request" is decided by a **SHA-256 over the canonically
   serialised body** (keys sorted, no insignificant whitespace), so reordered
   JSON keys are a replay and any changed value is not.
@@ -1963,17 +1976,30 @@ Carried over from Agent MX, unchanged in substance:
   surfaces refuse it rather than obeying it: **if an idempotency key has
   already been used by this authorization for this kind against a *different*
   account, the request is `invalid_request`** with
-  `details.field = "client_request_id"`, naming the account the key was first
+  `details.field = "Idempotency-Key"`, naming the account the key was first
   used with. A genuinely new send to another account uses a new key. The CLI
-  enforces the same rule for `--idempotency-key`, and every write tool's
-  description says it.
+  enforces the same rule for `--idempotency-key`.
 - A replay returns the existing operation **and its `message_id`**, and sends
-  nothing. A fresh key is a different call, not a repeat — every tool
-  description and CLI help text says so, because this is the mistake that
-  sends a second text message to a real person.
+  nothing. A fresh key is a different call, not a repeat — the CLI help text
+  says so, because this is the mistake that sends a second text message to a
+  real person.
 - Keys are retained for **30 days** (`settings.operations.idempotency_ttl`,
   bounds 1d–365d), after which the row is swept. A replay of a swept key is a
-  new operation; the CLI and the tool descriptions state the retention.
+  new operation; the CLI states the retention.
+- **Two keyless calls are two operations and two messages.** They are never
+  collapsed. Collapsing them would silently drop the second text, which is a
+  worse failure than sending it twice, and it is not what "no key" means
+  anywhere else.
+- **What replaces the key for an agent.** Every write returns an `operation`
+  with an ID; status is checked by that ID. If a call's result is lost — a
+  timeout, a dropped connection, a tool error the caller cannot read — the
+  instruction is **look before sending again**: read the conversation, or list
+  operations. Every write tool's description ends with that sentence, byte for
+  byte (§8.2), and it is in the instructions block (§8.3).
+- The `operations.idempotency_key` column is nullable and its uniqueness is a
+  **partial** index (`WHERE idempotency_key IS NOT NULL`). An empty string
+  would be a *value*, and a second keyless send by the same authorization to
+  the same account would collide with the first and be refused as a duplicate.
 
 The operation's `tmp_id` is a **bare UUID**, minted per send attempt and
 written to the indexed `operations.tmp_id` column before the library call
@@ -2141,18 +2167,17 @@ a `reason` and 255 for a `filename`** — 255 because that is the longest name
 every filesystem Agent GM writes a cached file on will take, and a value that
 cannot be written is not one worth keeping whole.
 
-**The idempotency key has exactly two transports** (§6.3): the
-`Idempotency-Key` header, or the `client_request_id` body field. **There is no
-`?client_request_id=` query parameter on any route**, and one presented as a
-query parameter is `invalid_request` naming it, like any other unknown
-parameter. The two `DELETE` routes that would otherwise have no body accept a
-JSON body for it (§7.6).
+**The idempotency key has exactly one transport and it is optional** (§6.3,
+D38): the `Idempotency-Key` header. **There is no `client_request_id` body
+field and no query-parameter form on any route**, and one presented as either
+is `invalid_request` naming it, like any other unknown parameter. The two
+`DELETE` routes therefore have no body at all.
 
 ### 7.2 Error codes
 
 | Code | HTTP | Retryable | Meaning |
 |---|---|---|---|
-| `invalid_request` | 400 | no | malformed, unknown parameter or field, wrong ID prefix, contradictory idempotency key |
+| `invalid_request` | 400 | no | malformed, unknown parameter or field, wrong ID prefix, unusable idempotency key |
 | `invalid_token` | 401 | no | absent, expired, unknown, or wrong-audience bearer. Covers what Agent MX split into `authentication_required` |
 | `insufficient_scope` | 403 | no | valid token, wrong scope |
 | `not_found` | 404 | no | no such object. Byte-identical whether it never existed or the caller may not see it |
@@ -2467,14 +2492,14 @@ A reaction whose `EmojiType` has no unicode serves
 
 | Method | Path | Body | Answer |
 |---|---|---|---|
-| `POST` | `/v1/conversations` | `{"account_id", "recipients": ["+1…"], "name"?, "client_request_id"}`. **`name` is not sent on the first `GetOrCreateConversation`** — see D34: it goes on the `CreateRCSGroup` retry, which is the call that actually creates a group. `account_id` is required when more than one account exists (§7.3) — this is the one write whose target is a phone number rather than an ID, so nothing else can imply the account | `200` with the existing or newly created conversation plus the operation. `GetOrCreateConversation`; the `CREATE_RCS` retry of §3.7 is internal. `name` is accepted only for 2+ recipients. Zero recipients, or two that normalise to one number, is `invalid_request` **before** an operation row exists |
-| `POST` | `/v1/conversations/{id}/messages` | `{"text"?, "upload_ids"?, "reply_to_message_id"?, "force_rcs"?, "client_request_id"}` | `200` with `{operation, message_id}`, where `message_id` is `null` until the remote echo lands — including on a `succeeded` send (§6.5). At least `text` or one upload. `upload_ids` is an array but **currently accepts exactly one element**; two is `invalid_request` naming the limit (§10.2) |
+| `POST` | `/v1/conversations` | `{"account_id", "recipients": ["+1…"], "name"?}`. **`name` is not sent on the first `GetOrCreateConversation`** — see D34: it goes on the `CreateRCSGroup` retry, which is the call that actually creates a group. `account_id` is required when more than one account exists (§7.3) — this is the one write whose target is a phone number rather than an ID, so nothing else can imply the account | `200` with the existing or newly created conversation plus the operation. `GetOrCreateConversation`; the `CREATE_RCS` retry of §3.7 is internal. `name` is accepted only for 2+ recipients. Zero recipients, or two that normalise to one number, is `invalid_request` **before** an operation row exists |
+| `POST` | `/v1/conversations/{id}/messages` | `{"text"?, "upload_ids"?, "reply_to_message_id"?, "force_rcs"?}` | `200` with `{operation, message_id}`, where `message_id` is `null` until the remote echo lands — including on a `succeeded` send (§6.5). At least `text` or one upload. `upload_ids` is an array but **currently accepts exactly one element**; two is `invalid_request` naming the limit (§10.2) |
 | `POST` | `/v1/conversations/{id}/typing` | `{}` | `204`. Fire-and-forget, no operation, no idempotency key: it has no lasting effect |
-| `POST` | `/v1/conversations/{id}/read` | `{"message_id", "client_request_id"}` | `200`. Marks the conversation read through that message |
-| `PATCH` | `/v1/conversations/{id}` | `{"folder"?, "pinned"?, "unread"?, "client_request_id"}` | `200`. Archive, unarchive, pin, unpin and mark-unread, through `UpdateConversation` (§3.1). Returns `operation: null` and `changed: false` when already in the requested state |
-| `POST` | `/v1/messages/{id}/reactions` | `{"emoji", "client_request_id"}` | `200`. `SendReaction` `ADD`, or `SWITCH` when the owner already has a different reaction. `operation: null` when the owner already has exactly that one. `emoji` is canonicalised first (§3.7) |
-| `DELETE` | `/v1/messages/{id}/reactions/{emoji}` | `{"client_request_id"}` | `200`. `REMOVE`. `operation: null` when there is nothing to remove. The path segment is canonicalised before matching |
-| `DELETE` | `/v1/reactions/{reaction_id}` | `{"client_request_id"}` | `200`. The same removal by `react_` ID. A reaction somebody else sent is `unsupported_capability` with `reason: "not_my_reaction"` |
+| `POST` | `/v1/conversations/{id}/read` | `{"message_id"}` | `200`. Marks the conversation read through that message |
+| `PATCH` | `/v1/conversations/{id}` | `{"folder"?, "pinned"?, "unread"?}` | `200`. Archive, unarchive, pin, unpin and mark-unread, through `UpdateConversation` (§3.1). Returns `operation: null` and `changed: false` when already in the requested state |
+| `POST` | `/v1/messages/{id}/reactions` | `{"emoji"}` | `200`. `SendReaction` `ADD`, or `SWITCH` when the owner already has a different reaction. `operation: null` when the owner already has exactly that one. `emoji` is canonicalised first (§3.7) |
+| `DELETE` | `/v1/messages/{id}/reactions/{emoji}` | *(no body)* | `200`. `REMOVE`. `operation: null` when there is nothing to remove. The path segment is canonicalised before matching |
+| `DELETE` | `/v1/reactions/{reaction_id}` | *(no body)* | `200`. The same removal by `react_` ID. A reaction somebody else sent is `unsupported_capability` with `reason: "not_my_reaction"` |
 | `POST` | `/v1/uploads` | §10.2 | `201` with an upload ticket |
 | `DELETE` | `/v1/uploads/{upload_id}` | — | `204`. Drops the reservation and its staged bytes |
 | `PUT` | `/v1/uploads/{upload_id}/content` | raw bytes | authenticated by the **upload token**, not the access token |
@@ -2483,8 +2508,8 @@ A reaction whose `EmojiType` has no unicode serves
 
 | Method | Path | Body | `effect` |
 |---|---|---|---|
-| `DELETE` | `/v1/messages/{message_id}` | `{"client_request_id"}` | *"deletes this message from your Google Messages account only; the recipient keeps it"* |
-| `DELETE` | `/v1/conversations/{conversation_id}` | `{"client_request_id"}` | *"deletes this conversation from your Google Messages account only; the other people in it keep it"* |
+| `DELETE` | `/v1/messages/{message_id}` | *(no body)* | *"deletes this message from your Google Messages account only; the recipient keeps it"* |
+| `DELETE` | `/v1/conversations/{conversation_id}` | *(no body)* | *"deletes this conversation from your Google Messages account only; the other people in it keep it"* |
 
 Both responses carry an **`effect` field** holding that exact sentence. The
 same string is the MCP tool description's closing sentence and the `agm`
@@ -2648,21 +2673,21 @@ test over exactly that statement, with three categories rather than two.
 
 | Tool | REST | Arguments |
 |---|---|---|
-| `send_message` | `POST /v1/conversations/{id}/messages` | `conversation_id`, `text`, `upload_ids`, `reply_to_message_id`, `force_rcs`, `client_request_id` (required) |
-| `start_conversation` | `POST /v1/conversations` | `account_id`, `recipients` (E.164 array), `name`, `client_request_id` |
-| `mark_read` | `POST /v1/conversations/{id}/read` | `conversation_id`, `message_id`, `client_request_id` |
-| `add_reaction` | `POST /v1/messages/{id}/reactions` | `message_id`, `emoji`, `client_request_id` |
-| `remove_reaction` | `DELETE /v1/messages/{id}/reactions/{emoji}` or `DELETE /v1/reactions/{id}` | either `reaction_id`, or `message_id` plus `emoji`; supplying neither is an `invalid_request` result. Plus `client_request_id` |
-| `update_conversation` | `PATCH /v1/conversations/{id}` | `conversation_id`, `folder`, `pinned`, `unread`, `client_request_id` |
-| `create_upload` | `POST /v1/uploads` | `filename`, `mime_type`, `size_bytes` (required), `sha256`, `client_request_id` |
+| `send_message` | `POST /v1/conversations/{id}/messages` | `conversation_id`, `text`, `upload_ids`, `reply_to_message_id`, `force_rcs` |
+| `start_conversation` | `POST /v1/conversations` | `account_id`, `recipients` (E.164 array), `name` |
+| `mark_read` | `POST /v1/conversations/{id}/read` | `conversation_id`, `message_id` |
+| `add_reaction` | `POST /v1/messages/{id}/reactions` | `message_id`, `emoji` |
+| `remove_reaction` | `DELETE /v1/messages/{id}/reactions/{emoji}` or `DELETE /v1/reactions/{id}` | either `reaction_id`, or `message_id` plus `emoji`; supplying neither is an `invalid_request` result |
+| `update_conversation` | `PATCH /v1/conversations/{id}` | `conversation_id`, `folder`, `pinned`, `unread` |
+| `create_upload` | `POST /v1/uploads` | `filename`, `mime_type`, `size_bytes` (required), `sha256` |
 | `get_operation` | `GET /v1/operations/{id}` | `operation_id`. **A read, but gated on `messages:write`**: it exposes only operations the caller created, and `messages:write` is the scope that creates them. Its annotations say `readOnlyHint: true`; visibility and read-ness are different questions |
 
 **Deletes — `messages:delete`**
 
 | Tool | REST | Arguments |
 |---|---|---|
-| `delete_message` | `DELETE /v1/messages/{id}` | `message_id`, `client_request_id` |
-| `delete_conversation` | `DELETE /v1/conversations/{id}` | `conversation_id`, `client_request_id` |
+| `delete_message` | `DELETE /v1/messages/{id}` | `message_id` |
+| `delete_conversation` | `DELETE /v1/conversations/{id}` | `conversation_id` |
 
 Emoji arguments are canonicalised through `EmojiType` before anything else
 happens (§3.7), and their descriptions name the eleven reactions Google's own
@@ -2712,11 +2737,12 @@ reason — a reservation is purely local, and archiving or pinning is a change t
 the owner's own thread list. `remove_reaction` *is* open-world and destructive:
 it removes something the owner sent and the recipient sees it go.
 
-All writes are `idempotentHint: true`, and that is true **because**
-`client_request_id` is required. Every write tool's description ends with the
-same sentence: *"Repeating this call with the same client_request_id returns
-the same operation and sends nothing further. A fresh client_request_id is a
-different call, not a repeat."*
+All writes are `idempotentHint: true`, and no write tool takes an idempotency
+key of any spelling (D38): the server mints the operation ID and returns it.
+Every write tool's description ends with the same sentence, byte for byte:
+*"The result carries an operation id; check status by that id. If a call's
+result is lost, check the conversation or list operations before sending
+again."*
 
 **`isError` semantics — a `tools/call` rule, and only that.** A domain failure
 in a **tool call** is a **result** with `isError: true` carrying the REST error
@@ -2830,8 +2856,8 @@ reproduced verbatim in `docs/mcp.md` so the two can be diffed by a test.
 >    back as `cursor` for the next page; page size defaults to 50 and caps at
 >    100. `search_messages` needs `q`; it searches **every** account unless
 >    you pass `account_id`.
-> 3. **Reply.** `send_message` with the `conversation_id`, `text`, and a
->    `client_request_id` you invent. Add `reply_to_message_id` to thread a
+> 3. **Reply.** `send_message` with the `conversation_id` and `text`.
+>    Add `reply_to_message_id` to thread a
 >    reply — **but replies are an RCS feature; on an `sms_mms` conversation
 >    that argument is refused with `unsupported_capability` and
 >    `reason: "reply_not_supported"`.** Check the conversation's `type` first,
@@ -2864,18 +2890,16 @@ reproduced verbatim in `docs/mcp.md` so the two can be diffed by a test.
 >    `delete_conversation` delete from **this account only** — the recipient
 >    keeps their copy. There is no delete-for-everyone and no mode to choose.
 >
-> **Every write needs a `client_request_id` that you invent.** Repeating a
-> call with the same one returns the same operation and sends nothing
-> further. A **fresh** `client_request_id` is a different call, not a repeat
-> — reusing this to "retry" is how a person gets the same text twice.
-> **Changing `account_id` while keeping the same `client_request_id` is also a
-> different call**, not a retry: it would send a second real message from the
-> other account. The server refuses that combination with `invalid_request`
-> rather than obeying it, so if a send fails, retry it **against the same
-> account** with the same key, or use a new key. If a
-> send times out with `phone_not_responding`, the operation is `pending`, not
-> failed: the server accepted it and the phone may still send it when it
-> wakes. **Poll `get_operation`; do not resend.**
+> **There is no idempotency key to invent.** Every write returns an
+> `operation` with an id, and status is checked by that id with
+> `get_operation`. **If a call's result is lost — a timeout, a dropped
+> connection, a tool error you cannot read — do not send it again. Look
+> first:** `list_messages` on the conversation, or `list_operations`, will
+> tell you whether it went. Sending again because you did not see an answer
+> is how a person gets the same text twice. If a send times out with
+> `phone_not_responding`, the operation is `pending`, not failed: the server
+> accepted it and the phone may still send it when it wakes. **Poll
+> `get_operation`; do not resend.**
 >
 > The phone has to be awake and online for anything to happen.
 > `list_accounts` and `get_session` tell you whether it is: `state` and
@@ -3380,7 +3404,7 @@ computed, `sha256` is `null`, `sha256_available` is `false`, and
 ### 10.2 Upload — three requests
 
 1. **`POST /v1/uploads`** reserves: `filename`, `mime_type`, `size_bytes`
-   (required), optional `sha256`, `client_request_id`. Answers `201`:
+   (required), optional `sha256`. Answers `201`:
 
 ```json
 { "upload_id": "upl_01k4...",
@@ -3468,7 +3492,7 @@ only its hash is stored, exactly like an OAuth token.
 **never** from the request's `Host`, so an agent in a sandbox on another
 machine reaches the same origin the tunnel exposes.
 
-`client_request_id` makes the reservation idempotent; each attempt returns a
+An `Idempotency-Key` makes the reservation idempotent; each attempt returns a
 fresh token, because the first token's value left the process and cannot be
 recovered, and a token minted on a repeat never outlives the reservation it
 fills — which is what `limits.expires_in_seconds` counts down to.
@@ -3508,7 +3532,13 @@ directly, so anything the CLI can do an agent can do too, and vice versa.
 --timeout <duration>  Bound the request, and any operation wait.
 --quiet               Suppress non-result output.
 --verbose             Diagnostic detail on stderr.
---idempotency-key     Resume one logical state-changing request.
+--idempotency-key     Resume one logical state-changing request. OPTIONAL and
+                      off by default (D38): an ordinary command sends no
+                      `Idempotency-Key` header at all, and the server mints
+                      the operation ID. This flag is for automation that
+                      retries -- pass the SAME value to make a retry a retry.
+                      The CLI never mints one for you: a fresh key on every
+                      run is exactly a run with no key.
 --yes                 Skip the confirmation prompt on a destructive command.
 ```
 
@@ -4341,9 +4371,9 @@ Under `devbox run test`, no gate:
   five minutes" section of `docs/mcp.md` are byte-identical modulo quoting.
 - **Cold-agent schema audit**: fetch `tools/list` from a live fake-backed
   server; assert every tool has a description, every argument has a
-  description, every schema is `additionalProperties: false`, every write tool
-  requires `client_request_id`, and every write tool's description ends with
-  the fresh-key sentence.
+  description, every schema is `additionalProperties: false`, **no** tool takes
+  an idempotency key of any spelling (D38), and every write tool's description
+  ends with the lost-result sentence.
 
 - **Two accounts, in the ordinary suite**: ingest, ordering, dedup and the
   reconciliation sweep run with two fakes interleaved, asserting no cross-talk
@@ -4972,10 +5002,12 @@ model.
 6. A backward transition (`read → sent`) is refused, leaves the stored state
    alone, still writes `delivery_state_raw`, and emits
    `message.status_out_of_order`. A forward skip is accepted.
-7. The same `client_request_id` with the same body returns the same operation
+7. The same `Idempotency-Key` with the same body returns the same operation
    and calls the backend **once** (fake call counter); with a different body it
    is `idempotency_conflict` and calls it **zero** times. A key supplied as a
-   query parameter is `invalid_request`.
+   query parameter or as a body field is `invalid_request` (D38). A mutation
+   with **no** key is a new operation with a server-minted ID and one backend
+   call, and two keyless calls are two operations and two messages.
 8. Killing the process between the operation commit and the backend call, then
    restarting, leaves the operation `unknown` with `crash_recovered`; feeding
    the echo afterwards corrects it to `succeeded` with a `message_id` and sets
@@ -5247,9 +5279,9 @@ this slice's gate, not in this one.
     more; under `messages:delete` exactly the two. `tools/call` on a
     non-visible name is refused again at call time.
 15. Every tool has a description; **every argument has a description**; every
-    schema is `additionalProperties: false`; every write tool requires
-    `client_request_id`; every write tool's description ends with the
-    fresh-key sentence of §8.2. Asserted by fetching `tools/list` from a
+    schema is `additionalProperties: false`; **no** tool takes an idempotency
+    key of any spelling (D38); every write tool's description ends with the
+    lost-result sentence of §8.2. Asserted by fetching `tools/list` from a
     running server and counting, so a stale description fails the claim.
 16. A two-way table test over the route inventory and the MCP surface asserts
     §8.2's rule exactly, with **three** categories: every `/v1` route whose
@@ -5445,7 +5477,7 @@ add missing tools to `devbox.json` rather than installing on the host.
 | D4 | No outbox; sends are synchronous | `SendMessage` returns the phone's own answer within 60s. One system of record needs no reconciliation |
 | D5 | `ErrPhoneNotResponding` → operation `pending`, HTTP 504, never `failed` | Upstream says the server accepted it and the phone may still act (`session_handler.go:20-24`). Calling it a failure invites a duplicate text to a real person |
 | D6 | `account_id` is in every **root** ID derivation | A re-pair of the same Google account — even onto a different phone — keeps every ID; a different account can never collide. `att_`, `react_` and `part_` inherit it through their parent |
-| D7 | Idempotency key **required** on every mutation | Retries are the normal case for an agent, and a duplicate SMS is not recoverable |
+| D7 | Idempotency key **required** on every mutation | Retries are the normal case for an agent, and a duplicate SMS is not recoverable. **Superseded by D38** |
 | D8 | Session in an encrypted file, not in SQLite | Different write cadence, must survive a database restore-from-snapshot, must never be reachable by a query |
 | D9 | The data key is not rotatable | Rotation means re-encrypting the session and every attachment key atomically across a restart. Not worth it for one user; documented instead |
 | D10 | One `gm.Backend` interface with exactly two implementations, and **everything the API promises reachable through it** | Testability, not extensibility. A second *production* implementation is forbidden by N3. If a field cannot be served through the interface it cannot be served at all |
@@ -5476,6 +5508,7 @@ add missing tools to `devbox.json` rather than installing on the host.
 | **D35** | **The container ships in Slice 3, not Slice 4.** The Dockerfile, `compose.example.yml`, the GHCR image and `docs/deploy.md` are Slice 3 deliverables, and the claude.ai/ChatGPT connector gate runs in Slice 3 against the deployed container behind `https://gm.agent-wx.app`. **Owner decision, 2026-09-06** | Production is a Compose service beside the bridge it replaces, behind the tunnel; bare metal is only where the spike and the early gates ran. The connector gate is the first time external clients bind to the public URL, so it must exercise the artifact they will keep talking to — the container — rather than a host binary that is then repackaged. Slice 4 keeps what does not affect that gate: the npm wrapper, release binaries, the owner's Mac CLI gate, and the cutover of the live data directory into the volume |
 | **D36** | **The MCP protocol layer is the official Go SDK, `github.com/modelcontextprotocol/go-sdk`, pinned at `v1.7.0`.** The hand-written JSON-RPC, session and dispatch code is deleted. **Owner decision, 2026-09-06: "I'd rather not reinvent the wheel."** What the SDK now decides, what stays ours, and what it forced, are in §8.1, §8.2, §9.2 and the note below | A protocol we wrote ourselves is a protocol we have to keep correct against a spec that moves, with the connectors as the only test. The reference implementation is the one the clients are written against, and every place it disagreed with us is a place a connector would have disagreed with us later |
 | **D37** | **Live gate 29 is satisfied by Codex CLI through the public URL.** The owner ruled on 2026-09-07 that claude.ai and ChatGPT connectors are not required for v1: "if codex can access through funnel then we are good to go". Codex CLI completed the full OAuth flow (DCR, PKCE, enrollment screen, CLI approval), listed and read conversations, sent a text that arrived on the fleet phone, and was refused after revocation — first against a host binary (Slice 3), then through the Cloudflare Tunnel against the deployed container on the Slice 3 and Slice 3b images. Adding claude.ai or ChatGPT later is a two-minute owner action (add the connector, paste an enrollment code) and needs no code | The connector gate exists to prove a real third-party client can bind to the public URL end to end; Codex is such a client and the deployment is the one those clients will keep talking to. The Matrix + mautrix-gmessages stack was removed from the owner's Compose file the same day |
+| **D38** | **The idempotency key is no longer required anywhere.** The server always mints the operation ID and returns it. The `client_request_id` body field is **removed** from every REST route and every MCP tool schema, description and the instructions block; a body carrying it is now an unknown field and therefore `invalid_request` (§7.1). The `Idempotency-Key` **header stays, and stays optional**, with today's semantics when present: replay on the same key and body, `idempotency_conflict` on the same key with a different body, and the cross-account refusal of §6.3. A missing key is a new operation, and two keyless calls are two operations and two messages. The CLI sends no key on an ordinary command; `--idempotency-key` remains as an explicit automation flag that sets the header. Migration 0007 makes `operations.idempotency_key` nullable and its uniqueness a partial index. **Owner decision, 2026-09-07** | D7 assumed the caller could produce a stable key across a retry. An AI agent cannot: it regenerates its arguments, so its "same call twice" is two different keys, and the key was friction on every call while protecting nothing. What an agent needs instead is an instruction it can follow — **if a result is lost, look before sending again** — and an operation ID to look with, which it now always gets. A script that retries on a timeout genuinely can hold a key across the retry, so the header stays for exactly that caller. Removing the header too would have removed real protection from the one caller who could use it |
 
 #### Field observation behind D3 — the ConfigVersion, and status 4
 

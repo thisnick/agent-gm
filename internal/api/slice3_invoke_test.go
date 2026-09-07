@@ -75,7 +75,7 @@ func TestInvokeRunsTheStrictParameterChecks(t *testing.T) {
 	_, e = s.Server.Invoke(api.Invocation{
 		Ctx:       context.Background(),
 		RouteName: "conversations_start",
-		Body:      []byte(`{"recipients":["+12025550101"],"nmae":"typo","client_request_id":"k1"}`),
+		Body:      []byte(`{"recipients":["+12025550101"],"nmae":"typo"}`),
 		Auth:      auth,
 		Source:    "test",
 	})
@@ -102,7 +102,7 @@ func TestInvokeRechecksScope(t *testing.T) {
 		Ctx:       context.Background(),
 		RouteName: "messages_delete",
 		Path:      map[string]string{"message_id": "msg_x"},
-		Body:      []byte(`{"client_request_id":"k1"}`),
+		Body:      []byte(`{}`),
 		Auth:      readOnly,
 		Source:    "test",
 	})

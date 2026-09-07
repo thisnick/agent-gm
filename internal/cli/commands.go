@@ -174,7 +174,6 @@ var Commands = []Command{
 			"account_id":        "--account, required when more than one account exists (7.3)",
 			"recipients":        "positional <e164>...",
 			"name":              "--name, accepted only for 2+ recipients",
-			"client_request_id": "--idempotency-key, or minted per invocation",
 		},
 		LocalFlags: map[string]string{
 			"--wait":     "wait for the operation before returning",
@@ -189,7 +188,6 @@ var Commands = []Command{
 			"folder":            "implied by the subcommand: archive is folder=archived, unarchive is folder=active",
 			"pinned":            "implied by the subcommand: pin is pinned=true, unpin is pinned=false",
 			"unread":            "implied by the subcommand: mark-unread is unread=true",
-			"client_request_id": "--idempotency-key, or minted per invocation",
 		},
 		Notes: "five subcommands over one route. Naming the state as a verb is what keeps a `mode` argument off the surface (13.5).",
 		LocalFlags: map[string]string{
@@ -202,7 +200,6 @@ var Commands = []Command{
 		Supplies: map[string]string{
 			"conversation_id":   "positional <conv-id>",
 			"message_id":        "--message",
-			"client_request_id": "--idempotency-key, or minted per invocation",
 		},
 		Notes: "mark-read is mark_read is POST .../read: the same word on all three surfaces (11.3).",
 		LocalFlags: map[string]string{
@@ -214,7 +211,6 @@ var Commands = []Command{
 		Name: "conversations delete", Routes: []string{"conversations_delete"}, Destructive: true,
 		Supplies: map[string]string{
 			"conversation_id":   "positional <conv-id>",
-			"client_request_id": "--idempotency-key, or minted per invocation",
 		},
 		Notes: "prints the effect sentence taken from the route's response, byte for byte (16 Slice 2 test 28).",
 	},
@@ -282,7 +278,6 @@ var Commands = []Command{
 			"text":                "--text",
 			"reply_to_message_id": "--reply-to",
 			"force_rcs":           "--force-rcs",
-			"client_request_id":   "--idempotency-key, or minted per invocation",
 			"filename":            "derived from --file's path",
 			"mime_type":           "sniffed from --file's bytes",
 			"size_bytes":          "the size of --file",
@@ -303,7 +298,6 @@ var Commands = []Command{
 		Name: "messages delete", Routes: []string{"messages_delete"}, Destructive: true,
 		Supplies: map[string]string{
 			"message_id":        "positional <msg-id>",
-			"client_request_id": "--idempotency-key, or minted per invocation",
 		},
 		Notes: "prints the effect sentence taken from the route's response, byte for byte (16 Slice 2 test 28).",
 	},
@@ -312,7 +306,6 @@ var Commands = []Command{
 		Supplies: map[string]string{
 			"message_id":        "positional <msg-id>",
 			"emoji":             "positional <emoji>",
-			"client_request_id": "--idempotency-key, or minted per invocation",
 		},
 		LocalFlags: map[string]string{
 			"--wait":     "wait for the operation before returning",
@@ -326,7 +319,6 @@ var Commands = []Command{
 			"message_id":        "positional <msg-id>",
 			"emoji":             "positional <emoji>",
 			"reaction_id":       "--reaction, which addresses it by react_ ID instead",
-			"client_request_id": "--idempotency-key, or minted per invocation",
 		},
 		Notes: "there is no `unreact`: remove-reaction is remove_reaction is DELETE .../reactions/{emoji} (11.3).",
 		LocalFlags: map[string]string{

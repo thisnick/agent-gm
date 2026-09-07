@@ -200,9 +200,10 @@ func TestANonObjectBodyIsMalformedNotAnUnknownField(t *testing.T) {
 }
 
 // Section 16 Slice 2 test 7's third clause, and the reason it belongs here:
-// "a key supplied as a query parameter is invalid_request". It is true by
-// construction -- no route lists client_request_id in Query -- and this
-// asserts it route by route rather than trusting the construction.
+// "a key supplied anywhere but the header is invalid_request". It is true by
+// construction -- no route lists a key in Query, and D38 removed it from
+// every Body -- and this asserts it route by route rather than trusting the
+// construction.
 func TestTheIdempotencyKeyIsNeverAQueryParameter(t *testing.T) {
 	for _, r := range api.Routes {
 		if !strings.HasPrefix(r.Path, "/v1/") {
@@ -221,51 +222,28 @@ func TestTheIdempotencyKeyIsNeverAQueryParameter(t *testing.T) {
 	}
 }
 
-// The key's two transports, and the contradiction between them (spec section
-// 6.3). Supplying both with different values is refused rather than resolved
-// by a precedence rule: a server that picked one would be guessing which of
-// two things the caller meant, and guessing wrong sends a second real text
-// message to a real person.
-func TestIdempotencyKeyTransports(t *testing.T) {
-	t.Run("the header alone", func(t *testing.T) {
-		got, err := api.IdempotencyKeyFrom("k1", "")
+// The key's ONE transport, and the fact that it is optional (spec section
+// 6.3, D38).
+//
+// The old contradiction rule is gone with the body field it arbitrated: there
+// is only one place a key can come from, so there is nothing left to
+// contradict. What survives is the shape rule, because a key that IS present
+// and unusable is a caller mistake worth reporting, and the 200-byte bound is
+// what stops a key being used as a smuggling channel.
+func TestIdempotencyKeyTransport(t *testing.T) {
+	t.Run("the header", func(t *testing.T) {
+		got, err := api.IdempotencyKeyFrom("k1")
 		if err != nil || got != "k1" {
 			t.Fatalf("got %q, %v", got, err)
 		}
 	})
-	t.Run("the body field alone", func(t *testing.T) {
-		got, err := api.IdempotencyKeyFrom("", "k1")
-		if err != nil || got != "k1" {
-			t.Fatalf("got %q, %v", got, err)
+	t.Run("no header is not an error", func(t *testing.T) {
+		got, err := api.IdempotencyKeyFrom("")
+		if err != nil {
+			t.Fatalf("an absent key was refused: %v", err)
 		}
-	})
-	t.Run("both with the same value is not a contradiction", func(t *testing.T) {
-		got, err := api.IdempotencyKeyFrom("k1", "k1")
-		if err != nil || got != "k1" {
-			t.Fatalf("got %q, %v", got, err)
-		}
-	})
-	t.Run("both with different values is refused", func(t *testing.T) {
-		_, err := api.IdempotencyKeyFrom("k1", "k2")
-		if err == nil {
-			t.Fatal("a contradiction was resolved rather than refused")
-		}
-		if err.Code != apierr.CodeInvalidRequest || err.Details["field"] != "client_request_id" {
-			t.Errorf("got %q / %v", err.Code, err.Details)
-		}
-	})
-	t.Run("neither is refused, naming client_request_id", func(t *testing.T) {
-		_, err := api.IdempotencyKeyFrom("", "")
-		if err == nil {
-			t.Fatal("a mutation with no key was accepted")
-		}
-		if err.Details["field"] != "client_request_id" {
-			t.Errorf("details = %v", err.Details)
-		}
-		// The message says the thing that stops the mistake this rule
-		// exists for.
-		if !strings.Contains(err.Message, "fresh") {
-			t.Errorf("the message does not say a fresh key is a different call: %q", err.Message)
+		if got != "" {
+			t.Fatalf("an absent key produced %q; the server mints the operation ID, not a key", got)
 		}
 	})
 	t.Run("an unusable key is refused and writes nothing", func(t *testing.T) {
@@ -274,14 +252,14 @@ func TestIdempotencyKeyTransports(t *testing.T) {
 			"a control character": "k\x00k",
 			"a newline":           "k\nk",
 		} {
-			if _, err := api.IdempotencyKeyFrom(key, ""); err == nil {
+			if _, err := api.IdempotencyKeyFrom(key); err == nil {
 				t.Errorf("%s was accepted", name)
-			} else if err.Details["field"] != "client_request_id" {
-				t.Errorf("%s named %v", name, err.Details)
+			} else if err.Details["field"] != "Idempotency-Key" {
+				t.Errorf("%s named %v, want the Idempotency-Key header", name, err.Details)
 			}
 		}
 		// Exactly at the bound is fine: the rule is "over 200 bytes".
-		if _, err := api.IdempotencyKeyFrom(strings.Repeat("k", api.MaxIdempotencyKeyBytes), ""); err != nil {
+		if _, err := api.IdempotencyKeyFrom(strings.Repeat("k", api.MaxIdempotencyKeyBytes)); err != nil {
 			t.Errorf("a key of exactly the maximum length was refused: %v", err)
 		}
 	})

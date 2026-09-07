@@ -68,7 +68,6 @@ type uploadCreateBody struct {
 	MimeType        string `json:"mime_type"`
 	SizeBytes       *int64 `json:"size_bytes"`
 	SHA256          string `json:"sha256"`
-	ClientRequestID string `json:"client_request_id"`
 }
 
 type uploadLimitsDTO struct {
@@ -104,7 +103,7 @@ func (d *HandlerDeps) uploadsCreate(r *Request) (*Response, error) {
 	if e := r.DecodeBody(&body); e != nil {
 		return nil, e
 	}
-	key, e := idempotency(r, body.ClientRequestID)
+	key, e := idempotency(r)
 	if e != nil {
 		return nil, e
 	}

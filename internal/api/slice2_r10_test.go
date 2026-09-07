@@ -35,7 +35,6 @@ func TestSlice2_R10i_AMediaSendProducesAnAttachmentRow(t *testing.T) {
 		"filename":          "fixture.jpg",
 		"mime_type":         "image/jpeg",
 		"size_bytes":        len(body),
-		"client_request_id": key("r10i-reserve"),
 	}).ok(t, 201)
 	uploadID := getString(t, upload.Data, "upload_id")
 	token := getString(t, upload.Data, "token")
@@ -45,7 +44,6 @@ func TestSlice2_R10i_AMediaSendProducesAnAttachmentRow(t *testing.T) {
 
 	sent := s.call("POST", "/v1/conversations/"+conv.ID+"/messages", map[string]any{
 		"upload_ids":        []string{uploadID},
-		"client_request_id": key("r10i-send"),
 	}).ok(t, 200)
 
 	// message_id is always PRESENT, null until the echo lands (7.7, 6.5).

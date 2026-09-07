@@ -73,7 +73,8 @@ Available on every command.
 --timeout <duration>    Bound the request, and any operation wait.
 --quiet                 Suppress non-result output.
 --verbose               Diagnostic detail on stderr.
---idempotency-key <k>   Resume one logical state-changing request.
+--idempotency-key <k>   Resume one logical state-changing request. Optional,
+                        and off by default: an ordinary command sends no key.
 --yes                   Skip the confirmation prompt on a destructive command.
 --credentials-file <p>  Override the credentials file.
 ```
@@ -308,11 +309,21 @@ agm messages remove-reaction <msg-id> <emoji> | --reaction <react-id>
   **`agm messages remove-reaction <msg-id> <emoji>`** — both positional.
   `--reaction <react-id>` removes by ID instead. There is no `unreact`.
 
-Every mutation takes `--idempotency-key`. Omit it and `agm` mints one per
-invocation — which means **re-running the command sends again**. To retry a
-send that timed out, re-run it with the *same* key; do not let a fresh one be
-minted. Reusing a key against a *different* `--account` is refused rather than
-obeyed, because obeying it would send a second real message to a real person.
+Every mutation accepts `--idempotency-key`, and **omitting it is the ordinary
+case**: `agm` then sends no `Idempotency-Key` header at all and the server
+mints the operation ID. Re-running the command sends again, which is what
+re-running a send has always meant.
+
+`agm` never mints a key for you. It used to, and that was a fiction: a fresh
+key on every run is exactly a run with no key, with one more field on the
+wire. The flag is for **automation that retries** — pass the *same* value on
+the retry and the second call returns the first operation and sends nothing.
+Reusing a key against a *different* `--account` is refused rather than obeyed,
+because obeying it would send a second real message to a real person.
+
+If a send times out and you sent no key, **do not just re-run it**:
+`agm messages list --conversation <conv-id>` or `agm operations list` first.
+The send may well have gone.
 
 ### Attachments and contacts
 

@@ -155,11 +155,11 @@ note "paired $acct"
 # rather than an empty schema. +1 202 555 0123 is the reserved fictional
 # range; it is not dialled and cannot be.
 conv="$(api "$url_a" "$tok_a" POST /v1/conversations \
-  "$(jq -nc --arg a "$acct" '{account_id:$a,recipients:["+12025550123"],client_request_id:"drill-start-conversation"}')" \
+  "$(jq -nc --arg a "$acct" '{account_id:$a,recipients:["+12025550123"]}')" \
   | jq -r '.data.conversation.id // .data.conversation_id // .data.id')"
 [ -n "$conv" ] && [ "$conv" != null ] || die "starting a conversation produced no id"
 api "$url_a" "$tok_a" POST "/v1/conversations/$conv/messages" \
-  '{"text":"the drill message","client_request_id":"drill-send-one"}' >/dev/null
+  '{"text":"the drill message"}' >/dev/null
 note "seeded $conv with one message"
 
 # A settings row, so the restore is judged on the database's own mutable

@@ -78,7 +78,6 @@ func TestSlice3Test17MultiAccount(t *testing.T) {
 	// candidates so the caller can retry without a second round trip.
 	refused := h.tool("start_conversation", map[string]any{
 		"recipients":        []any{fictionalA},
-		"client_request_id": "cri-multi-1",
 	})
 	if !isError(refused) {
 		t.Fatal("start_conversation with two accounts and no account_id was accepted")
@@ -112,7 +111,6 @@ func TestSlice3Test17MultiAccount(t *testing.T) {
 	retried := h.tool("start_conversation", map[string]any{
 		"account_id":        a,
 		"recipients":        []any{fictionalA},
-		"client_request_id": "cri-multi-2",
 	})
 	if isError(retried) {
 		t.Fatalf("retrying with account_id %s was refused: %v", a, resultError(t, retried))
@@ -173,7 +171,6 @@ func TestSlice3Test17SingleAccount(t *testing.T) {
 	}
 	started := h.tool("start_conversation", map[string]any{
 		"recipients":        []any{fictionalA},
-		"client_request_id": "cri-single-1",
 	})
 	if isError(started) {
 		t.Fatalf("a write with one account and no account_id was refused: %v", resultError(t, started))
