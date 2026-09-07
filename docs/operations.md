@@ -204,6 +204,59 @@ The snapshot is restored **as `agent-gm.sqlite3`**, and nothing else is
 copied beside it: no `-wal`, no `-shm`. Those belong to the database it came
 from and not to this one.
 
+## Restoring in place under Docker
+
+Putting a snapshot back into the deployment it came from. It is done
+**stopped**: replacing a database under a running server is the one thing this
+page keeps saying not to do.
+
+```bash
+# 1. Stop the container. Not "quiesce it" -- stop it.
+docker compose stop agent-gm
+
+# 2. Replace the data directory's contents from the backup. Into an EMPTY
+#    directory: no -wal, no -shm, nothing from the database this snapshot
+#    came from. Adjust for a bind mount by writing to the host path instead.
+docker run --rm -v agent-gm-data:/data -v "$PWD/restore:/from:ro" alpine:3 sh -c '
+  rm -rf /data/agent-gm.sqlite3 /data/agent-gm.sqlite3-wal /data/agent-gm.sqlite3-shm /data/sessions
+  cp /from/agent-gm-20260907T152323Z-c310acf5.sqlite3 /data/agent-gm.sqlite3
+  cp -a /from/sessions /data/sessions
+  chmod 700 /data/sessions
+  chown -R 65532:65532 /data'
+
+# 3. Confirm AGENT_GM_DATA_KEY is the key that sealed those session files.
+#    It is not rotatable, so this is the key from the same backup, byte for
+#    byte -- not a freshly generated one.
+docker compose config | grep -c AGENT_GM_DATA_KEY
+
+# 4. Start it, and read health rather than the logs.
+docker compose up -d agent-gm
+agm health
+```
+
+The image runs as `nonroot` (uid 65532), so anything copied in as root is
+unreadable to the server; the `chown` above is not optional when the copy was
+made by hand.
+
+**What `agm health` should say.** Every account is back in the state it was in
+when the snapshot was taken, with its history. An account that comes back
+`signed_out` with `state_reason: credentials` means one of exactly two things,
+and they are checked in this order:
+
+1. **The data key is not the one that sealed `sessions/`.** The server logs
+   `session envelope cannot be decrypted` at startup, starts anyway, and marks
+   each account whose session will not open `signed_out` / `credentials`.
+   `session_present` stays `1`. Put the original key back and restart, and the
+   accounts return with **no re-pair**. Check this first: it is the likelier
+   mistake and the cheaper fix.
+2. **`sessions/` did not come across.** Then there is nothing to decrypt, the
+   history is intact and readable, and the recovery is `agm pair` per account —
+   nothing else. Re-pairing keeps every existing `conv_` and `msg_` ID.
+
+Either way nothing is lost but the pairings, because message text is not
+encrypted at rest. Keep the previous data directory or volume for a few days:
+it costs nothing and it is a rollback that needs no restore.
+
 ## Moving a bind-mounted data directory into a named volume
 
 The cutover a first deployment eventually needs: a `/data` that started as a
@@ -388,6 +441,9 @@ recreate the container, and the process migrates before it binds.
 
 ### The `libgm` pin policy
 
+Every pin, and the entry each bump writes, is in
+[upstream-pin.md](upstream-pin.md).
+
 Agent GM pins `go.mau.fi/mautrix-gmessages` to commit **`be48a58`**
 (`ConfigVersion` 2026-09-02). That pin is a fact recorded in three places
 that must agree — `go.mod`, `internal/gm/pin.go`, and spec §3.6 — and CI
@@ -433,7 +489,8 @@ devbox run check && devbox run conformance
 #    The maintainer runs this by hand. CI cannot.
 ```
 
-Record the result in `docs/upstream-pin.md`, creating it on the first bump: the old and new commits, every change
+Record the result in [upstream-pin.md](upstream-pin.md), in the shape that
+page gives: the old and new commits, every change
 to a symbol in spec §3.1, the `ConfigVersion` before and after, every added,
 removed or renamed enum value in the delivery-state or event vocabularies, and
 the live gate that accepted it. A bump with no entry there is a bump nobody
