@@ -649,7 +649,6 @@ values with no Agent GM meaning and are never IDs.
 | `rate_limited` | 429 | **yes** | With `Retry-After` |
 | `internal_error` | 500 | **yes** | A bug |
 | `not_default_sms_app` | 502 | no | The phone is not the default SMS app |
-| `config_version_stale` | 502 | no | A conversation-creating call failed **and** the compiled and live `ConfigVersion` differ. The message names both and says the fix is a pin bump |
 | `google_undocumented_status` | 502 | no | A Google enum value the pinned protocol has no name for. `details.status` is the bare integer; no meaning is claimed |
 | `google_error` | 502 | **maybe** | A Google-side error; `details.google_type` (integer) and `details.google_message`. Only the status behind it knows whether a retry can help |
 | `google_http_error` | 502 | **yes** | Transport level; `details.status` |

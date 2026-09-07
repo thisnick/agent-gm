@@ -85,7 +85,7 @@ server cannot come to disagree about what exit `7` means.
 | `unsupported_capability` | `6` |
 | `rate_limited`, `disconnected`, `phone_not_responding`, `google_http_error`, `pairing_init_timeout` | `7` |
 | an operation reaching `failed` or `unknown` while waiting | `8` |
-| `not_paired`, every other `pairing_*`, `not_default_sms_app`, `config_version_stale`, `google_error`, `google_undocumented_status`, `google_permission_denied`, `internal_error` | `10` |
+| `not_paired`, every other `pairing_*`, `not_default_sms_app`, `google_error`, `google_undocumented_status`, `google_permission_denied`, `internal_error` | `10` |
 
 Three of them are easy to get wrong, so they are stated plainly.
 

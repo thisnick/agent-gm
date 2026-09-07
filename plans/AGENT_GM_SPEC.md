@@ -951,12 +951,15 @@ in the pinned tree, it says so and points at §18.1.
   unnamed value, and never claims to know what one means. See D3 and §18.1
   for the ConfigVersion field observation and the separate
   `config_version_stale` diagnosis.
-- **`config_version_stale` is Agent GM's own **health field**, never an error code, not Google's answer.**
-  It is raised when a conversation-creating call returns a non-`SUCCESS`
-  status **and** the live `ConfigVersion` from `FetchConfig` differs from the
-  compiled-in `util.ConfigMessage` in year, month or day. The ConfigVersion
-  diff is the whole detection rule; no particular status code is required or
-  claimed. **The compiled version is a property of the binary; the live one is
+- **`config_version_stale` is Agent GM's own **health field**, never an error
+  code, not Google's answer.**
+  It is true when the live `ConfigVersion` from `FetchConfig` differs from the
+  compiled-in `util.ConfigMessage` in year, month or day. That is the whole
+  rule: it is a statement about two version numbers, observable without any
+  failure at all, and it never becomes the diagnosis of one. When a
+  conversation-creating call does fail while the versions differ, Google's own
+  status is still reported and the two versions are added to `details` as
+  context (§7.2, D32). **The compiled version is a property of the binary; the live one is
   a property of each account's `FetchConfig`**, so `GET /v1/health` carries the
   compiled value once at the top level and a `google` block per account — §7.5
   holds the one authoritative shape of that document. The diff is therefore
@@ -3388,7 +3391,7 @@ code, and the mapping is exhaustive — §16 Slice 2 test 18 enumerates it:
 | `unsupported_capability`, including `not_signed_in` — an **account**-level condition, which is why the gloss above names the account | `6` |
 | `rate_limited`, `disconnected`, `phone_not_responding`, `google_http_error`, `pairing_init_timeout` | `7` |
 | an operation reaching `failed` or `unknown` while waiting | `8` |
-| `not_paired`, every other `pairing_*`, `not_default_sms_app`, `config_version_stale`, `google_error`, `google_undocumented_status`, `google_permission_denied` | `10` |
+| `not_paired`, every other `pairing_*`, `not_default_sms_app`, `google_error`, `google_undocumented_status`, `google_permission_denied` | `10` |
 | `internal_error` | `10` |
 
 `idempotency_conflict` is exit `2` because it is a caller mistake: the same key
@@ -4096,14 +4099,14 @@ Under `devbox run test`, no gate:
 - **Cursor signing**: tamper rejection, filter-binding rejection, stability
   across equal timestamps.
 - **Error mapping**: every library error in §3.5 to its code and status.
-- **`config_version_stale`**: the fake returns a **non-`SUCCESS`
-  `ResolveResult.Status`** *and* a live `ConfigVersion` differing from the
-  compiled one → the error names both versions and says a pin bump is the fix.
-  The test must **not** script a particular status number: §3.7's detection
-  rule is the version diff alone, and asserting on a status code would
-  re-import the unsourced claim §18.1 withdrew. A separate case proves the
-  converse — a non-`SUCCESS` status with *matching* versions is
-  `google_undocumented_status`, not `config_version_stale`.
+- **A version mismatch is context, never the diagnosis**: the fake returns a
+  **non-`SUCCESS` `ResolveResult.Status`** *and* a live `ConfigVersion`
+  differing from the compiled one → the error is still `google_error` or
+  `google_undocumented_status` by Google's own status, with both versions in
+  `details` and a sentence saying a pin bump is worth trying. The test must
+  **not** script a particular status number: the version diff says nothing
+  about which status arrived, and asserting on a status code would re-import
+  the unsourced claim §18.1 withdrew.
 - **Exit-code matrix**: every code in §11.2 produced by a real CLI invocation
   against a fake-backed server.
 - **Golden JSON** for every response and error shape.
@@ -4597,11 +4600,13 @@ that is the normal resting state between pin bumps. It does not change
 own call for any action:
 
 - **Everything works** → do nothing. Note it and carry on.
-- **Starting a conversation fails** *and* the versions differ → this is the
-  `config_version_stale` **error code** (§7.2), and the fix is a pin bump as
-  its own slice with its own live gate (§3.6). Retrying does not help.
-- **Starting a conversation fails and the versions match** → it is not this;
-  see `google_undocumented_status` in §15.4.
+- **Starting a conversation fails** *and* the versions differ → the error is
+  Google's own status, with both versions in `details` as context (§7.2 —
+  there is no `config_version_stale` error code, D32). A pin bump as its own
+  slice with its own live gate (§3.6) is the reasonable next move; retrying
+  the same request is not.
+- **Starting a conversation fails and the versions match** → the version is
+  not even context; see `google_undocumented_status` in §15.4.
 
 ### 15.6 If the public URL ever has to change
 
@@ -4757,8 +4762,9 @@ model.
     `CreateRCSGroup=true` and succeeds; a second `CREATE_RCS` is
     `google_error`; an **unnamed integer** is `google_undocumented_status`
     with `details.status` carrying the bare number and no invented name; and a
-    failure with a compiled/live `ConfigVersion` mismatch is
-    `config_version_stale` naming both versions.
+    failure with a compiled/live `ConfigVersion` mismatch still reports
+    Google's own status, with both versions in `details` as context and never
+    as the diagnosis (D32).
 12. Every `/v1` route rejects an unknown query parameter and an unknown body
     field with `invalid_request` naming it, including `?_=1`; route by route,
     not a sample.
@@ -4933,7 +4939,8 @@ model.
 48. **Live gate.** `agm conversations start <APPROVED_GROUP_NUMBER_1>
     <APPROVED_GROUP_NUMBER_2> --name "agent-gm test"` creates a group. If it
     fails, the failure is diagnosed against the §15.4 runbook rows
-    (group-MMS setting, `config_version_stale`, `google_undocumented_status`)
+    (group-MMS setting, a `config_version_stale` health field, a
+    `google_undocumented_status`)
     before anything is changed.
 
 ### Slice 3 — OAuth and MCP

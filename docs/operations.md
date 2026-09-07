@@ -263,16 +263,22 @@ There are exactly three cases:
    it and carry on. The Slice 1 live gate paired, listed, sent and received
    an echo with a live version ahead of the pin.
 
-2. **A conversation-creating call fails *and* the versions differ.** *Now* it
-   is the `config_version_stale` **error code** (502). The fix is a `libgm`
-   pin bump, as its own slice with its own live gate. **Retrying does not
-   help** — the request is being rejected for the version it carries, and it
-   will carry the same one next time.
+2. **A conversation-creating call fails *and* the versions differ.** The
+   error is still Google's own status — `google_error` or
+   `google_undocumented_status` — and the two versions arrive in `details` as
+   **context**, with a sentence saying a pin bump is worth trying. There is
+   no `config_version_stale` error code: it was retired because relabelling
+   every failure that happened to coincide with a version difference told an
+   operator to bump the pin for failures that had nothing to do with the pin,
+   and threw away the status that did fail. A pin bump is a reasonable next
+   move here, as its own slice with its own live gate, but **retrying the
+   same request is not** — it will carry the same version next time.
 
-3. **A conversation-creating call fails and the versions match.** Then it is
-   not this. It is `google_undocumented_status`: Google returned a status the
-   pinned proto has no name for. Record `details.status` and the request and
-   report it upstream. **Do not invent a meaning for the integer** — it is a
+3. **A conversation-creating call fails and the versions match.** Then the
+   version is not even context. It is `google_undocumented_status`: Google
+   returned a status the pinned proto has no name for. Record
+   `details.status` and the request and report it upstream. **Do not invent a
+   meaning for the integer** — it is a
    diagnostic value with no Agent GM meaning, published so you have something
    to search for.
 
@@ -455,7 +461,7 @@ a wrapper is the wrapper's own, never Agent GM's.
 | `7` | Retryable network, Google, phone or rate-limit failure — including `phone_not_responding` and `pairing_init_timeout` | Back off and retry. **For `phone_not_responding` the send is `pending`, not failed: print the operation ID and wait, do not resend** |
 | `8` | An operation reached a terminal failure while waiting | The send failed. Decide at the application level |
 | `9` | Local configuration or credential-store failure — including "no Chrome found" and an unwritable credentials directory | Fix the machine. A `9` from a credential write means **the token is still good**; nothing was spent |
-| `10` | Server contract or internal failure — including `not_paired`, the `pairing_*` codes other than `pairing_init_timeout`, `not_default_sms_app`, `config_version_stale`, `google_error`, `google_undocumented_status`, `google_permission_denied` and `internal_error` | Do not blind-retry. Read the code |
+| `10` | Server contract or internal failure — including `not_paired`, the `pairing_*` codes other than `pairing_init_timeout`, `not_default_sms_app`, `google_error`, `google_undocumented_status`, `google_permission_denied` and `internal_error` | Do not blind-retry. Read the code |
 
 A command that times out waiting returns `7`, prints the operation ID, and
 leaves it available to `agm operations wait <op-id>`.
