@@ -354,3 +354,154 @@ it replaced.
    protected environment).
 4. Keep the two test files this review added; un-skip the two planted tests
    as R-1 and R-2 land.
+
+---
+
+# Addendum — re-review at `ee7cad1`
+
+Synced with `git fetch origin slice-4/release` and `git checkout --detach ee7cad1`.
+`devbox run check` at `ee7cad1`: **EXIT=0**, 0 lint issues, every package `ok`,
+`no-real-numbers`/`no-deployment-host` clean. `internal/release` is now **22
+tests, 22 passing**, up from 14.
+
+My two files were carried in unchanged — the only diff against `review/slice-4`
+is the removal of the two `t.Skip` lines. No assertion was weakened, which is
+the one thing a plant's author has to check.
+
+## R-1, R-2, R-6, R-7, R-8: confirmed fixed, driven by me
+
+I ran `scripts/release.sh` with forged `GITHUB_REF_TYPE`/`GITHUB_REF_NAME`
+rather than reading the diff.
+
+**R-1.** Nine non-versions × three publishing modes = 27 invocations, all
+refused *before* cosign, `gh` or npm is touched:
+
+```
+vnonsense / vtest / v1.0 / v1.0.0.1 / v-1.0.0 / latest / "v1.0.0 " (trailing space)
+  × sign, publish, npm-publish   →  release: refusing to <mode> from the tag …
+```
+
+And the check that matters more, because a guard that refuses everything is
+not a guard: `v1.0.0`, `v0.0.1`, `v10.20.30`, `v1.0.0-rc.1`, `v1.0.0-alpha.1`
+all get **past** `require_tag` and stop at the digest instead.
+
+**R-2 / R-6.** `do_publish` now refuses, in this order: unset → *"a release
+note pins a deployment by digest (section 14.2)"*; `unknown` → *"not a
+sha256:<64 hex> digest"*; `sha256:abc` and a bare 64-hex string → same; a
+well-shaped digest → *"does not resolve on the registry"*. The revision-label
+comparison is the right answer to R-6, and `scripts/image.sh:77` does pass
+`--build-arg COMMIT=$commit`, so the label will be populated.
+
+**R-7.** A stale `dist/npm-tarball.txt` is refused by name: *"the packed
+tarball is agent-gm-cli-0.0.0-dev.deadbee.tgz, but this release is 1.0.0"*.
+
+**R-8.** Both sentences fixed.
+
+**Their plant is a good one.** Deleting the `LABEL` line, or hardcoding the
+revision instead of `${COMMIT}`, is killed by
+`TestTheImageCarriesTheRevisionLabelTheDigestGuardReads`. Reverting
+`require_tag` is killed by both `TestOnlyASemverTagPublishes` (mine) and
+`TestReleaseScriptRefusesATagThatIsNotAVersion` (theirs).
+
+## R-9 (blocking) — the `ci`-is-green gate can never pass, so no release can ever be cut
+
+`.github/workflows/release.yml:150-153`:
+
+```
+conclusion="$(gh api "…/actions/runs?head_sha=${GITHUB_SHA}&per_page=100" \
+  --jq '[.workflow_runs[] | select(.name == "ci" and .event == "push")]
+        | sort_by(.run_started_at) | last | .conclusion // "none"')"
+[ "$conclusion" = success ] || exit 1
+```
+
+`ci.yml:12` fires on `tags: ["v*"]`. So pushing `v1.0.0` starts a **second**
+`ci` push run for that same `head_sha`, and it is by definition still running
+when the `release` job's first step asks. `sort_by(.run_started_at) | last`
+picks that one. Its conclusion is `null`, `// "none"` turns it into `none`,
+and the job exits 1.
+
+I ran the jq against the exact shape GitHub will return:
+
+```
+--- implementer's rule (sort_by | last):        none      ← the release dies
+--- "any ci push run for this sha succeeded":   1         ← the fact it meant to check
+```
+
+The gate is right in intent and inverted in effect: **it fails closed on every
+release, including a perfectly green one.** R-5 as I filed it is satisfied by
+the `merge-base` check; this is a new defect introduced by the fix for it.
+
+**Fix.** Ask whether *any* `ci` push run for this commit concluded `success`,
+rather than what the newest one concluded:
+
+```
+green="$(gh api "…/actions/runs?head_sha=${GITHUB_SHA}&per_page=100" \
+  --jq '[.workflow_runs[] | select(.name=="ci" and .event=="push"
+         and .conclusion=="success")] | length')"
+[ "$green" -ge 1 ] || { echo "::error::no green ci run for ${GITHUB_SHA}" >&2; exit 1; }
+```
+
+A commit only reaches a tag by being on `main`, and the ancestry check on the
+line above already proves that, so "some push run of `ci` for this exact sha
+went green" is the honest question.
+
+## R-10 (medium) — the workflow is still the one file nothing tests
+
+Two plants survived the whole suite at `ee7cad1`:
+
+| # | File | Mutation | Result |
+|---|---|---|---|
+| Q5 | `scripts/image.sh:77` | `--build-arg "COMMIT="` (stop passing the commit) | **SURVIVED** — the Dockerfile test proves the `LABEL` reads `${COMMIT}`; nothing proves anybody *sets* it. The label ships empty and `require_digest` dies with "carries no org.opencontainers.image.revision label" on release day |
+| Q6 | `.github/workflows/release.yml:145` | delete the `merge-base --is-ancestor` check | **SURVIVED** — no test reads the workflow at all |
+
+Q6 is not a hypothetical: **R-9 is a live bug sitting in exactly the region
+Q6 shows is unguarded.** `tag_guards_test.go` runs `release.sh`, which is a
+real advance; the YAML that calls it is still asserted by nobody.
+
+**Fix.** A small text test over `.github/workflows/release.yml` in the shape
+of my `matrix_consistency_test.go`: the `release` job contains a
+`merge-base --is-ancestor` against `origin/main`, its ci-conclusion jq selects
+on `.conclusion=="success"` rather than on ordering, and `image.sh` passes
+both `--build-arg VERSION=` and `--build-arg COMMIT=` with non-empty values.
+I have not written it; R-9 has to be decided first and the test should encode
+the decision.
+
+## R-11 (low, new) — the digest shape check is not hex
+
+`scripts/release.sh` gates on `sha256:` followed by 64 `?` glob wildcards, so
+
+```
+$ … AGENT_GM_IMAGE_DIGEST=sha256:zzzz…zzzz ./scripts/release.sh publish
+release: ghcr.io/thisnick/agent-gm@sha256:zzz… does not resolve on the registry
+```
+
+It is caught, but by the registry rather than by the shape, so the diagnosis a
+reader gets for a typo'd digest is "the image is not there". `[0-9a-f]` in a
+`[[ =~ ]]` would name the real problem. Also `v01.0.0` passes `require_tag`
+and is not valid semver (leading zero); npm rejects it, so nobody is harmed.
+
+## Residual, unchanged
+
+`docs/deploy.md` still carries a third copy of the cosign identity regexp with
+nothing keeping it byte-identical to `scripts/release.sh`. My answer to the
+implementer's question: **yes, tie it down** — it is four lines in
+`TestTheNotesCosignIdentityNamesTheWorkflowThatSigns`, and it is the only
+copy an operator actually reads.
+
+## Revised verdict
+
+**PR #1 may merge.** R-1, R-2, R-6, R-7 and R-8 are genuinely fixed and I
+verified each by running it.
+
+**`v1.0.0` still may not be tagged**, for a new reason: R-9 means the first
+tag would fail its own gate. That is fail-*closed*, so nothing unsafe would
+ship — but it must be fixed before a release is attempted, and fixing it under
+time pressure on release day is precisely the situation this slice exists to
+avoid.
+
+Must land before a tag:
+
+1. **R-9** — the ci-green jq, which currently cannot pass.
+2. **R-10** — a text test over `release.yml` and `image.sh`, so R-9 cannot
+   recur silently.
+3. R-11 and the `docs/deploy.md` cosign copy: nice to have, not blocking.
