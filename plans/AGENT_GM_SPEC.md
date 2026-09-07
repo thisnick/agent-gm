@@ -5011,7 +5011,16 @@ model.
 
 **Deliverables.** `internal/oauth` in full (§9); `internal/mcp` in full (§8);
 the instructions block; `devbox run conformance` and its baseline; the name
-lint and its meta-test; `docs/mcp.md`, `docs/oauth.md`.
+lint and its meta-test; `docs/mcp.md`, `docs/oauth.md`. **Pulled forward from
+Slice 4 (owner decision D35):** the Dockerfile (§14.1), `compose.example.yml`,
+the GHCR image built and pushed by CI on every push to `main` (§14.2), and
+`docs/deploy.md` — because this slice's live gate is claude.ai and ChatGPT
+connecting through `https://gm.agent-wx.app`, and that gate must run against
+the container behind the tunnel, which is what those clients will talk to
+forever after. The deployment-specific integration (the Compose service and
+the `cloudflared` sidecar in the owner's `openclaw-custom` stack, origin
+`agent-gm:8080`) is done by the coordinator in that repository as part of
+this slice's gate, not in this one.
 
 **Acceptance tests.**
 
@@ -5115,54 +5124,57 @@ lint and its meta-test; `docs/mcp.md`, `docs/oauth.md`.
     `<APPROVED_DIRECT_NUMBER>`. The owner then revokes the authorization and
     the next call is `401`.
 
-### Slice 4 — packaging and the connectors
-
-**Deliverables.** The Dockerfile, `compose.example.yml`, the release workflow,
-the GHCR push, the npm wrapper, `docs/deploy.md`, `CHANGELOG.md`.
-
-**Acceptance tests.**
-
-1. The image builds for `linux/amd64` and `linux/arm64`, runs as `nonroot`,
-   and `agent-gm healthcheck` succeeds inside it with no shell and no `curl`.
-2. `docker compose -f compose.example.yml up` on a clean machine with only the
-   three required environment variables reaches `GET /healthz` = 200.
-3. `GET /v1/health` and MCP `serverInfo` report a `commit` equal to the built
-   commit and a `source_url` that resolves — the AGPL §13 obligation of §1.4.
-4. CI cross-compiles all six release binaries and asserts each runs
-   `agm version` under `qemu` where the architecture allows; the two darwin
-   archives are checked for architecture and dynamic-link correctness with
-   `file` and `otool -L` equivalents, since there is no macOS runner. Darwin
-   execution is covered by test 9.
-5. The wrapper verifies the downloaded binary against the `checksums.txt`
-   **pinned inside the npm tarball**; a tampered download fails install with a
-   message naming the file; `AGENT_GM_CLI_SKIP_DOWNLOAD=1` skips cleanly and
-   `AGENT_GM_CLI_BINARY` points at an existing binary.
-6. An unsupported platform fails `postinstall` with a message naming the
-   platform, rather than installing something that cannot run.
-7. Exit codes survive the npm shim: `agm --nonsense` exits `2` through npm as
-   it does natively; a `not_found` exits `5`.
-8. The GitHub release carries all six archives, `checksums.txt` and a valid
-   cosign signature; the GHCR digest is recorded in the release notes together
-   with the `libgm` pin.
-9. **Live gate.** The owner installs the CLI on their Mac, runs
-   `agm auth login` against `https://gm.agent-wx.app`,
-   `agm conversations list`, and `agm messages send` one text to
-   `<APPROVED_DIRECT_NUMBER>`.
-10. **Live gate.** claude.ai and ChatGPT each add
+26. The image builds for `linux/amd64` and `linux/arm64`, runs as `nonroot`,
+    and `agent-gm healthcheck` succeeds inside it with no shell and no `curl`.
+27. `docker compose -f compose.example.yml up` on a clean machine with only the
+    three required environment variables reaches `GET /healthz` = 200.
+28. `GET /v1/health` and MCP `serverInfo` report a `commit` equal to the built
+    commit and a `source_url` that resolves — the AGPL §13 obligation of §1.4.
+29. **Live gate.** claude.ai and ChatGPT each add
     `https://gm.agent-wx.app/mcp` as a connector against the **deployed**
     container, complete enrollment and approval, list conversations, read a
     message, and send one text to `<APPROVED_DIRECT_NUMBER>`. Each is then
     revoked from `/v1/admin/authorizations` and the connector reports a
     failure rather than silently continuing.
 
+### Slice 4 — packaging and the connectors
+
+**Deliverables.** The release workflow, the npm wrapper, the cutover runbook
+(the owner's `~/code/agent-gm-live` data directory and data key into the
+container volume and 1Password), the backup/restore drill, `CHANGELOG.md`.
+The Dockerfile, `compose.example.yml`, the GHCR push and `docs/deploy.md`
+moved to Slice 3 (D35).
+
+**Acceptance tests.**
+
+1. CI cross-compiles all six release binaries and asserts each runs
+   `agm version` under `qemu` where the architecture allows; the two darwin
+   archives are checked for architecture and dynamic-link correctness with
+   `file` and `otool -L` equivalents, since there is no macOS runner. Darwin
+   execution is covered by test 6.
+2. The wrapper verifies the downloaded binary against the `checksums.txt`
+   **pinned inside the npm tarball**; a tampered download fails install with a
+   message naming the file; `AGENT_GM_CLI_SKIP_DOWNLOAD=1` skips cleanly and
+   `AGENT_GM_CLI_BINARY` points at an existing binary.
+3. An unsupported platform fails `postinstall` with a message naming the
+   platform, rather than installing something that cannot run.
+4. Exit codes survive the npm shim: `agm --nonsense` exits `2` through npm as
+   it does natively; a `not_found` exits `5`.
+5. The GitHub release carries all six archives, `checksums.txt` and a valid
+   cosign signature; the GHCR digest is recorded in the release notes together
+   with the `libgm` pin.
+6. **Live gate.** The owner installs the CLI on their Mac, runs
+   `agm auth login` against `https://gm.agent-wx.app`,
+   `agm conversations list`, and `agm messages send` one text to
+   `<APPROVED_DIRECT_NUMBER>`.
 ## 17. The agent team
 
 | Slice | Implementer | Reviewer | Why |
 |---|---|---|---|
 | 1 spike | Opus | Opus | Reading a pinned library correctly; small and concrete |
 | 2 store, REST, CLI, media | Opus | Opus | Large but fully specified. Escalate to Fable if the crash-recovery or media-ticket work reports a contract conflict |
-| 3 OAuth and MCP | Opus | **Fable** | Security invariants that fail silently. The reviewer must be able to reason about the replay, rotation and audience rules |
-| 4 packaging and the connectors | Opus | Opus | Mechanical, but it owns the claude.ai/ChatGPT live gate against the real deployment |
+| 3 OAuth, MCP, image | Opus | **Fable** | Security invariants that fail silently. The reviewer must be able to reason about the replay, rotation and audience rules. Owns the claude.ai/ChatGPT live gate against the deployed container (D35) |
+| 4 releases and cutover | Opus | Opus | Mechanical: npm wrapper, release binaries, the owner's Mac CLI gate, the data cutover |
 
 Roles are `.claude/agents/implementer.md` and `.claude/agents/reviewer.md`.
 Both were rewritten for Agent GM alongside this spec: they name this file as
@@ -5246,6 +5258,7 @@ add missing tools to `devbox.json` rather than installing on the host.
 | **D32** | **`config_version_stale` is a health field and nothing else. There is no `config_version_stale` error code.** `GET /v1/health` and `agm health` report it as a boolean fact about the account — two version numbers that differ, observable with nothing wrong. A failure that happens while they differ is reported as Google's own status (`google_error` or `google_undocumented_status`), with both versions in `details` as *context* and a sentence saying a pin bump is worth trying. Recorded 2026-09-06 from the Slice 1 live gate; **amended 2026-09-07 from the Slice 2 live gate**, which retired the error code | The live gate saw `config_version_stale: true` (live `2026.9.3.4.6` against the pin's `2026.9.2.4.6`) while pairing, listing, sending and the echo all worked. Treating the version difference as an error would have failed a healthy deployment; treating it as invisible would have hidden the one diagnosis §15.4 gives for a conversation-creating failure. So it is surfaced, it does not change `status`, and §15.5 says what an operator does about it: nothing. The first form of this decision went further and made it an error code once a conversation-creating call had failed, on the reasoning that a failure plus a version difference is the one moment the difference matters. The Slice 2 live gate showed why that was wrong: a named group start was failing for the NAME (D34), the versions happened to differ, and the failure was relabelled `config_version_stale` — which sent the operator after the pin and discarded the status that had actually failed. Relabelling a failure by a coincidence is a worse answer than reporting it and adding the coincidence as context, so the code is retired and the context stays (§7.2) |
 | **D33** | **The pairing Chrome profile is short-lived.** It is created fresh under the platform's temporary directory for one capture and deleted the moment Chrome closes — on success, on failure, on timeout and on Ctrl-C. There is no kept profile, nothing under `$XDG_STATE_HOME/agent-gm/`, and no `--forget-browser`. **Owner decision, 2026-09-06** | A kept profile is a directory holding a live, logged-in Google session sitting on the client machine indefinitely, protected by nothing but its mode — the same blast radius as `sessions/*.enc` but with no data key in front of it, and easy to forget about. The benefit it bought was a `--refresh-cookies` that usually needed no sign-in; the owner judged a sign-in prompt per refresh to be cheap next to a permanent credential on disk. Keying it by account, and the `--forget-browser` command that existed to clean it up, both go with it |
 | **D34** | **The group name is sent on the RCS retry, not on the first `GetOrCreateConversation`.** A deliberate divergence from upstream, recorded 2026-09-07 from the Slice 2 live gate | `connector/startchat.go:186-189` at the pin sets `RCSGroupName` on the first call. The live gate found that a named start with SMS/MMS recipients **fails** there, and the same start without a name succeeds seconds later against the same phone and the same numbers. A name is an RCS group concept, and Google refuses it on the call that is still deciding whether this is an RCS group at all. So the first call asks the question and the name goes on the retry — which is where upstream puts it too once the first call returns `CREATE_RCS`; the divergence is only about the first call. The same gate showed the second half of this bug: the failure was being relabelled `config_version_stale` because the versions happened to differ, which sent the operator after the pin instead of the name (D32) |
+| **D35** | **The container ships in Slice 3, not Slice 4.** The Dockerfile, `compose.example.yml`, the GHCR image and `docs/deploy.md` are Slice 3 deliverables, and the claude.ai/ChatGPT connector gate runs in Slice 3 against the deployed container behind `https://gm.agent-wx.app`. **Owner decision, 2026-09-06** | Production is a Compose service beside the bridge it replaces, behind the tunnel; bare metal is only where the spike and the early gates ran. The connector gate is the first time external clients bind to the public URL, so it must exercise the artifact they will keep talking to — the container — rather than a host binary that is then repackaged. Slice 4 keeps what does not affect that gate: the npm wrapper, release binaries, the owner's Mac CLI gate, and the cutover of the live data directory into the volume |
 
 #### Field observation behind D3 — the ConfigVersion, and status 4
 
