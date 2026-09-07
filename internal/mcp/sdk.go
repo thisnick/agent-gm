@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/thisnick/agent-gm/internal/apierr"
@@ -401,7 +402,13 @@ func (h *Handler) resourceHandler() sdk.ResourceHandler {
 			if e.Code == apierr.CodeNotFound {
 				return nil, sdk.ResourceNotFoundError(uri)
 			}
-			return nil, fmt.Errorf("the resource could not be read: %s", e.Code)
+			// A coded error, not a bare one. `jsonrpc2.toWireError` gives an
+			// uncoded error the code **0**, which is not a JSON-RPC error
+			// code at all and tells a client nothing it can branch on.
+			return nil, &jsonrpc.Error{
+				Code:    jsonrpc.CodeInternalError,
+				Message: "the resource could not be read: " + string(e.Code),
+			}
 		}
 
 		contents := &sdk.ResourceContents{URI: uri, MIMEType: contentType}
@@ -516,10 +523,11 @@ func (s *session) attachmentContent(structured map[string]any) []sdk.Content {
 //
 // `2026-07-28` is available only because the transport is stateless: the SDK
 // refuses every revision from it onwards on a stateful transport
-// (`mcp/streamable.go:871`). The SDK also accepts two revisions older than
-// section 8.1 names -- `2025-06-18` and `2025-03-26` -- because supporting the
-// clients still on them is the SDK's job and refusing them would be this
-// package overriding the reference implementation for no gain.
+// (`mcp/streamable.go:871`). The SDK also accepts three revisions older than
+// section 8.1 names -- `2025-06-18`, `2025-03-26` and `2024-11-05`
+// (`mcp/shared.go:58`) -- because supporting the clients still on them is the
+// SDK's job and refusing them would be this package overriding the reference
+// implementation for no gain.
 const (
 	// ProtocolVersion is what `initialize` negotiates to when the client asks
 	// for it, asks for something newer, or asks for nothing.
