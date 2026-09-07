@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"html"
 	"io"
 	"net"
@@ -515,4 +516,45 @@ func openRawDB(t *testing.T, path string) *sql.DB {
 		t.Fatal(err)
 	}
 	return db
+}
+
+// mcpServerInfo connects the OFFICIAL MCP Go SDK client to this harness's
+// `/mcp` and returns the `serverInfo` the client ends up holding.
+//
+// It goes through the reference client on purpose. From protocol 2026-07-28 a
+// client learns the server through `server/discover` and rebuilds
+// `serverInfo` from that result's `_meta` itself, discarding everything else
+// in it, so what a connector actually receives and what the wire carries are
+// not the same object. Section 1.4's AGPL obligation is about the former.
+func (h *oauthHarness) mcpServerInfo(t *testing.T, token string) *sdk.Implementation {
+	t.Helper()
+	client := sdk.NewClient(&sdk.Implementation{Name: "agent-gm-tests", Version: "0.0.0"}, nil)
+	transport := &sdk.StreamableClientTransport{
+		Endpoint: h.http.URL + "/mcp",
+		HTTPClient: &http.Client{Transport: bearerTransport{
+			token: token, next: http.DefaultTransport,
+		}},
+	}
+	cs, err := client.Connect(t.Context(), transport, nil)
+	if err != nil {
+		t.Fatalf("the SDK client could not connect to /mcp: %v", err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+	info := cs.InitializeResult().ServerInfo
+	if info == nil {
+		t.Fatal("the SDK client holds no serverInfo after connecting")
+	}
+	return info
+}
+
+// bearerTransport presents one token on every request.
+type bearerTransport struct {
+	token string
+	next  http.RoundTripper
+}
+
+func (b bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	clone := r.Clone(r.Context())
+	clone.Header.Set("Authorization", "Bearer "+b.token)
+	return b.next.RoundTrip(clone)
 }

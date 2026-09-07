@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/thisnick/agent-gm/internal/api"
+	"github.com/thisnick/agent-gm/internal/mcp"
 	"github.com/thisnick/agent-gm/internal/oauth"
 )
 
@@ -110,8 +111,12 @@ func TestSlice3Test1DiscoveryDocumentsAreByteExact(t *testing.T) {
 func TestSlice3Test2MCPChallenge(t *testing.T) {
 	h := newOAuthHarness(t)
 
-	wantChallenge := `Bearer realm="agent-gm", ` +
-		`resource_metadata="` + oauthTestIssuer + `/.well-known/oauth-protected-resource/mcp", ` +
+	// The challenge FORMAT is the SDK's since decision D36, which is why
+	// there is no `realm` parameter: `auth.RequireBearerToken` does not emit
+	// one. Written out here rather than taken from mcp.Challenge, so that a
+	// change to that function has to be made twice and meant twice.
+	wantChallenge := `Bearer resource_metadata="` +
+		oauthTestIssuer + `/.well-known/oauth-protected-resource/mcp", ` +
 		`scope="messages:read messages:write"`
 
 	resp := h.postJSON("/mcp", map[string]any{
@@ -1024,37 +1029,24 @@ func TestSlice3Test28BothSurfacesReportTheSameSource(t *testing.T) {
 		t.Fatal("/v1/health reports no commit")
 	}
 
-	resp := h.postJSON("/mcp", map[string]any{
-		"jsonrpc": "2.0", "id": 1, "method": "initialize",
-		"params": map[string]any{
-			"protocolVersion": "2026-07-28",
-			"capabilities":    map[string]any{},
-			"clientInfo":      map[string]any{"name": "a test", "version": "0"},
-		},
-	}, bearer(admin), func(r *http.Request) {
-		r.Header.Set("Accept", "application/json, text/event-stream")
-	})
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("initialize answered %d\n%s", resp.StatusCode, readBody(t, resp))
+	// The MCP half is read the way a connector reads it: with the official
+	// SDK client, against the wired binary's handler. That matters here more
+	// than anywhere -- the facts are on `serverInfo`, and `serverInfo` is
+	// exactly what the SDK's client reconstructs for itself from
+	// `server/discover` (decision D36). Reading the wire instead would assert
+	// a licence obligation no client actually receives.
+	info := h.mcpServerInfo(t, admin)
+	if info.Name != "agent-gm" {
+		t.Errorf("serverInfo.name is %v, want agent-gm", info.Name)
 	}
-	var rpc struct {
-		Result struct {
-			ServerInfo map[string]any `json:"serverInfo"`
-		} `json:"result"`
+	restVersion, _ := health["version"].(string)
+	if want := mcp.ServerVersion(restVersion, restCommit); info.Version != want {
+		t.Errorf("serverInfo.version is %q and /v1/health reports version %q at commit %q, "+
+			"so the two surfaces disagree about what is running", info.Version, restVersion, restCommit)
 	}
-	if err := json.Unmarshal([]byte(readBody(t, resp)), &rpc); err != nil {
-		t.Fatal(err)
-	}
-	info := rpc.Result.ServerInfo
-	if info["name"] != "agent-gm" {
-		t.Errorf("serverInfo.name is %v, want agent-gm", info["name"])
-	}
-	if got, _ := info["commit"].(string); got != restCommit {
-		t.Errorf("serverInfo reports commit %q and /v1/health reports %q", got, restCommit)
-	}
-	source, _ := info["source_url"].(string)
+	source := info.WebsiteURL
 	if source != restSource {
-		t.Errorf("serverInfo reports source_url\n  %q\nand /v1/health reports\n  %q\n"+
+		t.Errorf("serverInfo reports websiteUrl\n  %q\nand /v1/health reports source_url\n  %q\n"+
 			"Section 1.4's AGPL obligation is not kept by two surfaces answering "+
 			"differently", source, restSource)
 	}
