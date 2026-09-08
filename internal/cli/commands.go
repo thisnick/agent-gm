@@ -474,7 +474,8 @@ var Commands = []Command{
 	},
 	{
 		Name: "admin enrollment-codes list", Routes: []string{"admin_enrollment_codes_list"},
-		Supplies: map[string]string{},
+		Supplies:   map[string]string{},
+		LocalFlags: map[string]string{"--all": "include expired and inactive entries"},
 	},
 	{
 		Name: "admin enrollment-codes show", Routes: []string{"admin_enrollment_codes_get"},
@@ -491,7 +492,8 @@ var Commands = []Command{
 	},
 	{
 		Name: "admin authorization-requests list", Routes: []string{"admin_authorization_requests_list"},
-		Supplies: map[string]string{"status": "--status"},
+		Supplies:   map[string]string{"status": "--status"},
+		LocalFlags: map[string]string{"--all": "include expired and inactive entries"},
 	},
 	{
 		Name: "admin authorization-requests show", Routes: []string{"admin_authorization_requests_get"},
@@ -530,7 +532,8 @@ var Commands = []Command{
 	},
 	{
 		Name: "admin clients list", Routes: []string{"admin_clients_list"},
-		Supplies: map[string]string{},
+		Supplies:   map[string]string{},
+		LocalFlags: map[string]string{"--all": "include expired and inactive entries"},
 	},
 	{
 		Name: "admin clients show", Routes: []string{"admin_clients_get"},

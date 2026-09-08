@@ -454,17 +454,17 @@ a confirmation.
 
 ```text
 agm admin enrollment-codes create <label> [--expires-in <duration>] [--scopes <list>] [--allow-scopes <list>]
-agm admin enrollment-codes list
+agm admin enrollment-codes list [--all]
 agm admin enrollment-codes show <enroll-id>
 agm admin enrollment-codes revoke <enroll-id> [--reason <text>] [--yes]
-agm admin authorization-requests list [--status pending|approved|denied|completed]
+agm admin authorization-requests list [--all] [--status pending|approved|denied|completed]
 agm admin authorization-requests show <authreq-id>
 agm admin authorization-requests approve <authreq-id> [--scopes <list>]
 agm admin authorization-requests deny <authreq-id> [--reason <text>]
 agm admin authorizations list [--include-revoked]
 agm admin authorizations show <auth-id>
 agm admin authorizations revoke <auth-id> [--reason <text>] [--yes]
-agm admin clients list
+agm admin clients list [--all]
 agm admin clients show <client-id>
 agm admin clients revoke <client-id> [--reason <text>] [--yes]
 ```
@@ -474,6 +474,17 @@ These are the owner's half of the OAuth flow, described end to end in
 token unless the owner does two separate things — issue a code with
 `agm admin enrollment-codes create`, and approve the request it produces with
 `agm admin authorization-requests approve`. There is no approval page; the approval happens on a terminal.
+
+The enrollment-code, client, and authorization-request CLI lists hide expired
+and inactive entries by default in every output format. Enrollment codes must
+be unused and unrevoked. Activated clients remain valid regardless of their
+original registration expiry; unactivated clients remain visible until expiry.
+Authorization requests default to unexpired pending or approved requests.
+An explicit `--status` selects that status, still excluding expired requests.
+Use `--all` to include expired and inactive entries (and combine it with
+`--status` to inspect a particular request status). Revoked clients are removed
+by the server and cannot be recovered with `--all`. The REST lists and individual
+`show` commands are unchanged.
 
 `agm admin enrollment-codes create` prints the code **once**. Only its SHA-256
 is stored, so no later command can show it again — and that is the point:
