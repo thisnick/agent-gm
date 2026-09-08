@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -106,7 +107,7 @@ func (s *Server) writeNotFound(w http.ResponseWriter) {
 func setSecurityHeaders(w http.ResponseWriter) {
 	h := w.Header()
 	h.Set("Content-Security-Policy",
-		"default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; script-src 'self'")
+		"default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; script-src 'self'; connect-src 'self'; style-src 'self'")
 	h.Set("Cache-Control", "no-store")
 	h.Set("Referrer-Policy", "no-referrer")
 	h.Set("X-Content-Type-Options", "nosniff")
@@ -126,12 +127,30 @@ func setSecurityHeaders(w http.ResponseWriter) {
 // of the form could show, since a client that sets `Origin` by hand never
 // consults the page. Engines differ in whether they take that step, so one
 // browser passing proves nothing about another. `same-origin` keeps the
-// referrer off cross-origin requests -- there are none from these pages, whose
-// CSP is `form-action 'self'` -- while letting a same-origin post carry its
-// real origin.
+// referrer off the cross-origin callback while letting a same-origin post
+// carry its real origin.
 func setPageSecurityHeaders(w http.ResponseWriter) {
 	setSecurityHeaders(w)
 	w.Header().Set("Referrer-Policy", "same-origin")
+}
+
+// Browsers apply form-action to the completion POST's redirect as well.
+// Allow only the registered callback origin (or private-use scheme), never
+// its query or untrusted text that could inject another CSP directive.
+func allowCallbackFormAction(w http.ResponseWriter, callback string) {
+	u, err := url.Parse(callback)
+	if err != nil || u.Scheme == "" {
+		return
+	}
+	source := u.Scheme + ":"
+	if u.Scheme == "http" || u.Scheme == "https" {
+		source += "//" + u.Host
+	}
+	if strings.ContainsAny(source, ";, \t\r\n") {
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Security-Policy", strings.Replace(h.Get("Content-Security-Policy"), "form-action 'self'", "form-action 'self' "+source, 1))
 }
 
 // translate maps a credential-layer refusal onto an OAuth error body.

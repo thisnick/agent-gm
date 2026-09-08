@@ -41,6 +41,9 @@
       "test": [
         "CGO_ENABLED=1 go test ./... -race -count=1"
       ],
+      "test-oauth-browser": [
+        "node scripts/oauth-browser-test.mjs"
+      ],
       "test-live": [
         "CGO_ENABLED=1 AGENT_GM_LIVE=1 go test -tags live ./... -run 'Live' -race -count=1 -v"
       ],

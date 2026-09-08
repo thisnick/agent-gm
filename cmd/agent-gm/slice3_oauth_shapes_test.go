@@ -122,13 +122,16 @@ func TestSlice3OAuthAnswersHaveTheirOwnShapes(t *testing.T) {
 			_ = readBody(t, resp)
 			want := map[string]string{
 				"Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; " +
-					"base-uri 'none'; form-action 'self'; script-src 'self'",
+					"base-uri 'none'; form-action 'self'; script-src 'self'; connect-src 'self'; style-src 'self'",
 				"Cache-Control":          "no-store",
 				"Referrer-Policy":        referrer[name],
 				"X-Content-Type-Options": "nosniff",
 				"X-Frame-Options":        "DENY",
 			}
 			for header, value := range want {
+				if header == "Content-Security-Policy" && name == "the authorization screen" {
+					value = strings.Replace(value, "form-action 'self'", "form-action 'self' http://127.0.0.1:53211", 1)
+				}
 				if got := resp.Header.Get(header); got != value {
 					t.Errorf("%s carries %s: %q, want %q", name, header, got, value)
 				}

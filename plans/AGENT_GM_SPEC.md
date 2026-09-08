@@ -3358,11 +3358,18 @@ anywhere else.
 ### 9.9 Browser security headers
 
 OAuth pages carry `Content-Security-Policy` with `default-src 'none'`,
-`frame-ancestors 'none'`, `base-uri 'none'`, `form-action 'self'`;
+`frame-ancestors 'none'`, `base-uri 'none'`, `form-action 'self'`,
+`script-src 'self'`, `connect-src 'self'`, and `style-src 'self'`;
 `Cache-Control: no-store`; `X-Content-Type-Options: nosniff`;
 `X-Frame-Options: DENY`.
 
-The referrer policy is the one header that is not the same everywhere. The
+The HTML pages also allow the registered callback origin (or private-use
+scheme) in `form-action`, because browsers apply that directive to the POST's
+redirect as well. Only the exact callback bound to the request receives a code.
+The same-origin stylesheet is `/oauth/style.css`, and `connect-src 'self'`
+allows the status polling script to fetch.
+
+The referrer policy also differs by response type. The
 rendered pages -- the authorization screen, the waiting page, and
 `/oauth/poll.js` -- carry `Referrer-Policy: same-origin`; every other answer,
 including each JSON body and the redirect that carries the authorization code,

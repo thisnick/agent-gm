@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"html/template"
 	"net/http"
+	"strings"
 )
 
 // The two browser pages, spec sections 9.4, 9.5 and 9.9.
@@ -57,26 +58,34 @@ func (d approvalPageData) IsSelected(scope string) bool {
 	return false
 }
 
+func (d approvalPageData) EnrollmentCommand() string {
+	return "agm admin enrollment-codes create oauth-client --scopes " + strings.Join(d.Scopes, ",")
+}
+
 var approvalTemplate = template.Must(template.New("approve").Parse(`<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Authorize a client &mdash; Agent GM</title>
+<link rel="stylesheet" href="/oauth/style.css">
 </head><body>
 <main>
-<h1>Authorize a client</h1>
+<header><span class="brand">AGENT GM</span></header>
+<p class="eyebrow">STEP 1 OF 2 · ENROLL</p>
+<h1>Connect your client</h1>
 <p>{{if .ClientName}}<strong>{{.ClientName}}</strong>{{else}}A client{{end}}
  is asking to use this Agent GM server.</p>
 {{if .Message}}<p role="alert">{{.Message}}</p>{{end}}
 {{if .Allowed}}<p>That code allows: {{range .Allowed}}<code>{{.}}</code> {{end}}</p>{{end}}
 
-<p>{{.Disclosure}}</p>
+<section class="access-summary"><h2>Review the access</h2><p>{{.Disclosure}}</p>
 {{if .Accounts}}
 <ul>{{range .Accounts}}<li>{{if .Label}}{{.Label}} &mdash; {{end}}{{.Address}}</li>{{end}}</ul>
 {{else}}
 <p>This server holds no accounts yet.</p>
 {{end}}
 
+</section>
 <form method="post" action="/oauth/authorize">
   <input type="hidden" name="context" value="{{.Context}}">
   <input type="hidden" name="form_token" value="{{.FormToken}}">
@@ -89,17 +98,24 @@ var approvalTemplate = template.Must(template.New("approve").Parse(`<!DOCTYPE ht
   <input type="hidden" name="scope" value="{{.ScopeParam}}">
 
   <fieldset>
-    <legend>Access</legend>
+    <legend>Permissions to grant</legend>
     {{range .Scopes}}
     <label><input type="checkbox" name="scope_selected" value="{{.}}"{{if $.IsSelected .}} checked{{end}}> {{.}}</label>
     {{end}}
   </fieldset>
 
+  <section class="instructions">
+    <h2>Get an enrollment code</h2>
+    <p>In a terminal with an authorized <code>agm</code> admin session for this server, run:</p>
+    <pre><code>{{.EnrollmentCommand}}</code></pre>
+    <p>Copy the returned <code>code</code> below. It is shown only once. If you are not the server owner, ask them to create and share a code with you.</p>
+  </section>
   <label for="enrollment_code">Enrollment code</label>
   <input id="enrollment_code" name="enrollment_code" type="text" autocomplete="off"
-         spellcheck="false" required>
+         spellcheck="false" autocapitalize="characters" placeholder="XXXX-XXXX-XXXX-XXXX" aria-describedby="enrollment-help" required>
+  <p id="enrollment-help" class="muted">Submitting the code creates a request. The owner will approve it in the CLI next.</p>
 
-  <button type="submit">Continue</button>
+  <button type="submit">Request approval <span aria-hidden="true">→</span></button>
 </form>
 </main>
 </body></html>
@@ -113,15 +129,17 @@ func (s *Server) renderApprovalPage(w http.ResponseWriter, status int, data appr
 		return
 	}
 	setPageSecurityHeaders(w)
+	allowCallbackFormAction(w, data.RedirectURI)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 	_, _ = w.Write(buf.Bytes())
 }
 
 type waitingPageData struct {
-	RequestID string
-	Status    string
-	FormToken string
+	RequestID   string
+	RedirectURI string
+	Status      string
+	FormToken   string
 	// Done reports whether the page should offer the completion form rather
 	// than go on polling.
 	Done bool
@@ -136,13 +154,26 @@ var waitingTemplate = template.Must(template.New("waiting").Parse(`<!DOCTYPE htm
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Waiting for approval &mdash; Agent GM</title>
+<link rel="stylesheet" href="/oauth/style.css">
 </head><body>
 <main>
-<h1>Waiting for the owner</h1>
-<p id="agm-status" data-request-id="{{.RequestID}}" data-status="{{.Status}}">{{.Message}}</p>
+<header><span class="brand">AGENT GM</span></header>
+<p class="eyebrow">STEP 2 OF 2 · APPROVE</p>
+<h1 id="agm-heading">{{if eq .Status "approved"}}You're approved{{else if eq .Status "pending"}}Approve your connection{{else}}Request {{.Status}}{{end}}</h1>
+<p role="status" aria-live="polite" id="agm-status" data-request-id="{{.RequestID}}" data-status="{{.Status}}">{{.Message}}</p>
+<section id="agm-instructions" class="instructions"{{if ne .Status "pending"}} hidden{{end}}>
+<h2>Finish in your terminal</h2>
+<p>Using an authorized <code>agm</code> admin session for this server, review this request:</p>
+<pre><code>agm admin authorization-requests show {{.RequestID}}</code></pre>
+<p>Check the client and permissions, then approve it:</p>
+<pre><code>agm admin authorization-requests approve {{.RequestID}}</code></pre>
+<p class="muted">Not the server owner? Share these commands with them. Keep this page open; it checks for approval automatically.</p>
+</section>
+<p id="agm-connection" class="muted" role="status"></p>
+<noscript><p>JavaScript is disabled. After CLI approval, <a href="/oauth/requests/{{.RequestID}}">refresh the request status</a>.</p></noscript>
 <form id="agm-complete" method="post" action="/oauth/requests/{{.RequestID}}/complete"{{if not .Done}} hidden{{end}}>
   <input type="hidden" name="form_token" value="{{.FormToken}}">
-  <button type="submit">Continue</button>
+  <button type="submit">Continue to client <span aria-hidden="true">→</span></button>
 </form>
 {{if not .Terminal}}<script src="/oauth/poll.js" defer></script>{{end}}
 </main>
@@ -157,6 +188,7 @@ func (s *Server) renderWaitingPage(w http.ResponseWriter, status int, data waiti
 		return
 	}
 	setPageSecurityHeaders(w)
+	allowCallbackFormAction(w, data.RedirectURI)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 	_, _ = w.Write(buf.Bytes())
@@ -174,6 +206,19 @@ const pollScript = `(function () {
   if (!el) { return; }
   var id = el.getAttribute("data-request-id");
   var form = document.getElementById("agm-complete");
+  var heading = document.getElementById("agm-heading");
+  var instructions = document.getElementById("agm-instructions");
+  var connection = document.getElementById("agm-connection");
+  if (el.getAttribute("data-status") !== "pending") { return; }
+  function finish(status, title, message, canContinue) {
+    el.setAttribute("data-status", status);
+    el.textContent = message;
+    heading.textContent = title;
+    document.title = title + " — Agent GM";
+    instructions.hidden = true;
+    connection.textContent = "";
+    form.hidden = !canContinue;
+  }
   function clamp(n) {
     if (typeof n !== "number" || !isFinite(n)) { return 2; }
     return Math.min(60, Math.max(1, Math.round(n)));
@@ -181,28 +226,34 @@ const pollScript = `(function () {
   function poll() {
     fetch("/oauth/requests/" + encodeURIComponent(id) + "/status", {
       credentials: "same-origin",
+      cache: "no-store",
       headers: { "Accept": "application/json" }
     }).then(function (r) {
+      if (r.status === 404) {
+        finish("closed", "Session unavailable", "This browser session is no longer available. Restart the connection from your client.", false);
+        return null;
+      }
       if (!r.ok) { throw new Error("status " + r.status); }
       return r.json();
     }).then(function (body) {
+      if (!body) { return; }
+      connection.textContent = "Checking automatically. You can leave this page open.";
       el.setAttribute("data-status", body.status);
       if (body.status === "approved") {
-        el.textContent = "Approved. Continue to finish.";
-        if (form) { form.hidden = false; }
+        finish("approved", "You're approved", "The owner approved your request. Click Continue to client to finish connecting.", true);
         return;
       }
       if (body.status === "denied") {
-        el.textContent = "The owner denied this request.";
-        if (form) { form.hidden = false; }
+        finish("denied", "Request denied", "The owner denied this request. Continue to return to your client.", true);
         return;
       }
       if (body.status === "completed" || body.status === "expired") {
-        el.textContent = "This request is closed.";
+        finish(body.status, "Request " + body.status, "This request is closed. Restart the connection from your client if needed.", false);
         return;
       }
       window.setTimeout(poll, clamp(body.poll_interval_seconds) * 1000);
     }).catch(function () {
+      connection.textContent = "Unable to check approval. Retrying automatically…";
       window.setTimeout(poll, 5000);
     });
   }

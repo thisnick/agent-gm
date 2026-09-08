@@ -131,15 +131,16 @@ func (s *Server) requestPage(w http.ResponseWriter, r *http.Request) {
 	handle, _ := s.contextHandle(r)
 	status := s.effectiveStatus(r.Context(), req)
 	data := waitingPageData{
-		RequestID: req.ID,
-		Status:    status,
-		FormToken: s.formTokenFor(handle),
+		RequestID:   req.ID,
+		RedirectURI: req.RedirectURI,
+		Status:      status,
+		FormToken:   s.formTokenFor(handle),
 	}
 	switch status {
 	case store.AuthRequestPending:
 		data.Message = "The owner has to approve this before it can continue."
 	case store.AuthRequestApproved:
-		data.Done, data.Message = true, "Approved. Continue to finish."
+		data.Done, data.Message = true, "The owner approved your request. Click Continue to client to finish connecting."
 	case store.AuthRequestDenied:
 		data.Done, data.Terminal, data.Message = true, true, "The owner denied this request."
 	case store.AuthRequestCompleted:

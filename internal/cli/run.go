@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-
 	"github.com/thisnick/agent-gm/internal/apierr"
 )
 
@@ -501,6 +500,9 @@ func (r *runner) pathValue(inv *invocation, param string, supplied map[string]st
 
 // flagValue converts a flag to the JSON type the route expects.
 func flagValue(inv *invocation, f flagDef) (any, error) {
+	if f.where == wBody && (f.param == "scopes" || f.param == "allow_scopes") {
+		return strings.Fields(strings.ReplaceAll(inv.str(f.name), ",", " ")), nil
+	}
 	switch f.kind {
 	case kBool:
 		return inv.boolean(f.name), nil

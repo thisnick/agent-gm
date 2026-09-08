@@ -55,7 +55,7 @@ func TestOAuthPagesCarrySameOriginReferrerPolicy(t *testing.T) {
 	// fix moves one value and must not quietly drop the rest.
 	rest := map[string]string{
 		"Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; " +
-			"base-uri 'none'; form-action 'self'; script-src 'self'",
+			"base-uri 'none'; form-action 'self'; script-src 'self'; connect-src 'self'; style-src 'self'",
 		"Cache-Control":          "no-store",
 		"X-Content-Type-Options": "nosniff",
 		"X-Frame-Options":        "DENY",
@@ -68,6 +68,14 @@ func TestOAuthPagesCarrySameOriginReferrerPolicy(t *testing.T) {
 			t.Errorf("%s carries Referrer-Policy: %q, want %q", name, got, want)
 		}
 		for header, value := range rest {
+			if header == "Content-Security-Policy" {
+				if name == "the authorization screen" {
+					value = strings.Replace(value, "form-action 'self'", "form-action 'self' http://127.0.0.1:53214", 1)
+				}
+				if name == "the waiting page" {
+					value = strings.Replace(value, "form-action 'self'", "form-action 'self' http://127.0.0.1:53213", 1)
+				}
+			}
 			if got := resp.Header.Get(header); got != value {
 				t.Errorf("%s carries %s: %q, want %q", name, header, got, value)
 			}

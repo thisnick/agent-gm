@@ -50,7 +50,7 @@ the protocol.
 Every OAuth page and every OAuth error carries §9.9's headers:
 
 ```http
-Content-Security-Policy: default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; script-src 'self'
+Content-Security-Policy: default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; script-src 'self'; connect-src 'self'; style-src 'self'
 Cache-Control: no-store
 Referrer-Policy: no-referrer
 X-Content-Type-Options: nosniff
@@ -75,6 +75,19 @@ answer, including the redirect that carries the authorization code, keeps
 `this form may only be submitted from https://gm.example.test; received Origin
 "null"` -- and the server logs the same refusal at warn with the origin, the
 client id and the request id it returns in `X-Request-Id`.
+
+The pages load a same-origin stylesheet at `/oauth/style.css`. `connect-src
+'self'` permits the status poll; without it, `default-src 'none'` blocks fetch.
+HTML pages also add the validated callback origin (or private-use scheme) to
+`form-action`: browsers enforce that directive on the completion POST's redirect.
+The server still redirects only to the exact registered callback bound to the request.
+
+The enrollment page shows the command to create a code with the requested scope
+ceiling. The waiting page shows commands to inspect and approve that specific
+request, reports retrying when polling fails, and reveals **Continue to client**
+automatically after approval. Without JavaScript, a refresh link checks the status.
+A GET of `/oauth/requests/{id}/complete` safely renders that same status page;
+only the CSRF-protected POST can issue an authorization code.
 
 ## Discovery
 
@@ -612,3 +625,11 @@ The baseline is `scripts/mcp-conformance-baseline.yaml` and is checked in both
 directions — a new failure fails the run, and so does a listed scenario that
 starts passing — so the file cannot rot into a list of excuses. A revision that
 runs **zero** scenarios is a failure, not a green line that tested nothing.
+
+### Browser regression test
+
+Run `devbox run -- npx --yes agent-browser@0.27.0 install` once, then
+`devbox run test-oauth-browser`. The test starts a disposable local server and
+fake client, drives Chromium and the CLI, and verifies mobile layout, polling
+retries, automatic approval and denial, completion refresh, and PKCE exchange.
+It uses isolated credentials and no Google accounts.
