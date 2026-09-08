@@ -34,6 +34,13 @@ button span { margin-left: 8px; }
 :focus-visible { outline: 3px solid #6aa98a; outline-offset: 3px; }
 code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .9em; }
 pre { background: #18352a; color: #e1f5e7; border-radius: 8px; padding: 15px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; font-size: 13px; }
+.command { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 0 10px; background: #18352a; border-radius: 8px; padding: 12px; margin: 13px 0; }
+.command pre { margin: 0; padding: 3px; min-width: 0; }
+.copy-command { width: auto; margin: 0; padding: 7px 10px; border: 1px solid #698779; background: transparent; font-size: 12px; }
+.copy-command:hover { background: #2b4a3c; }
+.copy-command:disabled { cursor: wait; }
+.copy-feedback { grid-column: 1 / -1; color: #e1f5e7; font-size: 12px; line-height: 1.5; }
+.copy-feedback:not(:empty) { padding-top: 8px; }
 [role=alert] { background: #fff0ed; color: #973c2a; padding: 14px; border-radius: 8px; }
 #agm-status { padding: 16px; border-radius: 10px; background: #f2f5ee; border: 1px solid #dce5d6; }
 #agm-status[data-status=approved] { background: #e8f5ec; border-color: #9ac8aa; }
