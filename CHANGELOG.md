@@ -16,6 +16,12 @@ tag: a tag is a label and a digest is evidence.
 
 Nothing yet.
 
+## [1.0.4] — 2026-09-08
+
+- Make OAuth enrollment and CLI approval instructions clear, add a simple responsive design, and fix browser security policies so approval polling and the client callback work. Refreshing the completion URL safely displays the request status.
+
+  Fix CLI enrollment and approval scope flags to send JSON arrays as required by the server.
+
 ## [1.0.3] — 2026-09-08
 
 - The OAuth pages carry `Referrer-Policy: same-origin`, so a browser's own enrollment form post no longer arrives as `Origin: null` and is refused; a refused post now names the origin it received and is logged at warn
@@ -112,7 +118,8 @@ Agent GM *is* rather than what changed.
   gate was satisfied through the public URL with Codex CLI. Adding either
   later needs no code.
 
-[Unreleased]: https://github.com/thisnick/agent-gm/compare/v1.0.3...HEAD
+[Unreleased]: https://github.com/thisnick/agent-gm/compare/v1.0.4...HEAD
+[1.0.4]: https://github.com/thisnick/agent-gm/releases/tag/v1.0.4
 [1.0.3]: https://github.com/thisnick/agent-gm/releases/tag/v1.0.3
 [1.0.2]: https://github.com/thisnick/agent-gm/releases/tag/v1.0.2
 [1.0.1]: https://github.com/thisnick/agent-gm/releases/tag/v1.0.1
