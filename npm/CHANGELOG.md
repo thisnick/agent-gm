@@ -1,5 +1,11 @@
 # @agent-gm/cli
 
+## 1.0.5
+
+### Patch Changes
+
+- 5f4ddb8: Add copy buttons to the OAuth enrollment, review, and approval commands, with copy confirmation and manual selection when clipboard access is unavailable.
+
 ## 1.0.4
 
 ### Patch Changes
