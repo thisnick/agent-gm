@@ -43,11 +43,18 @@ func (d *HandlerDeps) conversationsList(r *Request) (*Response, error) {
 	if e != nil {
 		return nil, e
 	}
-	folder, e := enumParam(r.Query, "folder", "active", "archived", "spam_blocked")
+	folder, e := enumParam(r.Query, "folder", "active", "archived", "spam_blocked", "inbox", "spam")
 	if e != nil {
 		return nil, e
 	}
-	convType, e := enumParam(r.Query, "type", "sms_mms", "rcs")
+	// Retain the folder names advertised by older MCP catalogues as aliases.
+	switch folder {
+	case "inbox":
+		folder = "active"
+	case "spam":
+		folder = "spam_blocked"
+	}
+	convType, e := enumParam(r.Query, "type", "sms_mms", "rcs", "unknown")
 	if e != nil {
 		return nil, e
 	}
@@ -55,13 +62,29 @@ func (d *HandlerDeps) conversationsList(r *Request) (*Response, error) {
 	if e != nil {
 		return nil, e
 	}
-	groupOnly, e := boolFlag(r.Query, "group_only")
+	groupOnly, e := boolParam(r.Query, "group_only")
 	if e != nil {
 		return nil, e
 	}
 	includeDeleted, e := boolFlag(r.Query, "include_deleted")
 	if e != nil {
 		return nil, e
+	}
+
+	pinnedOnly, e := boolFlag(r.Query, "pinned_only")
+	if e != nil {
+		return nil, e
+	}
+	after, e := optionalTimeParam(r.Query, "after")
+	if e != nil {
+		return nil, e
+	}
+	before, e := optionalTimeParam(r.Query, "before")
+	if e != nil {
+		return nil, e
+	}
+	if after != nil && before != nil && *after > *before {
+		return nil, apierr.WrongTypeForField("before", "a timestamp at or after after")
 	}
 
 	q := store.ConversationQuery{
@@ -72,6 +95,9 @@ func (d *HandlerDeps) conversationsList(r *Request) (*Response, error) {
 		Type:           convType,
 		UnreadOnly:     unreadOnly,
 		GroupOnly:      groupOnly,
+		PinnedOnly:     pinnedOnly,
+		AfterMS:        after,
+		BeforeMS:       before,
 		IncludeDeleted: includeDeleted,
 		Cursor:         p.Cursor,
 		Limit:          p.Limit,

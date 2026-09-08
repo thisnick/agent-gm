@@ -122,7 +122,7 @@ func TestConversationListingFiltersInBothForms(t *testing.T) {
 		want int
 	}{
 		{"folder", store.ConversationQuery{AllAccounts: true, Folder: "archived"}, 1},
-		{"group_only", store.ConversationQuery{AllAccounts: true, GroupOnly: true}, 1},
+		{"group_only", store.ConversationQuery{AllAccounts: true, GroupOnly: new(true)}, 1},
 		{"type", store.ConversationQuery{AllAccounts: true, Type: "rcs"}, 3},
 		{"query", store.ConversationQuery{AllAccounts: true, Query: "alex"}, 2},
 		{"query is case-insensitive", store.ConversationQuery{AllAccounts: true, Query: "ALEX"}, 2},

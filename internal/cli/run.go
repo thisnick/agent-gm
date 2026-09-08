@@ -402,7 +402,10 @@ func (r *runner) request(inv *invocation, routeName string) (*Request, error) {
 	}
 
 	for _, f := range inv.cmd.flags {
-		if f.param == "" || f.where == wPath || f.where == wLocal || !inv.has(f.name) {
+		// Explicit false is a supplied wire value (for example --group=false),
+		// even though has treats a disabled boolean flag as false.
+		present := inv.has(f.name) || (f.kind == kBool && inv.str(f.name) == "false")
+		if f.param == "" || f.where == wPath || f.where == wLocal || !present {
 			continue
 		}
 		value, err := flagValue(inv, f)

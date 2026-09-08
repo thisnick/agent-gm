@@ -98,7 +98,10 @@ type ConversationQuery struct {
 	Folder           string
 	Type             string
 	UnreadOnly       bool
-	GroupOnly        bool
+	GroupOnly        *bool
+	PinnedOnly       bool
+	AfterMS          *int64
+	BeforeMS         *int64
 	IncludeDeleted   bool
 	Cursor           *Cursor
 	Limit            int
@@ -128,11 +131,25 @@ func (q ConversationQuery) sql() (string, []any) {
 	if q.UnreadOnly {
 		b.and("c.unread = 1")
 	}
-	if q.GroupOnly {
-		b.and("c.is_group = 1")
+	if q.GroupOnly != nil {
+		b.and("c.is_group = ?", *q.GroupOnly)
+	}
+	if q.PinnedOnly {
+		b.and("c.pinned = 1")
+	}
+	if q.AfterMS != nil {
+		b.and("c.last_activity_ms >= ?", *q.AfterMS)
+	}
+	if q.BeforeMS != nil {
+		b.and("c.last_activity_ms <= ?", *q.BeforeMS)
 	}
 	if q.Query != "" {
-		b.and(`c.name LIKE ? ESCAPE '\'`, likeContains(q.Query))
+		pattern := likeContains(q.Query)
+		b.and(`(c.name LIKE ? ESCAPE '\' OR EXISTS (
+		    -- all-accounts: the outer conversation ID scopes its participants.
+		    SELECT 1 FROM participants p WHERE p.conversation_id = c.id
+		    AND (p.display_name LIKE ? ESCAPE '\' OR p.phone_e164 LIKE ? ESCAPE '\'
+		         OR p.formatted_number LIKE ? ESCAPE '\')))`, pattern, pattern, pattern, pattern)
 	}
 	switch {
 	case q.ParticipantID != "":

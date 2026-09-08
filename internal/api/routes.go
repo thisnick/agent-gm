@@ -225,7 +225,7 @@ var Routes = []Route{
 	{
 		Method: http.MethodGet, Path: "/v1/conversations", Name: "conversations_list", Scope: ScopeRead,
 		Query: withPaging("account_id", "query", "participant", "folder", "type",
-			"unread_only", "group_only", "include_deleted"),
+			"unread_only", "group_only", "pinned_only", "after", "before", "include_deleted"),
 		Paginated: true,
 	},
 	{

@@ -3088,6 +3088,20 @@
           ],
           "description": "The Google account to work in, as an `acct_` ID from `list_accounts`. Leave it out to list threads from every account."
         },
+        "after": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Only threads whose latest activity is at or after this RFC 3339 timestamp (inclusive)."
+        },
+        "before": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Only threads whose latest activity is at or before this RFC 3339 timestamp (inclusive). Must not precede after."
+        },
         "cursor": {
           "type": [
             "string",
@@ -3100,17 +3114,17 @@
             "string",
             "null"
           ],
-          "description": "Only threads in this folder: `inbox`, `archived` or `spam`. Omit it, or pass null, to list every folder.",
+          "description": "Only threads in this folder: `active`, `archived` or `spam_blocked`. Omit it, or pass null, to list every folder.",
           "enum": [
-            "inbox",
+            "active",
             "archived",
-            "spam",
+            "spam_blocked",
             null
           ],
           "oneOf": [
             {
               "description": "The ordinary thread list: everything not archived and not spam.",
-              "const": "inbox"
+              "const": "active"
             },
             {
               "description": "Archived by the owner. Still readable and still sendable; it just does not appear in the inbox.",
@@ -3118,7 +3132,7 @@
             },
             {
               "description": "Marked as spam.",
-              "const": "spam"
+              "const": "spam_blocked"
             },
             {
               "description": "null, or the argument omitted altogether: do not filter on folder at all."
@@ -3153,12 +3167,19 @@
           ],
           "description": "A phone number that must be in the thread. E.164 (`+15105550123`), bare digits, or a national form are all accepted and matched against the same normalised value."
         },
+        "pinned_only": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "True to list only pinned threads. False or omitted includes both pinned and unpinned threads."
+        },
         "query": {
           "type": [
             "string",
             "null"
           ],
-          "description": "A substring matched against the thread name and against every participant's name and number. Use it when you have a name rather than a number."
+          "description": "A literal substring matched against the thread name and every participant's name and number in the local synced database. Does not make a live Google Messages search request. Use it when you have a name rather than a number."
         },
         "type": {
           "type": [
@@ -6843,25 +6864,20 @@
             "string",
             "null"
           ],
-          "description": "Move the thread to this folder: `inbox`, `archived` or `spam`. Omit it to leave the folder alone.",
+          "description": "Move the thread to this folder: `active` or `archived`. Omit it to leave the folder alone.",
           "enum": [
-            "inbox",
+            "active",
             "archived",
-            "spam",
             null
           ],
           "oneOf": [
             {
               "description": "The ordinary thread list: everything not archived and not spam.",
-              "const": "inbox"
+              "const": "active"
             },
             {
               "description": "Archived by the owner. Still readable and still sendable; it just does not appear in the inbox.",
               "const": "archived"
-            },
-            {
-              "description": "Marked as spam.",
-              "const": "spam"
             },
             {
               "description": "null, or the argument omitted altogether: do not filter on folder at all."
