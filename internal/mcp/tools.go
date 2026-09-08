@@ -181,10 +181,14 @@ var (
 	folderVocabulary = Vocabulary{
 		Name: "folder",
 		Values: []VocabularyValue{
-			{"inbox", "The ordinary thread list: everything not archived and not spam."},
+			{"active", "The ordinary thread list: everything not archived and not spam."},
 			{"archived", "Archived by the owner. Still readable and still sendable; it just does not appear in the inbox."},
-			{"spam", "Marked as spam."},
+			{"spam_blocked", "Marked as spam."},
 		},
+	}
+	writableFolderVocabulary = Vocabulary{
+		Name:   "folder",
+		Values: folderVocabulary.Values[:2],
 	}
 	conversationTypeVocabulary = Vocabulary{
 		Name: "conversation type",
@@ -264,7 +268,7 @@ var Tools = []Tool{
 		Args: []Arg{
 			accountIDArg(InQuery, "Leave it out to list threads from every account."),
 			{Name: "query", In: InQuery, Schema: nullableStr(""),
-				Description: "A substring matched against the thread name and against every participant's name and number. Use it when you have a name rather than a number."},
+				Description: "A literal substring matched against the thread name and every participant's name and number in the local synced database. Does not make a live Google Messages search request. Use it when you have a name rather than a number."},
 			{Name: "participant", In: InQuery, Schema: nullableStr(""),
 				Description: "A phone number that must be in the thread. E.164 (`+15105550123`), bare digits, or a national form are all accepted and matched against the same normalised value."},
 			{Name: "folder", In: InQuery,
@@ -277,6 +281,12 @@ var Tools = []Tool{
 				Description: "True to list only threads with unread messages."},
 			{Name: "group_only", In: InQuery, Schema: nullableBool(""),
 				Description: "True to list only group threads, false to list only one-to-one threads, omitted for both."},
+			{Name: "pinned_only", In: InQuery, Schema: nullableBool(""),
+				Description: "True to list only pinned threads. False or omitted includes both pinned and unpinned threads."},
+			{Name: "after", In: InQuery, Schema: nullableStr(""),
+				Description: "Only threads whose latest activity is at or after this RFC 3339 timestamp (inclusive)."},
+			{Name: "before", In: InQuery, Schema: nullableStr(""),
+				Description: "Only threads whose latest activity is at or before this RFC 3339 timestamp (inclusive). Must not precede after."},
 			{Name: "include_deleted", In: InQuery, Schema: nullableBool(""),
 				Description: "True to include threads the owner has deleted from this account. They are excluded by default."},
 			cursorArg(),
@@ -543,8 +553,8 @@ var Tools = []Tool{
 			{Name: "conversation_id", In: InPath, Required: true, Schema: str(""),
 				Description: "The thread to change, as a `conv_` ID."},
 			{Name: "folder", In: InBody,
-				Schema:      enumSchema("", folderVocabulary, true),
-				Description: "Move the thread to this folder: " + folderVocabulary.sentence() + ". Omit it to leave the folder alone."},
+				Schema:      enumSchema("", writableFolderVocabulary, true),
+				Description: "Move the thread to this folder: " + writableFolderVocabulary.sentence() + ". Omit it to leave the folder alone."},
 			{Name: "pinned", In: InBody, Schema: nullableBool(""),
 				Description: "True to pin the thread to the top of the owner's list, false to unpin it. Omit it to leave pinning alone."},
 			{Name: "unread", In: InBody, Schema: nullableBool(""),

@@ -318,7 +318,7 @@ Twenty-one tools: eleven reads, eight writes, two deletes.
 
 | Tool | REST route | Arguments |
 |---|---|---|
-| `list_conversations` | `GET /v1/conversations` | `account_id`, `query`, `participant`, `folder`, `type`, `unread_only`, `group_only`, `include_deleted`, `cursor`, `limit` |
+| `list_conversations` | `GET /v1/conversations` | `account_id`, `query`, `participant`, `folder`, `type`, `unread_only`, `group_only`, `pinned_only`, `after`, `before`, `include_deleted`, `cursor`, `limit` |
 | `get_conversation` | `GET /v1/conversations/{conversation_id}` | `conversation_id` **(required)** |
 | `list_messages` | `GET /v1/messages` | `account_id`, `conversation_id`, `cursor`, `limit`, `direction`, `sender`, `after`, `before`, `has_attachment`, `delivery_state`, `include_system` |
 | `get_message` | `GET /v1/messages/{message_id}` | `message_id` **(required)** |
@@ -329,6 +329,22 @@ Twenty-one tools: eleven reads, eight writes, two deletes.
 | `get_session` | `GET /v1/accounts/{account_id}` | `account_id` |
 | `get_health` | `GET /v1/health` | — |
 | `list_accounts` | `GET /v1/accounts` | — |
+
+Conversation listings sort by latest activity descending, then conversation ID
+descending for ties. Filters combine with AND:
+
+- `query` searches the local synced database, without a live Google API request.
+  It matches a literal substring of the thread name or any participant's
+  display name, E.164 number or formatted number. `%` and `_` are literal characters.
+- `group_only=true` selects groups; `false` selects direct conversations; omitting
+  it selects both. `unread_only=true` and `pinned_only=true` select unread and
+  pinned conversations respectively; false or omitted applies no such restriction.
+- `after` and `before` are inclusive RFC 3339 bounds on **latest activity**, not
+  on individual messages. Either bound can be omitted; `before` must not precede
+  `after`. Sorting is unchanged, and cursors require the same filters on every page.
+- Folder values are `active`, `archived` and `spam_blocked`. Conversation listing
+  also accepts the older `inbox` and `spam` aliases. Types are `rcs`, `sms_mms`
+  and `unknown`.
 
 ### Writes — `messages:write`
 

@@ -304,7 +304,7 @@ Google addresses. The authorization screen discloses that before the owner appro
 
 | Method | Path | Scope | Parameters | Notes |
 |---|---|---|---|---|
-| `GET` | `/v1/conversations` | `messages:read` | query `account_id`, `query`, `participant`, `folder`, `type`, `unread_only`, `group_only`, `include_deleted`, `cursor`, `limit` | `folder` is `active`, `archived` or `spam_blocked`; `type` is `sms_mms` or `rcs` |
+| `GET` | `/v1/conversations` | `messages:read` | query `account_id`, `query`, `participant`, `folder`, `type`, `unread_only`, `group_only`, `pinned_only`, `after`, `before`, `include_deleted`, `cursor`, `limit` | `folder` is `active`, `archived` or `spam_blocked`; `type` is `sms_mms`, `rcs` or `unknown` |
 | `GET` | `/v1/conversations/{conversation_id}` | `messages:read` | — | The only route that populates `peer_typing_until`, which is in-memory live state and is always `null` in a list |
 | `GET` | `/v1/conversations/{conversation_id}/messages` | `messages:read` | query `direction`, `sender`, `after`, `before`, `has_attachment`, `delivery_state`, `include_system`, `cursor`, `limit` | `direction` is `incoming` or `outgoing`; `after` and `before` are RFC 3339 |
 | `GET` | `/v1/messages` | `messages:read` | query `account_id`, `conversation_id`, `direction`, `sender`, `after`, `before`, `has_attachment`, `delivery_state`, `include_system`, `cursor`, `limit` | The same filters across every account, or one with `account_id` |
@@ -320,6 +320,22 @@ Google addresses. The authorization screen discloses that before the owner appro
 | `GET` | `/v1/uploads/{upload_id}` | `messages:write` | — | The caller's own reservation |
 
 <!-- route-inventory:end -->
+
+Conversation listings sort by latest activity descending, then conversation ID
+descending for ties. Filters combine with AND:
+
+- `query` searches the local synced database, without a live Google API request.
+  It matches a literal substring of the thread name or any participant's
+  display name, E.164 number or formatted number. `%` and `_` are literal characters.
+- `group_only=true` selects groups; `false` selects direct conversations; omitting
+  it selects both. `unread_only=true` and `pinned_only=true` select unread and
+  pinned conversations respectively; false or omitted applies no such restriction.
+- `after` and `before` are inclusive RFC 3339 bounds on **latest activity**, not
+  on individual messages. Either bound can be omitted; `before` must not precede
+  `after`. Sorting is unchanged, and cursors require the same filters on every page.
+- Folder values are `active`, `archived` and `spam_blocked`. Conversation listing
+  also accepts the older `inbox` and `spam` aliases. Types are `rcs`, `sms_mms`
+  and `unknown`.
 
 `participant` accepts an E.164 number (`+12025550123`), the bare digits, a
 national form, or a `part_` or `contact_` ID. `sender` accepts the same plus

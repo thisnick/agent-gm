@@ -2383,7 +2383,7 @@ send" reads the account.
 
 | Method | Path | Parameters |
 |---|---|---|
-| `GET` | `/v1/conversations` | `account_id`, `query`, `participant`, `folder` (`active`\|`archived`\|`spam_blocked`), `type` (`sms_mms`\|`rcs`), `unread_only`, `group_only`, `include_deleted`, `cursor`, `limit` |
+| `GET` | `/v1/conversations` | `account_id`, `query`, `participant`, `folder` (`active`\|`archived`\|`spam_blocked`), `type` (`sms_mms`\|`rcs`\|`unknown`), `unread_only`, `group_only`, `pinned_only`, `after`, `before`, `include_deleted`, `cursor`, `limit` |
 | `GET` | `/v1/conversations/{conversation_id}` | — |
 | `GET` | `/v1/conversations/{conversation_id}/messages` | `cursor`, `limit`, `direction` (`incoming`\|`outgoing`), `sender`, `after`, `before` (RFC 3339), `has_attachment`, `delivery_state`, `include_system` |
 | `GET` | `/v1/messages` | the same plus `account_id` and `conversation_id` |
@@ -2397,6 +2397,22 @@ send" reads the account.
 | `GET` | `/v1/operations` | `messages:write`. The caller's own operations: `account_id`, `kind`, `status`, `terminal`, `after`, `before`, `cursor`, `limit`. Newest first |
 | `GET` | `/v1/operations/{operation_id}` | `messages:write`. The §6.5 object |
 | `GET` | `/v1/uploads/{upload_id}` | `messages:write`. The caller's own reservation |
+
+Conversation listings sort by latest activity descending, then conversation ID
+descending for ties. Filters combine with AND:
+
+- `query` searches the local synced database, without a live Google API request.
+  It matches a literal substring of the thread name or any participant's
+  display name, E.164 number or formatted number. `%` and `_` are literal characters.
+- `group_only=true` selects groups; `false` selects direct conversations; omitting
+  it selects both. `unread_only=true` and `pinned_only=true` select unread and
+  pinned conversations respectively; false or omitted applies no such restriction.
+- `after` and `before` are inclusive RFC 3339 bounds on **latest activity**, not
+  on individual messages. Either bound can be omitted; `before` must not precede
+  `after`. Sorting is unchanged, and cursors require the same filters on every page.
+- Folder values are `active`, `archived` and `spam_blocked`. Conversation listing
+  also accepts the older `inbox` and `spam` aliases. Types are `rcs`, `sms_mms`
+  and `unknown`.
 
 `participant` accepts an E.164 number (`+12025550123`), the bare digits, a
 national form, or a `part_`/`contact_` ID. `sender` accepts the same plus the
@@ -2666,7 +2682,7 @@ test over exactly that statement, with three categories rather than two.
 
 | Tool | REST | Arguments |
 |---|---|---|
-| `list_conversations` | `GET /v1/conversations` | `account_id`, `query`, `participant`, `folder`, `type`, `unread_only`, `group_only`, `include_deleted`, `cursor`, `limit` |
+| `list_conversations` | `GET /v1/conversations` | `account_id`, `query`, `participant`, `folder`, `type`, `unread_only`, `group_only`, `pinned_only`, `after`, `before`, `include_deleted`, `cursor`, `limit` |
 | `get_conversation` | `GET /v1/conversations/{id}` | `conversation_id` |
 | `list_messages` | `GET /v1/messages` | `account_id`, `conversation_id`, `cursor`, `limit`, `direction`, `sender`, `after`, `before`, `has_attachment`, `delivery_state`, `include_system` |
 | `get_message` | `GET /v1/messages/{id}` | `message_id` |

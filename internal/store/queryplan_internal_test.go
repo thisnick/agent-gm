@@ -142,11 +142,15 @@ func TestEveryAdvertisedRouteIsIndexedInBothForms(t *testing.T) {
 		"folder":          {Folder: "archived"},
 		"type":            {Type: "rcs"},
 		"unread_only":     {UnreadOnly: true},
-		"group_only":      {GroupOnly: true},
+		"group_only":      {GroupOnly: boolPtr(true)},
+		"direct_only":     {GroupOnly: boolPtr(false)},
+		"pinned_only":     {PinnedOnly: true},
+		"date_range":      {AfterMS: new(int64(0)), BeforeMS: new(int64(1700000000000))},
 		"include_deleted": {IncludeDeleted: true},
 		"cursor":          {Cursor: cur},
 		"everything": {Query: "alex", ParticipantPhone: "+12025550123", Folder: "active",
-			Type: "rcs", UnreadOnly: true, GroupOnly: true, IncludeDeleted: true, Cursor: cur},
+			Type: "rcs", UnreadOnly: true, GroupOnly: boolPtr(true), PinnedOnly: true,
+			AfterMS: new(int64(0)), BeforeMS: new(int64(1700000000000)), IncludeDeleted: true, Cursor: cur},
 	}
 	for name, q := range conversationCases {
 		for _, withAccount := range []bool{false, true} {

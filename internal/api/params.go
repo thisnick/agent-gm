@@ -77,6 +77,18 @@ func timeParam(q map[string]string, name string) (int64, *apierr.Error) {
 	return t.UTC().UnixMilli(), nil
 }
 
+// optionalTimeParam preserves absence separately from the Unix epoch.
+func optionalTimeParam(q map[string]string, name string) (*int64, *apierr.Error) {
+	if q[name] == "" {
+		return nil, nil
+	}
+	value, err := timeParam(q, name)
+	if err != nil {
+		return nil, err
+	}
+	return &value, nil
+}
+
 // intParam reads a bounded integer.
 func intParam(q map[string]string, name string, def, max int) (int, *apierr.Error) {
 	raw, ok := q[name]

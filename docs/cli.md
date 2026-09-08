@@ -238,7 +238,7 @@ acct_01k4z0bb   work@example.test     work      signed_out  —
 
 ```text
 agm conversations list [--account|--query|--participant|--folder|--type
-                        |--unread|--group|--include-deleted|--limit|--all]
+                        |--unread|--group|--pinned|--after|--before|--include-deleted|--limit|--all]
 agm conversations show <conv-id>
 agm conversations start <e164>... [--account <acct-id>] [--name <name>]
 agm conversations archive|unarchive|pin|unpin|mark-unread <conv-id>
@@ -249,8 +249,13 @@ agm conversations typing <conv-id>
 
 - **`agm conversations list`** — `GET /v1/conversations`. Every filter is a
   flag: `--account`, `--query`, `--participant`, `--folder`, `--type`,
-  `--unread`, `--group`, `--include-deleted`, `--limit`. `--all` walks every
-  page.
+  `--unread`, `--group`, `--pinned`, `--after`, `--before`, `--include-deleted`,
+  `--limit`. `--all` walks every page. `--group=false` selects direct conversations;
+  omit `--group` for both. `--after` and `--before` are inclusive RFC 3339 bounds on
+  latest activity. Results always sort by latest activity, newest first.
+  `--query` searches thread and participant names and numbers. Folder values are
+  `active`, `archived`, `spam_blocked` (also `inbox`/`spam` aliases); types are
+  `rcs`, `sms_mms`, `unknown`.
 - **`agm conversations show <conv-id>`** — the only way to see
   `peer_typing_until`, which is always `null` in a listing.
 - **`agm conversations start <e164>...`** — `POST /v1/conversations`.
