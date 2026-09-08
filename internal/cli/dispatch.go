@@ -558,7 +558,11 @@ func buildCommandTable() []*command {
 		{
 			words:     []string{"admin", "enrollment-codes", "list"},
 			inventory: "admin enrollment-codes list", route: "admin_enrollment_codes_list",
-			summary: "every enrollment code, without its value",
+			summary: "usable enrollment codes, without their values",
+			run:     (*runner).listActiveAdmin,
+			flags: []flagDef{
+				{name: "--all", kind: kBool, help: "include expired and inactive entries"},
+			},
 		},
 		{
 			words:     []string{"admin", "enrollment-codes", "show"},
@@ -581,8 +585,10 @@ func buildCommandTable() []*command {
 		{
 			words:     []string{"admin", "authorization-requests", "list"},
 			inventory: "admin authorization-requests list", route: "admin_authorization_requests_list",
-			summary: "authorization requests waiting on the owner",
+			summary: "unexpired pending or approved authorization requests",
+			run:     (*runner).listActiveAdmin,
 			flags: []flagDef{
+				{name: "--all", kind: kBool, help: "include expired and inactive entries"},
 				{name: "--status", kind: kString, param: "status", where: wQuery,
 					help: "pending | approved | denied | completed"},
 			},
@@ -644,7 +650,11 @@ func buildCommandTable() []*command {
 		{
 			words:     []string{"admin", "clients", "list"},
 			inventory: "admin clients list", route: "admin_clients_list",
-			summary: "every dynamically registered client",
+			summary: "unexpired dynamically registered clients",
+			run:     (*runner).listActiveAdmin,
+			flags: []flagDef{
+				{name: "--all", kind: kBool, help: "include expired and inactive entries"},
+			},
 		},
 		{
 			words:     []string{"admin", "clients", "show"},

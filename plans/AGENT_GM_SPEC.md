@@ -3715,6 +3715,15 @@ agm completion bash|zsh|fish
 agm version
 ```
 
+The CLI enrollment-code, client, and authorization-request lists hide expired
+and inactive entries by default, including in JSON/JSONL output; `--all` restores
+the complete server listing. Codes must be unused and unrevoked. Unactivated
+clients are hidden after registration expiry; activated clients do not expire.
+Requests default to unexpired pending or approved entries. Explicit `--status`
+selects that status but still excludes expired requests unless `--all` is set.
+This is a CLI display filter; REST lists and individual `show` commands retain
+their existing behavior. Revoked clients have been removed by the server.
+
 **Every `/v1` route parameter has a flag, and every `/v1` route has a
 command**, with one stated exception: `GET`/`DELETE /v1/uploads/{id}` have no
 command, for the same reason they have no MCP tool (§8.2) — `agm messages send --file` performs the whole reserve /
