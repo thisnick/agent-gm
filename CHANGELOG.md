@@ -16,6 +16,10 @@ tag: a tag is a label and a digest is evidence.
 
 Nothing yet.
 
+## [1.0.5] — 2026-09-08
+
+- Add copy buttons to the OAuth enrollment, review, and approval commands, with copy confirmation and manual selection when clipboard access is unavailable.
+
 ## [1.0.4] — 2026-09-08
 
 - Make OAuth enrollment and CLI approval instructions clear, add a simple responsive design, and fix browser security policies so approval polling and the client callback work. Refreshing the completion URL safely displays the request status.
@@ -118,7 +122,8 @@ Agent GM *is* rather than what changed.
   gate was satisfied through the public URL with Codex CLI. Adding either
   later needs no code.
 
-[Unreleased]: https://github.com/thisnick/agent-gm/compare/v1.0.4...HEAD
+[Unreleased]: https://github.com/thisnick/agent-gm/compare/v1.0.5...HEAD
+[1.0.5]: https://github.com/thisnick/agent-gm/releases/tag/v1.0.5
 [1.0.4]: https://github.com/thisnick/agent-gm/releases/tag/v1.0.4
 [1.0.3]: https://github.com/thisnick/agent-gm/releases/tag/v1.0.3
 [1.0.2]: https://github.com/thisnick/agent-gm/releases/tag/v1.0.2
