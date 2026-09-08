@@ -1,5 +1,11 @@
 # @agent-gm/cli
 
+## 1.0.3
+
+### Patch Changes
+
+- 2649e20: The OAuth pages carry `Referrer-Policy: same-origin`, so a browser's own enrollment form post no longer arrives as `Origin: null` and is refused; a refused post now names the origin it received and is logged at warn
+
 ## 1.0.2
 
 ### Patch Changes

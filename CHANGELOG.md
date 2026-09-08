@@ -16,6 +16,10 @@ tag: a tag is a label and a digest is evidence.
 
 Nothing yet.
 
+## [1.0.3] — 2026-09-08
+
+- The OAuth pages carry `Referrer-Policy: same-origin`, so a browser's own enrollment form post no longer arrives as `Origin: null` and is refused; a refused post now names the origin it received and is logged at warn
+
 ## [1.0.2] — 2026-09-07
 
 - `agm auth login --admin` prints a hint when it grants all four scopes; admin sessions are narrowed with `--scopes`
@@ -108,7 +112,8 @@ Agent GM *is* rather than what changed.
   gate was satisfied through the public URL with Codex CLI. Adding either
   later needs no code.
 
-[Unreleased]: https://github.com/thisnick/agent-gm/compare/v1.0.2...HEAD
+[Unreleased]: https://github.com/thisnick/agent-gm/compare/v1.0.3...HEAD
+[1.0.3]: https://github.com/thisnick/agent-gm/releases/tag/v1.0.3
 [1.0.2]: https://github.com/thisnick/agent-gm/releases/tag/v1.0.2
 [1.0.1]: https://github.com/thisnick/agent-gm/releases/tag/v1.0.1
 [1.0.0]: https://github.com/thisnick/agent-gm/releases/tag/v1.0.0
