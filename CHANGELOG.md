@@ -16,6 +16,10 @@ tag: a tag is a label and a digest is evidence.
 
 Nothing yet.
 
+## [1.1.0] — 2026-09-08
+
+- Add latest-activity date ranges and pinned-only conversation filters; fix participant search, direct-only filtering, and folder/type schema mismatches across MCP, REST and CLI.
+
 ## [1.0.5] — 2026-09-08
 
 - Add copy buttons to the OAuth enrollment, review, and approval commands, with copy confirmation and manual selection when clipboard access is unavailable.
@@ -122,7 +126,8 @@ Agent GM *is* rather than what changed.
   gate was satisfied through the public URL with Codex CLI. Adding either
   later needs no code.
 
-[Unreleased]: https://github.com/thisnick/agent-gm/compare/v1.0.5...HEAD
+[Unreleased]: https://github.com/thisnick/agent-gm/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/thisnick/agent-gm/releases/tag/v1.1.0
 [1.0.5]: https://github.com/thisnick/agent-gm/releases/tag/v1.0.5
 [1.0.4]: https://github.com/thisnick/agent-gm/releases/tag/v1.0.4
 [1.0.3]: https://github.com/thisnick/agent-gm/releases/tag/v1.0.3
