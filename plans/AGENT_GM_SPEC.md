@@ -3359,8 +3359,21 @@ anywhere else.
 
 OAuth pages carry `Content-Security-Policy` with `default-src 'none'`,
 `frame-ancestors 'none'`, `base-uri 'none'`, `form-action 'self'`;
-`Cache-Control: no-store`; `Referrer-Policy: no-referrer`;
-`X-Content-Type-Options: nosniff`; `X-Frame-Options: DENY`.
+`Cache-Control: no-store`; `X-Content-Type-Options: nosniff`;
+`X-Frame-Options: DENY`.
+
+The referrer policy is the one header that is not the same everywhere. The
+rendered pages -- the authorization screen, the waiting page, and
+`/oauth/poll.js` -- carry `Referrer-Policy: same-origin`; every other answer,
+including each JSON body and the redirect that carries the authorization code,
+carries `Referrer-Policy: no-referrer`. A page served `no-referrer` makes the
+browser send `Origin: null` on its own same-origin form post (Fetch, "append a
+request `Origin` header"), which section 9.5's origin check then refuses.
+
+That check stays exact: `null` is a refusal, never an exemption. It names the
+value it received (`received Origin "null"`) and logs the refusal at warn with
+that value, the client id and a request id the answer repeats in
+`X-Request-Id`, so a browser that will not enroll can be told from an attack.
 
 ---
 

@@ -61,6 +61,21 @@ X-Frame-Options: DENY
 polling script is served rather than inlined precisely so that this directive
 can stay `'self'` and no page needs a nonce or `unsafe-inline`.
 
+The referrer policy is the exception to "every answer the same": the pages a
+browser renders -- the authorization screen, the waiting page and
+`/oauth/poll.js` -- carry `Referrer-Policy: same-origin` instead, because a
+page served `no-referrer` makes the browser send `Origin: null` on its own
+same-origin form post and the origin check below refuses that. Every other
+answer, including the redirect that carries the authorization code, keeps
+`no-referrer`.
+
+`POST /oauth/authorize` refuses an `Origin` that is not the issuer, and
+`POST /oauth/requests/{id}/complete` additionally refuses an absent one.
+`null` is refused like any other mismatch. The `403` names what arrived --
+`this form may only be submitted from https://gm.example.test; received Origin
+"null"` -- and the server logs the same refusal at warn with the origin, the
+client id and the request id it returns in `X-Request-Id`.
+
 ## Discovery
 
 `GET /.well-known/oauth-protected-resource` and its `/mcp` twin (RFC 9728):

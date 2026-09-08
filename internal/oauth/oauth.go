@@ -65,6 +65,11 @@ type Config struct {
 	Accounts func() []Account
 	// Log receives one line per refusal. It never receives a credential.
 	Log func(msg string, kv ...any)
+	// LogWarn receives the refusals an operator has to be able to see in a
+	// production log without turning debug on -- today, the cross-origin form
+	// post of section 9.9, which is what a wrong `Referrer-Policy` looks like
+	// from the server side. It never receives a credential.
+	LogWarn func(msg string, kv ...any)
 }
 
 // Account is one Google account, as the authorization screen names it.
@@ -160,4 +165,12 @@ func (s *Server) logf(msg string, kv ...any) {
 	if s.cfg.Log != nil {
 		s.cfg.Log(msg, kv...)
 	}
+}
+
+func (s *Server) warnf(msg string, kv ...any) {
+	if s.cfg.LogWarn != nil {
+		s.cfg.LogWarn(msg, kv...)
+		return
+	}
+	s.logf(msg, kv...)
 }

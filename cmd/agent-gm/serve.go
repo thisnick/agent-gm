@@ -355,6 +355,18 @@ func buildServer(ctx context.Context, addrOverride string) (*built, int) {
 			}
 			e.Msg(msg)
 		},
+		// A cross-origin form post is warn, not debug: it is what a browser
+		// that will not enroll looks like from the server side, and an
+		// operator should not have to raise the level to see it.
+		LogWarn: func(msg string, kv ...any) {
+			e := log.Warn()
+			for i := 0; i+1 < len(kv); i += 2 {
+				if k, ok := kv[i].(string); ok {
+					e = e.Any(k, kv[i+1])
+				}
+			}
+			e.Msg(msg)
+		},
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "agent-gm: %v\n", err)

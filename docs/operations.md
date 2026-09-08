@@ -384,6 +384,20 @@ are diagnosable without reading logs.
 | Every caller collapses to one source in the audit log | `AGENT_GM_TRUSTED_PROXY_CIDRS` does not cover the proxy or tunnel container, so every request is attributed to the proxy's own address | Fix the CIDR. Until you do, **every per-source rate limit is one shared bucket** and every audit row names the proxy instead of the caller. Compare `client_source` in `/v1/health` against the address you came from |
 | The process refuses to start naming a CIDR | A mistyped proxy list | Fix it. This is deliberate: an operator who mistypes the list should find out immediately, not discover months later that the trust they configured was never in force |
 | A WAL checkpoint reports `busy` | A long-lived reader | Not an error. The next pass finishes it |
+| The enrollment form answers `403 this form may only be submitted from ...` in one browser and works in another | The page's `Referrer-Policy` is wrong | See the smoke check below |
+
+**Smoke-check the enrollment form in a real browser** after any change to the
+OAuth pages — and in more than one, on desktop and on a phone, because engines
+differ here and one passing proves nothing about another. Open the
+`/oauth/authorize` URL a connector gives you, submit the form, and read the
+refusal if there is one: if it answers `403` naming a **received Origin of
+`null`**, the page's `Referrer-Policy` is wrong. A browser applies the page's
+policy to the form navigation, and `no-referrer` makes it send `Origin: null`
+on the page's own same-origin post; `curl` sets `Origin` by hand and so can
+never reproduce this. The pages must carry `Referrer-Policy: same-origin`
+(§9.9); `curl -sI` the authorization screen to confirm. Every refusal names
+the origin it received and is logged at warn with the same `request_id` the
+`403` returns in `X-Request-Id`, so quote that id when reporting one.
 
 **Hourly upkeep**, which Agent GM runs itself: optimise the FTS index, **then**
 checkpoint the WAL with `TRUNCATE`, in that order — `optimize` writes, so

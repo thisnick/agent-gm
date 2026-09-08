@@ -112,7 +112,7 @@ func (s *Server) renderApprovalPage(w http.ResponseWriter, status int, data appr
 			"the screen could not be rendered"))
 		return
 	}
-	setSecurityHeaders(w)
+	setPageSecurityHeaders(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 	_, _ = w.Write(buf.Bytes())
@@ -156,7 +156,7 @@ func (s *Server) renderWaitingPage(w http.ResponseWriter, status int, data waiti
 			"the screen could not be rendered"))
 		return
 	}
-	setSecurityHeaders(w)
+	setPageSecurityHeaders(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 	_, _ = w.Write(buf.Bytes())
@@ -211,7 +211,7 @@ const pollScript = `(function () {
 `
 
 func (s *Server) pollScript(w http.ResponseWriter, _ *http.Request) {
-	setSecurityHeaders(w)
+	setPageSecurityHeaders(w)
 	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(pollScript))

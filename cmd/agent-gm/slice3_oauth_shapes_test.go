@@ -107,6 +107,16 @@ func TestSlice3OAuthAnswersHaveTheirOwnShapes(t *testing.T) {
 			"an unknown path":          h.get("/oauth/nonsense"),
 			"the polling script":       h.get("/oauth/poll.js"),
 		}
+		// The referrer policy is the one header of section 9.9 that is not
+		// the same everywhere: a rendered page and its script say
+		// `same-origin`, everything else says `no-referrer`.
+		// TestOAuthPagesCarrySameOriginReferrerPolicy owns that split.
+		referrer := map[string]string{
+			"the metadata document":    "no-referrer",
+			"the authorization screen": "same-origin",
+			"an unknown path":          "no-referrer",
+			"the polling script":       "same-origin",
+		}
 		for name, resp := range cases {
 			h.captureCookie(resp)
 			_ = readBody(t, resp)
@@ -114,7 +124,7 @@ func TestSlice3OAuthAnswersHaveTheirOwnShapes(t *testing.T) {
 				"Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; " +
 					"base-uri 'none'; form-action 'self'; script-src 'self'",
 				"Cache-Control":          "no-store",
-				"Referrer-Policy":        "no-referrer",
+				"Referrer-Policy":        referrer[name],
 				"X-Content-Type-Options": "nosniff",
 				"X-Frame-Options":        "DENY",
 			}

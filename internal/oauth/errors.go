@@ -98,6 +98,11 @@ func (s *Server) writeNotFound(w http.ResponseWriter) {
 // polling script is served rather than inlined precisely so that this
 // directive can stay `'self'` and no page needs a nonce or an `unsafe-inline`
 // (section 9.5).
+//
+// `Referrer-Policy: no-referrer` is right for everything that is NOT a page a
+// browser renders -- the JSON answers, the metadata documents, and above all
+// the redirect back to the client, which carries the authorization code in its
+// URL. Pages use setPageSecurityHeaders instead; see the note there.
 func setSecurityHeaders(w http.ResponseWriter) {
 	h := w.Header()
 	h.Set("Content-Security-Policy",
@@ -106,6 +111,27 @@ func setSecurityHeaders(w http.ResponseWriter) {
 	h.Set("Referrer-Policy", "no-referrer")
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("X-Frame-Options", "DENY")
+}
+
+// setPageSecurityHeaders is setSecurityHeaders for the HTML a browser renders
+// and for the script that HTML loads: section 9.9's headers, with
+// `Referrer-Policy: same-origin` in place of `no-referrer`.
+//
+// A page's referrer policy decides the `Origin` header of the form post it
+// makes: the Fetch standard serialises `Origin` as `null` when the request's
+// referrer policy is `no-referrer` (Fetch, "append a request Origin header").
+// Browsers apply that to a form navigation, so a page served `no-referrer`
+// posts its own same-origin form with `Origin: null` and section 9.5's origin
+// check refuses it -- which is what production did, and what no curl exercise
+// of the form could show, since a client that sets `Origin` by hand never
+// consults the page. Engines differ in whether they take that step, so one
+// browser passing proves nothing about another. `same-origin` keeps the
+// referrer off cross-origin requests -- there are none from these pages, whose
+// CSP is `form-action 'self'` -- while letting a same-origin post carry its
+// real origin.
+func setPageSecurityHeaders(w http.ResponseWriter) {
+	setSecurityHeaders(w)
+	w.Header().Set("Referrer-Policy", "same-origin")
 }
 
 // translate maps a credential-layer refusal onto an OAuth error body.

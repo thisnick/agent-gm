@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/thisnick/agent-gm/internal/apierr"
 	"github.com/thisnick/agent-gm/internal/authz"
 	"github.com/thisnick/agent-gm/internal/store"
 )
@@ -39,7 +41,13 @@ func (s *Server) authorizePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if oerr := s.checkOrigin(r); oerr != nil {
+	// The client id is read as a function, and so only on the refusal path:
+	// touching the body before this check would cache `ParseForm`'s result
+	// and swallow the malformed-body 400 the next step owes. The value is the
+	// form's own hidden echo and is not yet verified -- it is logged, not
+	// trusted, and only so an operator can tell which connector a refusal
+	// belongs to.
+	if oerr := s.checkOrigin(w, r, func() string { return r.PostFormValue("client_id") }); oerr != nil {
 		s.writeOAuthError(w, oerr)
 		return
 	}
@@ -333,14 +341,25 @@ func mustJSON(v map[string]any) string {
 // checkOrigin refuses a cross-origin form post. An absent Origin is accepted:
 // a non-browser client does not send one, and this endpoint is reachable by
 // `agm auth login`'s own browser as well as by a person's.
-func (s *Server) checkOrigin(r *http.Request) *oauthError {
+//
+// The check stays exact -- `null` is a refusal, not an exemption, because a
+// sandboxed frame and a cross-origin redirect both post with `Origin: null`.
+// What it does NOT do is refuse in silence: the body names the origin it
+// received and the server writes one warn line, because the one bug this
+// check has ever caught in production was our own page telling the browser
+// `Referrer-Policy: no-referrer` and so getting `Origin: null` back
+// (see setPageSecurityHeaders), and a refusal that named no value made that
+// indistinguishable from an attack.
+func (s *Server) checkOrigin(w http.ResponseWriter, r *http.Request, clientID func() string) *oauthError {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		return nil
 	}
 	if origin != s.Issuer() {
+		s.refusedOrigin(w, r, origin, clientID)
 		return statusError(http.StatusForbidden, ErrInvalidRequest,
-			"this form may only be submitted from "+s.Issuer())
+			"this form may only be submitted from "+s.Issuer()+
+				"; received Origin "+strconv.Quote(clip(origin)))
 	}
 	return nil
 }
@@ -349,12 +368,42 @@ func (s *Server) checkOrigin(r *http.Request) *oauthError {
 // there at all. It guards `POST /oauth/requests/{id}/complete`, which section
 // 9.5 says takes a same-origin Origin -- and a check that accepted its
 // absence would be satisfied by any client that simply omitted it.
-func (s *Server) requireSameOrigin(r *http.Request) *oauthError {
+func (s *Server) requireSameOrigin(w http.ResponseWriter, r *http.Request, clientID func() string) *oauthError {
 	if r.Header.Get("Origin") == "" {
+		s.refusedOrigin(w, r, "", clientID)
 		return statusError(http.StatusForbidden, ErrInvalidRequest,
 			"this form may only be submitted from "+s.Issuer()+", and carries no Origin")
 	}
-	return s.checkOrigin(r)
+	return s.checkOrigin(w, r, clientID)
+}
+
+// refusedOrigin logs the refusal and stamps the answer with the same request
+// id the log line carries, so an owner reading a 403 in a browser and an
+// operator reading the log are looking at one event. It logs no credential:
+// an origin, a client id and a path are all public to whoever sent them.
+func (s *Server) refusedOrigin(w http.ResponseWriter, r *http.Request, origin string, clientID func() string) {
+	requestID := apierr.NewRequestID()
+	w.Header().Set("X-Request-Id", requestID)
+	received := "(absent)"
+	if origin != "" {
+		received = clip(origin)
+	}
+	s.warnf("refusing a form post from another origin",
+		"received_origin", received,
+		"expected_origin", s.Issuer(),
+		"request_id", requestID,
+		"client_id", clip(clientID()),
+		"path", r.URL.Path)
+}
+
+// clip bounds a value copied from a request into a log line or an error body.
+// The origin and the client id are whatever the sender wrote.
+func clip(v string) string {
+	const max = 200
+	if len(v) <= max {
+		return v
+	}
+	return v[:max] + "..."
 }
 
 func (s *Server) source(r *http.Request) string {

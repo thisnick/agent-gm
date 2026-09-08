@@ -197,7 +197,7 @@ func (s *Server) requestComplete(w http.ResponseWriter, r *http.Request) {
 	// POST -- so an absent one means the request did not come from that page.
 	// `POST /oauth/authorize` is deliberately laxer, because `agm auth login`
 	// prints a URL an owner may open in something that is not a browser.
-	if oerr := s.requireSameOrigin(r); oerr != nil {
+	if oerr := s.requireSameOrigin(w, r, func() string { return req.ClientID }); oerr != nil {
 		s.writeOAuthError(w, oerr)
 		return
 	}
