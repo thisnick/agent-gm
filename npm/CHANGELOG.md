@@ -1,5 +1,11 @@
 # @agent-gm/cli
 
+## 1.1.0
+
+### Minor Changes
+
+- 4b9b134: Add latest-activity date ranges and pinned-only conversation filters; fix participant search, direct-only filtering, and folder/type schema mismatches across MCP, REST and CLI.
+
 ## 1.0.5
 
 ### Patch Changes
