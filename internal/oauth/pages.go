@@ -107,7 +107,11 @@ var approvalTemplate = template.Must(template.New("approve").Parse(`<!DOCTYPE ht
   <section class="instructions">
     <h2>Get an enrollment code</h2>
     <p>In a terminal with an authorized <code>agm</code> admin session for this server, run:</p>
-    <pre><code>{{.EnrollmentCommand}}</code></pre>
+    <div class="command">
+<pre><code id="agm-enrollment-command">{{.EnrollmentCommand}}</code></pre>
+<button type="button" class="copy-command" data-copy="agm-enrollment-command" aria-label="Copy enrollment command" hidden>Copy</button>
+<span class="copy-feedback" role="status" aria-live="polite"></span>
+</div>
     <p>Copy the returned <code>code</code> below. It is shown only once. If you are not the server owner, ask them to create and share a code with you.</p>
   </section>
   <label for="enrollment_code">Enrollment code</label>
@@ -117,6 +121,7 @@ var approvalTemplate = template.Must(template.New("approve").Parse(`<!DOCTYPE ht
 
   <button type="submit">Request approval <span aria-hidden="true">→</span></button>
 </form>
+<script src="/oauth/poll.js" defer></script>
 </main>
 </body></html>
 `))
@@ -164,9 +169,17 @@ var waitingTemplate = template.Must(template.New("waiting").Parse(`<!DOCTYPE htm
 <section id="agm-instructions" class="instructions"{{if ne .Status "pending"}} hidden{{end}}>
 <h2>Finish in your terminal</h2>
 <p>Using an authorized <code>agm</code> admin session for this server, review this request:</p>
-<pre><code>agm admin authorization-requests show {{.RequestID}}</code></pre>
+<div class="command">
+<pre><code id="agm-review-command">agm admin authorization-requests show {{.RequestID}}</code></pre>
+<button type="button" class="copy-command" data-copy="agm-review-command" aria-label="Copy review command" hidden>Copy</button>
+<span class="copy-feedback" role="status" aria-live="polite"></span>
+</div>
 <p>Check the client and permissions, then approve it:</p>
-<pre><code>agm admin authorization-requests approve {{.RequestID}}</code></pre>
+<div class="command">
+<pre><code id="agm-approve-command">agm admin authorization-requests approve {{.RequestID}}</code></pre>
+<button type="button" class="copy-command" data-copy="agm-approve-command" aria-label="Copy approval command" hidden>Copy</button>
+<span class="copy-feedback" role="status" aria-live="polite"></span>
+</div>
 <p class="muted">Not the server owner? Share these commands with them. Keep this page open; it checks for approval automatically.</p>
 </section>
 <p id="agm-connection" class="muted" role="status"></p>
@@ -202,6 +215,36 @@ func (s *Server) renderWaitingPage(w http.ResponseWriter, status int, data waiti
 // hammer it or appear to hang.
 const pollScript = `(function () {
   "use strict";
+  document.querySelectorAll("[data-copy]").forEach(function (button) {
+    var command = document.getElementById(button.getAttribute("data-copy"));
+    var feedback = button.parentElement.querySelector(".copy-feedback");
+    var reset;
+    button.hidden = false;
+    button.addEventListener("click", async function () {
+      window.clearTimeout(reset);
+      button.textContent = "Copy";
+      button.disabled = true;
+      feedback.textContent = "";
+      try {
+        await navigator.clipboard.writeText(command.textContent);
+        button.textContent = "Copied";
+        feedback.textContent = "Command copied.";
+      } catch (_) {
+        var range = document.createRange();
+        range.selectNodeContents(command);
+        var selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        feedback.textContent = "Copy unavailable. Command selected; press Ctrl+C or ⌘C to copy.";
+      } finally {
+        button.disabled = false;
+        reset = window.setTimeout(function () {
+          button.textContent = "Copy";
+          feedback.textContent = "";
+        }, 5000);
+      }
+    });
+  });
   var el = document.getElementById("agm-status");
   if (!el) { return; }
   var id = el.getAttribute("data-request-id");

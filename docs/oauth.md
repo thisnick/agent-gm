@@ -83,7 +83,8 @@ HTML pages also add the validated callback origin (or private-use scheme) to
 The server still redirects only to the exact registered callback bound to the request.
 
 The enrollment page shows the command to create a code with the requested scope
-ceiling. The waiting page shows commands to inspect and approve that specific
+ceiling. Each command has a Copy button with confirmation; if clipboard access
+is unavailable, it selects the command for manual copying. The waiting page shows commands to inspect and approve that specific
 request, reports retrying when polling fails, and reveals **Continue to client**
 automatically after approval. Without JavaScript, a refresh link checks the status.
 A GET of `/oauth/requests/{id}/complete` safely renders that same status page;

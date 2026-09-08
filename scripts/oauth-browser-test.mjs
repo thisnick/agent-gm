@@ -12,6 +12,18 @@ const exec = promisify(execFile);
 const dir = await mkdtemp(join(tmpdir(), 'agm-browser-'));
 const session = `agm-test-${process.pid}`;
 const browser = async (...args) => (await exec('npx', ['--yes', 'agent-browser@0.27.0', '--session', session, ...args], {maxBuffer: 4 * 1024 * 1024})).stdout;
+const checkCopy = async (id, text) => {
+  await browser('scrollintoview', `[data-copy="${id}"]`);
+  await browser('click', `[data-copy="${id}"]`);
+  await browser('wait', '--text', 'Command copied.');
+  // Native paste verifies the real clipboard without requesting clipboard-read
+  // permission, which the product never needs.
+  await browser('eval', 'var probe = document.createElement("textarea"); probe.id = "clipboard-probe"; document.body.appendChild(probe);');
+  await browser('focus', '#clipboard-probe');
+  await browser('press', 'Control+v');
+  assert.equal((await browser('get', 'value', '#clipboard-probe')).trim(), text);
+  await browser('eval', 'document.getElementById("clipboard-probe").remove()');
+};
 const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const secret = randomBytes(32).toString('hex');
@@ -87,13 +99,25 @@ try {
     console.log('Enrollment page loaded');
     await browser('set', 'viewport', '390', '844');
     assert.equal((await browser('eval', 'document.documentElement.scrollWidth <= window.innerWidth')).trim(), 'true', 'mobile page must not overflow');
+    await checkCopy('agm-enrollment-command', 'agm admin enrollment-codes create oauth-client --scopes messages:read');
+    assert.match((await browser('get', 'url')).trim(), /oauth\/authorize\?/);
     await browser('fill', '#enrollment_code', enrollment.code);
+    await browser('scrollintoview', 'button[type=submit]');
     await browser('click', 'button[type=submit]');
     const requestURL = (await browser('get', 'url')).trim();
     const id = requestURL.split('/').pop();
     console.log('Enrollment submitted');
     assert.match(id, /^authreq_/);
     assert.match(await browser('snapshot'), new RegExp(`authorization-requests approve ${id}`));
+    await checkCopy('agm-review-command', `agm admin authorization-requests show ${id}`);
+    await checkCopy('agm-approve-command', `agm admin authorization-requests approve ${id}`);
+    // A denied clipboard permission must select the command and explain how
+    // to copy it manually, without interfering with approval polling.
+    await browser('eval', 'Object.defineProperty(navigator, "clipboard", {configurable: true, value: {writeText: () => Promise.reject(new Error("Clipboard unavailable"))}})');
+    await browser('scrollintoview', '[data-copy="agm-review-command"]');
+    await browser('click', '[data-copy="agm-review-command"]');
+    await browser('wait', '--fn', 'document.body.textContent.includes("Command selected; press Ctrl+C")');
+    assert.equal(JSON.parse((await browser('eval', 'window.getSelection().toString()')).trim()), `agm admin authorization-requests show ${id}`);
     if (!denied) {
       await browser('set', 'offline', 'on');
       await browser('wait', '--fn', 'document.getElementById("agm-connection").textContent.includes("Unable to check approval")');
@@ -114,7 +138,7 @@ try {
     console.log(callbackResult);
     await cli('admin', 'clients', 'revoke', client, '--yes');
   }
-  console.log('PASS: mobile layout, enrollment CLI, polling retries, automatic approval/denial, safe completion refresh, callback and PKCE exchange');
+  console.log('PASS: command clipboard contents, mobile layout, enrollment CLI, polling retries, automatic approval/denial, safe completion refresh, callback and PKCE exchange');
 } finally {
   await browser('close').catch(() => {});
   server?.kill();
