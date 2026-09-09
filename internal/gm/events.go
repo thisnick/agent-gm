@@ -108,6 +108,7 @@ type EventUserAlert struct {
 // EventSettings carries the phone's settings: SIM list, RCS enablement and
 // the default-SMS-app flag.
 type EventSettings struct {
+	PushEnabled     *bool
 	IsDefaultSMSApp bool
 	RCSEnabled      bool
 	SIMCount        int

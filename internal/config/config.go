@@ -30,6 +30,7 @@ const (
 
 // Config is the environment Agent GM was started with.
 type Config struct {
+	ConnectionMode string
 	// PublicURL is AGENT_GM_PUBLIC_URL: the issuer, the canonical resource,
 	// and the base of every URL Agent GM hands out. It is NEVER derived from
 	// the request's Host, so an agent in a sandbox on another machine
@@ -73,6 +74,10 @@ func Load() (Config, error) {
 	var c Config
 
 	c.DataDir = env("AGENT_GM_DATA_DIR", "/data")
+	c.ConnectionMode = env("AGENT_GM_CONNECTION_MODE", "push")
+	if c.ConnectionMode != "push" && c.ConnectionMode != "active" {
+		return c, errors.New("AGENT_GM_CONNECTION_MODE must be push or active")
+	}
 
 	c.Backend = Backend(strings.ToLower(env("AGENT_GM_BACKEND", string(BackendLibGM))))
 	switch c.Backend {

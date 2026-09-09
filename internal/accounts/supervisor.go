@@ -71,10 +71,11 @@ func (a *Account) HasClient() bool { return a.Backend.IsConnected() }
 
 // Supervisor holds every account.
 type Supervisor struct {
-	store    *store.Store
-	sessions *store.SessionStore
-	clock    clock.Clock
-	log      core.Logger
+	PrepareBackend func(string, gm.Backend) error
+	store          *store.Store
+	sessions       *store.SessionStore
+	clock          clock.Clock
+	log            core.Logger
 
 	// MaxConcurrent bounds how many accounts run at once. Accounts are
 	// connected in last_event_at_ms order, newest first; the rest are parked
@@ -434,6 +435,15 @@ func (s *Supervisor) start(ctx context.Context, a *Account) error {
 	}
 	a.running = true
 	s.mu.Unlock()
+	if s.PrepareBackend != nil {
+		if err := s.PrepareBackend(a.ID, a.Backend); err != nil {
+			s.mu.Lock()
+			a.running = false
+			s.mu.Unlock()
+			_ = s.transition(ctx, a.ID, StateError, ReasonListenError)
+			return err
+		}
+	}
 
 	if err := a.Backend.Connect(ctx); err != nil {
 		s.mu.Lock()

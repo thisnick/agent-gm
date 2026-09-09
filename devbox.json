@@ -39,7 +39,8 @@
         "GOOS=darwin GOARCH=arm64 go vet ./..."
       ],
       "test": [
-        "CGO_ENABLED=1 go test ./... -race -count=1"
+        "CGO_ENABLED=1 go test ./... -race -count=1",
+        "CGO_ENABLED=1 go -C third_party/mautrix-gmessages test ./pkg/libgm -race -count=1"
       ],
       "test-oauth-browser": [
         "node scripts/oauth-browser-test.mjs"
@@ -54,6 +55,7 @@
         "GOOS=darwin GOARCH=arm64 go vet ./...",
         "golangci-lint run ./...",
         "CGO_ENABLED=1 go test ./... -race -count=1",
+        "CGO_ENABLED=1 go -C third_party/mautrix-gmessages test ./pkg/libgm -race -count=1",
         "./scripts/lint-names.sh",
         "./scripts/no-real-numbers.sh",
         "./scripts/no-deployment-host.sh"

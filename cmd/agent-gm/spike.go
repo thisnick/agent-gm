@@ -49,6 +49,8 @@ func spikeUsage() {
   agent-gm spike send  <conv-id> <text>
   agent-gm spike watch [--account <acct-id>] [--for 60s]
   agent-gm spike diag
+  agent-gm spike background-once --account <acct-id>
+  agent-gm spike push-probe --account <acct-id>
 `)
 }
 
@@ -69,6 +71,10 @@ func runSpike(args []string) int {
 		return spikeWatch(rest)
 	case "diag":
 		return spikeDiag(rest)
+	case "background-once":
+		return spikeBackgroundOnce(rest)
+	case "push-probe":
+		return spikePushProbe(rest)
 	case "-h", "--help":
 		spikeUsage()
 		return exitOK

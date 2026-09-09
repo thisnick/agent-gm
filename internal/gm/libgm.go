@@ -24,6 +24,7 @@ import (
 // It is the only place in Agent GM that imports libgm or gmproto
 // (spec section 2.3).
 type LibGM struct {
+	push   *pushRuntime
 	client *libgm.Client
 	auth   *libgm.AuthData
 	log    zerolog.Logger
@@ -81,17 +82,31 @@ func newFromAuth(auth *libgm.AuthData, logger zerolog.Logger) *LibGM {
 // surface immediately, then starts long polling. It is the only connect path
 // Agent GM uses; ConnectBackground is deliberately not called.
 func (b *LibGM) Connect(ctx context.Context) error {
+	if b.push != nil {
+		return b.connectPush(ctx)
+	}
 	if err := b.client.Connect(); err != nil {
 		return Classify(translateError(err))
 	}
 	return nil
 }
 
-func (b *LibGM) Disconnect() { b.client.Disconnect() }
+func (b *LibGM) Disconnect() {
+	if b.push != nil {
+		b.disconnectPush()
+		return
+	}
+	b.client.Disconnect()
+}
 
 // IsConnected is advisory only: upstream notes it is imprecise during
 // reconnects (spec section 3.1).
-func (b *LibGM) IsConnected() bool { return b.client.IsConnected() }
+func (b *LibGM) IsConnected() bool {
+	if b.push != nil {
+		return b.push.started.Load()
+	}
+	return b.client.IsConnected()
+}
 
 // IsLoggedIn is the authoritative "are we paired" check.
 func (b *LibGM) IsLoggedIn() bool { return b.client.IsLoggedIn() }
@@ -103,7 +118,7 @@ func (b *LibGM) UnknownEvents() uint64 { return b.unknown.Load() }
 
 // --- health -----------------------------------------------------------------
 
-func (b *LibGM) FetchConfig(ctx context.Context) (ConfigInfo, error) {
+func (b *LibGM) rawFetchConfig(ctx context.Context) (ConfigInfo, error) {
 	if err := b.client.FetchConfig(ctx); err != nil {
 		return ConfigInfo{}, Classify(translateError(err))
 	}
@@ -134,7 +149,7 @@ func CompiledConfigVersion() ConfigVersion {
 	return convertConfigVersion(util.ConfigMessage)
 }
 
-func (b *LibGM) IsDefaultSMSApp(ctx context.Context) (bool, error) {
+func (b *LibGM) rawIsDefaultSMSApp(ctx context.Context) (bool, error) {
 	resp, err := b.client.IsBugleDefault(ctx)
 	if err != nil {
 		return false, Classify(translateError(err))
@@ -296,6 +311,22 @@ func plausibleAddress(s string) bool {
 // falls through to a fresh pairing, which here would silently create a second
 // account (spec section 3.2, declared deviation).
 func (b *LibGM) RefreshGoogleCookies(ctx context.Context, cookies map[string]string) error {
+	// Config validation is an ordinary HTTPS call and must also work while a
+	// push client is stopped. Serialize cookie changes with passive batches.
+	locked := false
+	if b.push != nil {
+		select {
+		case b.push.gate <- struct{}{}:
+			locked = true
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		defer func() {
+			if locked {
+				<-b.push.gate
+			}
+		}()
+	}
 	if b.auth.TachyonAuthToken == nil || b.auth.PairingID == uuid.Nil {
 		return Classify(ErrRequestedEntityNotFound)
 	}
@@ -311,7 +342,7 @@ func (b *LibGM) RefreshGoogleCookies(ctx context.Context, cookies map[string]str
 	restore := func() { b.auth.SetCookies(previous) }
 
 	b.auth.SetCookies(copyCookies(cookies))
-	info, err := b.FetchConfig(ctx)
+	info, err := b.rawFetchConfig(ctx)
 	if err != nil {
 		restore()
 		return err
@@ -319,6 +350,10 @@ func (b *LibGM) RefreshGoogleCookies(ctx context.Context, cookies map[string]str
 	if !strings.EqualFold(info.DeviceEmail, b.auth.Mobile.GetSourceID()) {
 		restore()
 		return Classify(ErrWrongAccount)
+	}
+	if locked {
+		<-b.push.gate
+		locked = false
 	}
 	if err := b.Connect(ctx); err != nil {
 		restore()
@@ -341,7 +376,7 @@ func copyCookies(in map[string]string) map[string]string {
 // that account's live conversation events are trustworthy: the first call
 // sends BUGLE_ANNOTATION and later calls BUGLE_MESSAGE, and the flag lives on
 // the Client, of which there is one per account (spec section 3.7).
-func (b *LibGM) ListConversations(ctx context.Context, folder Folder, count int) ([]Conversation, error) {
+func (b *LibGM) rawListConversations(ctx context.Context, folder Folder, count int) ([]Conversation, error) {
 	resp, err := b.client.ListConversations(ctx, count, gmproto.ListConversationsRequest_Folder(folder))
 	if err != nil {
 		return nil, Classify(translateError(err))
@@ -353,7 +388,7 @@ func (b *LibGM) ListConversations(ctx context.Context, folder Folder, count int)
 	return out, nil
 }
 
-func (b *LibGM) GetConversation(ctx context.Context, convID string) (*Conversation, error) {
+func (b *LibGM) rawGetConversation(ctx context.Context, convID string) (*Conversation, error) {
 	c, err := b.client.GetConversation(ctx, convID)
 	if err != nil {
 		return nil, Classify(translateError(err))
@@ -365,7 +400,7 @@ func (b *LibGM) GetConversation(ctx context.Context, convID string) (*Conversati
 	return &conv, nil
 }
 
-func (b *LibGM) GetConversationType(ctx context.Context, convID string) (ConversationType, error) {
+func (b *LibGM) rawGetConversationType(ctx context.Context, convID string) (ConversationType, error) {
 	resp, err := b.client.GetConversationType(ctx, convID)
 	if err != nil {
 		return ConversationTypeUnknown, Classify(translateError(err))
@@ -373,7 +408,7 @@ func (b *LibGM) GetConversationType(ctx context.Context, convID string) (Convers
 	return convertConversationType(gmproto.ConversationType(resp.GetType())), nil
 }
 
-func (b *LibGM) ListMessages(ctx context.Context, convID string, count int, cursor *Cursor) ([]Message, *Cursor, error) {
+func (b *LibGM) rawListMessages(ctx context.Context, convID string, count int, cursor *Cursor) ([]Message, *Cursor, error) {
 	resp, err := b.client.FetchMessages(ctx, convID, int64(count), toProtoCursor(cursor))
 	if err != nil {
 		return nil, nil, Classify(translateError(err))
@@ -385,7 +420,7 @@ func (b *LibGM) ListMessages(ctx context.Context, convID string, count int, curs
 	return out, convertCursor(resp.GetCursor()), nil
 }
 
-func (b *LibGM) ListContacts(ctx context.Context) ([]Contact, error) {
+func (b *LibGM) rawListContacts(ctx context.Context) ([]Contact, error) {
 	resp, err := b.client.ListContacts(ctx)
 	if err != nil {
 		return nil, Classify(translateError(err))
@@ -397,7 +432,7 @@ func (b *LibGM) ListContacts(ctx context.Context) ([]Contact, error) {
 	return out, nil
 }
 
-func (b *LibGM) ListTopContacts(ctx context.Context) ([]Contact, error) {
+func (b *LibGM) rawListTopContacts(ctx context.Context) ([]Contact, error) {
 	resp, err := b.client.ListTopContacts(ctx)
 	if err != nil {
 		return nil, Classify(translateError(err))
@@ -409,7 +444,7 @@ func (b *LibGM) ListTopContacts(ctx context.Context) ([]Contact, error) {
 	return out, nil
 }
 
-func (b *LibGM) ContactAvatars(ctx context.Context, ids []string) (map[string][]byte, error) {
+func (b *LibGM) rawContactAvatars(ctx context.Context, ids []string) (map[string][]byte, error) {
 	resp, err := b.client.GetParticipantThumbnail(ctx, ids...)
 	if err != nil {
 		return nil, Classify(translateError(err))
@@ -421,7 +456,7 @@ func (b *LibGM) ContactAvatars(ctx context.Context, ids []string) (map[string][]
 	return out, nil
 }
 
-func (b *LibGM) DownloadAvatar(ctx context.Context, url string) ([]byte, error) {
+func (b *LibGM) rawDownloadAvatar(ctx context.Context, url string) ([]byte, error) {
 	data, err := b.client.DownloadAvatar(ctx, url)
 	if err != nil {
 		return nil, Classify(translateError(err))
@@ -437,7 +472,7 @@ func (b *LibGM) DownloadAvatar(ctx context.Context, url string) ([]byte, error) 
 // exactly that way (connector/startchat.go:214-219), and so does Agent GM. A
 // second CREATE_RCS is reported to the caller as such, and core maps it to
 // google_error.
-func (b *LibGM) ResolveConversation(ctx context.Context, numbers []string, groupName string) (ResolveResult, error) {
+func (b *LibGM) rawResolveConversation(ctx context.Context, numbers []string, groupName string) (ResolveResult, error) {
 	return resolveConversation(ctx, b.client, numbers, groupName)
 }
 
@@ -529,7 +564,7 @@ func buildSendRequest(convID, participantID, tmpID, replyTo string, forceRCS boo
 	return req
 }
 
-func (b *LibGM) SendText(ctx context.Context, req SendTextRequest) (SendResult, error) {
+func (b *LibGM) rawSendText(ctx context.Context, req SendTextRequest) (SendResult, error) {
 	infos := []*gmproto.MessageInfo{{
 		Data: &gmproto.MessageInfo_MessageContent{
 			MessageContent: &gmproto.MessageContent{Content: req.Text},
@@ -539,7 +574,7 @@ func (b *LibGM) SendText(ctx context.Context, req SendTextRequest) (SendResult, 
 		req.ReplyToMessageID, req.ForceRCS, req.SIMPayload, infos))
 }
 
-func (b *LibGM) SendMedia(ctx context.Context, req SendMediaRequest) (SendResult, error) {
+func (b *LibGM) rawSendMedia(ctx context.Context, req SendMediaRequest) (SendResult, error) {
 	format, ok := gmproto.MediaFormats_value[req.Media.Format]
 	if !ok {
 		format = int32(gmproto.MediaFormats_UNSPECIFIED_TYPE)
@@ -580,7 +615,7 @@ func (b *LibGM) send(ctx context.Context, req *gmproto.SendMessageRequest) (Send
 	}, nil
 }
 
-func (b *LibGM) React(ctx context.Context, msgID string, emoji string, action ReactionAction) error {
+func (b *LibGM) rawReact(ctx context.Context, msgID string, emoji string, action ReactionAction) error {
 	// Every inbound emoji is canonicalised before it reaches the wire, so
 	// that adding the two spellings of a heart cannot be two reactions.
 	t, canonical := CanonicaliseEmojiInput(emoji)
@@ -606,7 +641,7 @@ func (b *LibGM) React(ctx context.Context, msgID string, emoji string, action Re
 	return nil
 }
 
-func (b *LibGM) DeleteMessage(ctx context.Context, msgID string) error {
+func (b *LibGM) rawDeleteMessage(ctx context.Context, msgID string) error {
 	resp, err := b.client.DeleteMessage(ctx, msgID)
 	if err != nil {
 		return Classify(translateError(err))
@@ -617,14 +652,14 @@ func (b *LibGM) DeleteMessage(ctx context.Context, msgID string) error {
 	return nil
 }
 
-func (b *LibGM) MarkRead(ctx context.Context, convID, msgID string) error {
+func (b *LibGM) rawMarkRead(ctx context.Context, convID, msgID string) error {
 	if err := b.client.MarkRead(ctx, convID, msgID); err != nil {
 		return Classify(translateError(err))
 	}
 	return nil
 }
 
-func (b *LibGM) SetTyping(ctx context.Context, convID string) error {
+func (b *LibGM) rawSetTyping(ctx context.Context, convID string) error {
 	if err := b.client.SetTyping(ctx, convID, nil); err != nil {
 		return Classify(translateError(err))
 	}
@@ -637,7 +672,7 @@ func (b *LibGM) SetTyping(ctx context.Context, convID string) error {
 // UpdateConversationData's oneof declares only `status` and `mute`
 // (gmproto/client.proto:200-206). Asking for either is refused rather than
 // silently ignored.
-func (b *LibGM) UpdateConversation(ctx context.Context, convID string, ch ConversationChange) error {
+func (b *LibGM) rawUpdateConversation(ctx context.Context, convID string, ch ConversationChange) error {
 	if ch.Pinned != nil || ch.Unread != nil {
 		e := newError(CodeUnsupportedCapability, 409,
 			"Google Messages for web exposes no way to pin a conversation or mark it unread")
@@ -680,7 +715,7 @@ func (b *LibGM) UpdateConversation(ctx context.Context, convID string, ch Conver
 
 // DeleteConversation is Google's delete-for-me and the only delete Agent GM
 // has (non-goal N6).
-func (b *LibGM) DeleteConversation(ctx context.Context, convID, phone string) error {
+func (b *LibGM) rawDeleteConversation(ctx context.Context, convID, phone string) error {
 	if err := b.client.DeleteConversation(ctx, convID, phone); err != nil {
 		return Classify(translateError(err))
 	}
@@ -694,7 +729,7 @@ func (b *LibGM) DeleteConversation(ctx context.Context, convID, phone string) er
 // goroutine plus a select on ctx.Done(). Cancelling only abandons the result:
 // the underlying HTTP request runs to completion (spec section 3.1).
 
-func (b *LibGM) Upload(ctx context.Context, data []byte, filename, mime string) (MediaRef, error) {
+func (b *LibGM) rawUpload(ctx context.Context, data []byte, filename, mime string) (MediaRef, error) {
 	type result struct {
 		mc  *gmproto.MediaContent
 		err error
@@ -722,7 +757,7 @@ func (b *LibGM) Upload(ctx context.Context, data []byte, filename, mime string) 
 	}
 }
 
-func (b *LibGM) Download(ctx context.Context, mediaID string, key []byte) ([]byte, error) {
+func (b *LibGM) rawDownload(ctx context.Context, mediaID string, key []byte) ([]byte, error) {
 	type result struct {
 		data []byte
 		err  error
@@ -743,7 +778,7 @@ func (b *LibGM) Download(ctx context.Context, mediaID string, key []byte) ([]byt
 	}
 }
 
-func (b *LibGM) RequestFullSizeImage(ctx context.Context, msgID, actionMsgID string) error {
+func (b *LibGM) rawRequestFullSizeImage(ctx context.Context, msgID, actionMsgID string) error {
 	if _, err := b.client.GetFullSizeImage(ctx, msgID, actionMsgID); err != nil {
 		return Classify(translateError(err))
 	}
@@ -815,7 +850,12 @@ func (b *LibGM) handleEvent(raw any) {
 	case *gmproto.UserAlertEvent:
 		b.emit(&EventUserAlert{Alert: AlertType(e.GetAlertType())})
 	case *gmproto.Settings:
+		var pushEnabled *bool
+		if e.GetOpCodeData() != nil {
+			pushEnabled = e.GetOpCodeData().PushEnabled
+		}
 		b.emit(&EventSettings{
+			PushEnabled:     pushEnabled,
 			IsDefaultSMSApp: e.GetRCSSettings().GetIsDefaultSMSApp(),
 			RCSEnabled:      e.GetRCSSettings().GetIsEnabled(),
 			SIMCount:        len(e.GetSIMCards()),
@@ -835,6 +875,14 @@ func (b *LibGM) handleEvent(raw any) {
 // --- session persistence ----------------------------------------------------
 
 func (b *LibGM) MarshalSession() ([]byte, error) {
+	if b.push != nil {
+		b.push.gate <- struct{}{}
+		defer func() { <-b.push.gate }()
+	}
+	return b.marshalSession()
+}
+
+func (b *LibGM) marshalSession() ([]byte, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.auth.CookiesLock.RLock()
@@ -869,6 +917,9 @@ func (b *LibGM) LoadSession(data []byte) error {
 // event (client.go:73-81), so the 5-minute timer of spec section 3.3 is the
 // only thing that captures a rotation, and this is how it decides.
 func (b *LibGM) SessionDirty() bool {
+	if b.push != nil {
+		return true
+	}
 	b.auth.CookiesLock.RLock()
 	data, err := json.Marshal(b.auth)
 	b.auth.CookiesLock.RUnlock()

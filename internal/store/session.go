@@ -160,5 +160,9 @@ func (s *SessionStore) Shred(accountID string) error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	err = os.Remove(s.Path(accountID + "-push"))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	return nil
 }
