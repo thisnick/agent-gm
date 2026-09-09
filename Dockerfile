@@ -18,6 +18,7 @@ WORKDIR /src
 # dependencies have not changed. The libgm pin (spec section 3.6) is a fact of
 # go.mod, so this layer's cache key is exactly the pin.
 COPY go.mod go.sum ./
+COPY third_party/mautrix-gmessages ./third_party/mautrix-gmessages
 RUN go mod download
 
 COPY . .

@@ -1,5 +1,10 @@
 module github.com/thisnick/agent-gm
 
+// Pinned libgm with the bounded passive-session extension described in
+// third_party/mautrix-gmessages/AGENT_GM_PATCHES.md.
+replace go.mau.fi/mautrix-gmessages => ./third_party/mautrix-gmessages
+
+
 go 1.26.0
 
 toolchain go1.27.0

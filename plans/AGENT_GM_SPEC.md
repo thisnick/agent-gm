@@ -108,7 +108,7 @@ debated.
   group-start protocol because Matrix rooms had to exist before Google
   conversations did. Agent GM creates a conversation with one call
   (`GetOrCreateConversation`) or not at all (§7.4).
-- **N8 — No inbound webhooks or push fan-out to third parties.** Events are
+- **N8 — No user-configured inbound webhooks or push fan-out to third parties.** The Google Web Push transport endpoint is the sole inbound exception. Events are
   ingested into SQLite and read back. There is no subscriber registry.
 - **N9 — No message editing.** Google Messages has no edit primitive that
   `libgm` exposes for outgoing messages; the bridge's "edit" is a re-render of a
@@ -308,10 +308,10 @@ of contract, and adding a call is a spec change.
 | Symbol | Signature | Returns / meaning |
 |---|---|---|
 | `libgm.NewAuthData()` | `() *AuthData` | fresh `AuthData` with a new AES-CTR request-crypto helper and a new ECDSA refresh key. Used only when pairing from scratch. |
-| `libgm.NewClient` | `(authData *AuthData, pk *PushKeys, logger zerolog.Logger) *Client` | the client. Agent GM always passes `pk == nil` (no web push; see §3.4). |
+| `libgm.NewClient` | `(authData *AuthData, pk *PushKeys, logger zerolog.Logger) *Client` | the client. Agent GM always passes `pk == nil` (push is registered after construction in push mode). |
 | `(*Client).SetEventHandler` | `(EventHandler)` where `EventHandler = func(evt any)` | registers the single event sink. **Called synchronously; must not block or make outgoing requests.** |
 | `(*Client).FetchConfig` | `(ctx) error` | fetches Google's live `Config`, stores it on `c.Config`, and parses `DeviceInfo.DeviceID` into `AuthData.SessionID` (`client.go:389`). Logs (at trace) when the compiled-in `util.ConfigMessage` differs from live. Agent GM calls this **once per account, before that account's `Connect`**, and surfaces the compiled/live pair per account in `GET /v1/health` (§3.7). |
-| `(*Client).Connect` | `() error` | refreshes the tachyon token synchronously so bad credentials surface immediately, then starts long polling. **The only connect path Agent GM uses**, once per account. |
+| `(*Client).Connect` | `() error` | refreshes the tachyon token synchronously so bad credentials surface immediately, then starts long polling. **Active mode only**, once per account. |
 | `(*Client).ConnectBackground` | `() error` | **not called**; a one-shot poll for push-woken processes. |
 | `(*Client).Disconnect` | `()` | closes long polling and fails every in-flight response waiter with `ErrConnectionClosed`. |
 | `(*Client).Reconnect` | `() error` | close + re-check login + restart polling. Agent GM calls this only from its own supervisor after `ListenFatalError` that is not a credential error. |
@@ -343,7 +343,25 @@ payloads (`pair.go:93,115`), never as a runtime network value.
 | `(*Client).PairCallback` | — | **not called.** Listed only because leaving it nil is load-bearing: see the prose below |
 | `(*Client).GaiaHackyDeviceSwitcher` | `int` field (`client.go:143`) | selects among several primary-looking devices as `primaryDevices[switcher % len]` after a newest-first sort (`pair_google.go:364`). Agent GM exposes it as `agm pair --device-index N` and as `device_index` on `POST /v1/pairing/start`. |
 
-**Symbols in this table that Agent GM deliberately does *not* call** are marked
+**Push background mode (owner decision, 2026-09-09):** The server defaults
+ to `AGENT_GM_CONNECTION_MODE=push`; `active` retains the former lifecycle.
+ The local pinned libgm extension `RunBackground(ctx, request)` serializes
+ bounded passive batches for authenticated Web Push wakes and API operations.
+ It initializes an RPC session ID without GET_UPDATES, never starts the recovery
+ pinger, and closes after pending requests and updates drain. Pairing skips
+ the upstream automatic active reconnect. Startup reconciliation still runs,
+ but periodic message sweeps are disabled in push mode. A connected push
+ account is logically available even when no Google listener is open.
+
+ The public `/push/<account>/<capability>` endpoint validates authenticated
+ aesgcm/aes128gcm encryption and durably saves the wake before acknowledging it.
+ Subscription keys and counters live in an encrypted session sidecar; restart
+ resumes pending work and failures retry only that work. No scheduled polling
+ or automatic fallback to active mode is permitted. See
+ `docs/background-experiment.md` for deployment and verification. These rules
+ override active-connection assumptions elsewhere in this spec in push mode.
+
+**Symbols in this table that Agent GM deliberately does *not* call in the server** are marked
 "not called" and are listed only because *not* calling them is part of the
 contract: `PairCallback`, `SetProxy`, `ConnectBackground`, `SetPingInterval`
 and `SetDataReceiveCheckInterval`. `PairCallback` in particular fires only from
@@ -362,7 +380,7 @@ handled (§3.4); Agent GM never sends the corresponding request.
 
 Upstream behaviours Agent GM depends on and must not re-implement:
 
-- `DoGaiaPairing` reconnects in its own goroutine on success
+- In active mode, `DoGaiaPairing` reconnects in its own goroutine on success
   (`pair_google.go:311-318`). Agent GM does not reconnect on its own after
   `PairSuccessful`.
 
@@ -1620,7 +1638,7 @@ are `gmproto` internals that mean nothing to a caller (§18.1 rubric):
 | State | Meaning | Reads | Writes |
 |---|---|---|---|
 | `pairing` | a pair is in flight; no session yet. Never a resting state (§3.2) | — | — |
-| `connected` | session valid, long poll up | yes | yes |
+| `connected` | session valid; active listener or ready push subscription | yes | yes |
 | `degraded` | transient listen error; retrying | yes | yes, likely to fail |
 | `error` | the supervisor is retrying `Reconnect` with backoff | yes | refused |
 | `signed_out` | **the owner signed this account out**, or its cookies died | **yes** | refused, `unsupported_capability` / `not_signed_in` |
@@ -1867,7 +1885,7 @@ It is triggered by:
 | `MOBILE_DATABASE_SYNC_COMPLETE` | `last_event_at_ms` |
 | `events.NoDataReceived` | `last_event_at_ms` |
 | `events.ListenRecovered`, and every successful `Connect` | `last_event_at_ms` |
-| a timer per account, every `settings.ingest.sweep_interval` (default 15m, bounds 1m–6h) | that account's `last_sweep_at_ms` |
+| in active mode only, a timer per account, every `settings.ingest.sweep_interval` (default 15m, bounds 1m–6h) | that account's `last_sweep_at_ms` |
 | `POST /v1/admin/backfill` with `{"account_id"}` | that account's `last_event_at_ms` |
 | `POST /v1/admin/backfill` with no body | epoch, **for every account** — a full re-backfill of the whole server. This is the most expensive operation Agent GM offers, so the route requires `{"confirm": true}` when the body is otherwise empty, and `agm admin backfill` prints how many accounts and conversations it is about to walk |
 
@@ -4785,6 +4803,7 @@ Environment only, plus a runtime settings table. **There is no config file.**
 | `AGENT_GM_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
 | `AGENT_GM_LOG_FORMAT` | `json` | `json` \| `text` |
 | `AGENT_GM_UNSAFE_TRACE` | unset | `1` permits `libgm` trace logging. §12.2 |
+| `AGENT_GM_CONNECTION_MODE` | `push` | `push` (passive, no periodic message sweep) or `active` (persistent connection) |
 | `AGENT_GM_BACKEND` | `libgm` | `libgm` \| `fake` |
 | `AGENT_GM_ALLOW_FAKE` | unset | `1` permits `AGENT_GM_BACKEND=fake`. Without it a `fake` backend refuses to start, so a production deployment cannot be talked into serving an empty in-memory phone |
 | `AGENT_GM_LIVE_NUMBERS` | unset | live-gate targets, `direct,group1,group2` (§13.3). Read only by `-tags live` tests; never committed |

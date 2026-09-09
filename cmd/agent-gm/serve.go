@@ -145,6 +145,7 @@ func buildServer(ctx context.Context, addrOverride string) (*built, int) {
 		Str("client_source_mode", cfg.ClientSourceMode()).
 		Str("public_url", cfg.PublicURL).
 		Str("backend", string(cfg.Backend)).
+		Str("connection_mode", cfg.ConnectionMode).
 		Msg("starting")
 	if cfg.UnsafeTrace {
 		log.Warn().Msg("AGENT_GM_UNSAFE_TRACE is set: libgm will log decrypted payloads")
@@ -272,7 +273,11 @@ func buildServer(ctx context.Context, addrOverride string) (*built, int) {
 			if cfg.Backend == config.BackendFake {
 				return fake.New(nextFakeAddress()), nil
 			}
-			return gm.New(libLog), nil
+			backend := gm.New(libLog)
+			if cfg.ConnectionMode == "push" {
+				backend.SetPushPairingMode()
+			}
+			return backend, nil
 		},
 	}
 
@@ -396,11 +401,16 @@ func buildServer(ctx context.Context, addrOverride string) (*built, int) {
 		},
 	})
 
+	handler := mcp.Mount(mountOAuth(srv, oauthSrv), mcpHandler)
+	if cfg.ConnectionMode == "push" && cfg.Backend == config.BackendLibGM {
+		configureServerPush(sup, sessions, cfg.PublicURL)
+		handler = mountPush(handler, sup)
+	}
 	return &built{
 		cfg: cfg, log: log, Store: st, Sessions: sessions,
 		Sup: sup, Deps: deps, Server: srv, workers: workers, libLog: libLog,
 		OAuth: oauthSrv, MCP: mcpHandler,
-		Handler: mcp.Mount(mountOAuth(srv, oauthSrv), mcpHandler),
+		Handler: handler,
 	}, exitOK
 }
 

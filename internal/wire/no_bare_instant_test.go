@@ -40,7 +40,9 @@ func TestNoJSONFieldIsABareTime(t *testing.T) {
 			if name := info.Name(); name != "." && strings.HasPrefix(name, ".") {
 				return filepath.SkipDir
 			}
-			if info.Name() == "testdata" {
+			// Third-party protocol/session structures do not define Agent GM's
+			// JSON API. Their timestamp formats must remain upstream-compatible.
+			if info.Name() == "testdata" || info.Name() == "third_party" {
 				return filepath.SkipDir
 			}
 			return nil
