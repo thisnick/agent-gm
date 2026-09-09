@@ -1,5 +1,15 @@
 # @agent-gm/cli
 
+## 1.2.0
+
+### Minor Changes
+
+- 1f8659e: Default the server to durable Web Push background delivery and bounded passive API sessions, with an explicit active-mode fallback.
+
+### Patch Changes
+
+- 209ba90: Hide expired and inactive entries from admin enrollment-code, client, and authorization-request lists by default; add --all to inspect their history.
+
 ## 1.1.0
 
 ### Minor Changes
