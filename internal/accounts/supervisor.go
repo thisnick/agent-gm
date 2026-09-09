@@ -624,6 +624,14 @@ func (a *Account) PersistSession(ctx context.Context) error {
 	}
 	a.sessMu.Lock()
 	defer a.sessMu.Unlock()
+	if atomic, ok := a.Backend.(interface {
+		SaveSession(func([]byte) error) error
+	}); ok {
+		if err := atomic.SaveSession(func(data []byte) error { return a.sup.sessions.Save(a.ID, data) }); err != nil {
+			return fmt.Errorf("saving session for %s: %w", a.ID, err)
+		}
+		return a.sup.store.SetSessionPresent(ctx, a.ID, true)
+	}
 	data, err := p.MarshalSession()
 	if err != nil {
 		return fmt.Errorf("marshalling session for %s: %w", a.ID, err)

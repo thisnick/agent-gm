@@ -874,6 +874,20 @@ func (b *LibGM) handleEvent(raw any) {
 
 // --- session persistence ----------------------------------------------------
 
+// SaveSession keeps the snapshot and its disk write in the same passive-client
+// critical section, so a timer cannot overwrite a newer batch's credentials.
+func (b *LibGM) SaveSession(save func([]byte) error) error {
+	if b.push != nil {
+		b.push.gate <- struct{}{}
+		defer func() { <-b.push.gate }()
+	}
+	data, err := b.marshalSession()
+	if err != nil {
+		return err
+	}
+	return save(data)
+}
+
 func (b *LibGM) MarshalSession() ([]byte, error) {
 	if b.push != nil {
 		b.push.gate <- struct{}{}

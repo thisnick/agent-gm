@@ -142,3 +142,28 @@ func TestPushWorkerRetriesOnlyPendingWork(t *testing.T) {
 		t.Fatalf("unexpected polling after delivery: %d calls", calls.Load())
 	}
 }
+
+func TestSessionSaveHoldsPassiveGateUntilDiskWriteCompletes(t *testing.T) {
+	b := New(zerolog.Nop())
+	if err := b.EnablePush("https://example.test/push/account", nil, func([]byte) error { return nil }, func([]byte) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	err := b.SaveSession(func([]byte) error {
+		select {
+		case b.push.gate <- struct{}{}:
+			<-b.push.gate
+			t.Error("released passive gate before saving snapshot")
+		default:
+		}
+		return errors.New("write failed")
+	})
+	if err == nil || err.Error() != "write failed" {
+		t.Fatalf("save error lost: %v", err)
+	}
+	select {
+	case b.push.gate <- struct{}{}:
+		<-b.push.gate
+	default:
+		t.Fatal("save failure leaked gate")
+	}
+}
