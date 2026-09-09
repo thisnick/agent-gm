@@ -1,6 +1,6 @@
 {
   "name": "@agent-gm/cli",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "agm, the Agent GM command line. A thin wrapper that downloads the release binary for your platform.",
   "license": "AGPL-3.0-or-later",
   "homepage": "https://github.com/thisnick/agent-gm",

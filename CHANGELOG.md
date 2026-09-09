@@ -16,6 +16,12 @@ tag: a tag is a label and a digest is evidence.
 
 Nothing yet.
 
+## [1.2.0] — 2026-09-09
+
+- Default the server to durable Web Push background delivery and bounded passive API sessions, with an explicit active-mode fallback.
+
+- Hide expired and inactive entries from admin enrollment-code, client, and authorization-request lists by default; add --all to inspect their history.
+
 ## [1.1.0] — 2026-09-08
 
 - Add latest-activity date ranges and pinned-only conversation filters; fix participant search, direct-only filtering, and folder/type schema mismatches across MCP, REST and CLI.
@@ -126,7 +132,8 @@ Agent GM *is* rather than what changed.
   gate was satisfied through the public URL with Codex CLI. Adding either
   later needs no code.
 
-[Unreleased]: https://github.com/thisnick/agent-gm/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/thisnick/agent-gm/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/thisnick/agent-gm/releases/tag/v1.2.0
 [1.1.0]: https://github.com/thisnick/agent-gm/releases/tag/v1.1.0
 [1.0.5]: https://github.com/thisnick/agent-gm/releases/tag/v1.0.5
 [1.0.4]: https://github.com/thisnick/agent-gm/releases/tag/v1.0.4
