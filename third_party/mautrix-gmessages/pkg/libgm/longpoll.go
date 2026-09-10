@@ -156,8 +156,10 @@ type dittoPinger struct {
 	alertTimeoutCount int
 	recovering        atomic.Bool
 
-	stop <-chan struct{}
-	log  *zerolog.Logger
+	stop         <-chan struct{}
+	log          *zerolog.Logger
+	ctx          context.Context
+	reconnectCtx context.Context
 }
 
 type resetter struct {
@@ -260,7 +262,7 @@ func (dp *dittoPinger) Ping(pingID uint64, timeout time.Duration, reset *resette
 	// always cancels the waiters that are really outstanding.
 	pl.currentReset.Store(reset)
 
-	pingChan, requestID, err := dp.client.notifyDittoActivity(dp.log.WithContext(context.TODO()))
+	pingChan, requestID, err := dp.client.notifyDittoActivity(dp.ctx)
 	if err != nil {
 		pl.lock.Lock()
 		pl.sendFails++
@@ -319,7 +321,6 @@ func (dp *dittoPinger) recoveryLoop(reset *resetter) {
 			dp.log.Debug().Msg("Phone is responding again, stopping ditto ping recovery")
 			return
 		}
-		ctx := dp.log.WithContext(context.TODO())
 		reconnected := false
 		switch {
 		case timeouts >= reconnectAfterTimeouts && pl.canDoRecovery():
@@ -327,7 +328,7 @@ func (dp *dittoPinger) recoveryLoop(reset *resetter) {
 				Int("timeout_count", timeouts).
 				Msg("Phone hasn't responded to pings, reconnecting to get a new listener session")
 			pl.startRecovery()
-			if err := dp.client.Reconnect(); err != nil {
+			if err := dp.client.Reconnect(dp.reconnectCtx); err != nil {
 				dp.log.Err(err).Msg("Failed to reconnect while recovering from ping timeouts")
 				return
 			}
@@ -337,7 +338,7 @@ func (dp *dittoPinger) recoveryLoop(reset *resetter) {
 			dp.log.Warn().
 				Int("timeout_count", timeouts).
 				Msg("Phone hasn't responded to pings, re-arming its event subscription")
-			if err := dp.client.SetActiveSession(ctx); err != nil {
+			if err := dp.client.SetActiveSession(dp.ctx); err != nil {
 				dp.log.Err(err).Msg("Failed to set active session while recovering from ping timeouts")
 			}
 		}
@@ -452,20 +453,17 @@ func tryReadBody(resp io.ReadCloser) []byte {
 	return data
 }
 
-func (c *Client) doLongPoll(loggedIn, background bool, onFirstConnect func()) bool {
-	return c.doLongPollContext(context.Background(), loggedIn, background, onFirstConnect)
-}
-
-func (c *Client) doLongPollContext(parent context.Context, loggedIn, background bool, onFirstConnect func()) bool {
+func (c *Client) doLongPoll(ctx context.Context, loggedIn, background bool, onFirstConnect func()) bool {
 	c.listenID++
 	listenID := c.listenID
 	listenReqID := uuid.NewString()
 
+	origCtx := ctx
 	log := c.Logger.With().Int("listen_id", listenID).Logger()
 	defer func() {
 		log.Debug().Msg("Long polling stopped")
 	}()
-	ctx := log.WithContext(parent)
+	ctx = log.WithContext(ctx)
 	log.Debug().Str("listen_uuid", listenReqID).Msg("Long polling starting")
 
 	if loggedIn && !background {
@@ -477,6 +475,8 @@ func (c *Client) doLongPollContext(parent context.Context, loggedIn, background 
 			stop:              stopDittoPinger,
 			log:               &log,
 			client:            c,
+			ctx:               ctx,
+			reconnectCtx:      origCtx,
 		}).Loop()
 	}
 
@@ -528,8 +528,10 @@ func (c *Client) doLongPollContext(parent context.Context, loggedIn, background 
 		if c.AuthData.HasCookies() {
 			url = util.ReceiveMessagesURLGoogle
 		}
-		resp, err := c.makeProtobufHTTPRequestContext(ctx, url, payload, ContentTypePBLite, true)
+		connCtx, cancel := context.WithCancel(ctx)
+		resp, err := c.makeProtobufHTTPRequestContext(connCtx, url, payload, ContentTypePBLite, true)
 		if err != nil {
+			cancel()
 			if loggedIn {
 				c.triggerEvent(&events.ListenTemporaryError{Error: err})
 			}
@@ -549,6 +551,7 @@ func (c *Client) doLongPollContext(parent context.Context, loggedIn, background 
 		}
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 			body := tryReadBody(resp.Body)
+			cancel()
 			log.Error().
 				Int("status_code", resp.StatusCode).
 				Bytes("resp_body", body).
@@ -558,6 +561,7 @@ func (c *Client) doLongPollContext(parent context.Context, loggedIn, background 
 			}
 			return false
 		} else if resp.StatusCode >= 400 {
+			cancel()
 			if loggedIn {
 				c.triggerEvent(&events.ListenTemporaryError{Error: events.HTTPError{Action: "polling", Resp: resp, Body: tryReadBody(resp.Body)}})
 			} else {
@@ -581,6 +585,7 @@ func (c *Client) doLongPollContext(parent context.Context, loggedIn, background 
 			continue
 		}
 		if c.listenID != listenID {
+			cancel()
 			log.Debug().Msg("Long polling stopped while opening stream, closing it")
 			_ = resp.Body.Close()
 			return true
@@ -604,7 +609,8 @@ func (c *Client) doLongPollContext(parent context.Context, loggedIn, background 
 			go onFirstConnect()
 			onFirstConnect = nil
 		}
-		cleanClose := c.readLongPoll(&log, resp.Body, background)
+		cleanClose := c.readLongPoll(&log, resp.Body, background, cancel)
+		cancel()
 		c.longPollingConn = nil
 		if background {
 			return cleanClose
@@ -614,7 +620,7 @@ func (c *Client) doLongPollContext(parent context.Context, loggedIn, background 
 	return true
 }
 
-func (c *Client) readLongPoll(log *zerolog.Logger, rc io.ReadCloser, background bool) bool {
+func (c *Client) readLongPoll(log *zerolog.Logger, rc io.ReadCloser, background bool, cancel context.CancelFunc) bool {
 	defer rc.Close()
 	c.disconnecting = false
 	reader := bufio.NewReader(rc)
@@ -632,20 +638,20 @@ func (c *Client) readLongPoll(log *zerolog.Logger, rc io.ReadCloser, background 
 	var idleClosed atomic.Bool
 	receivedEvents := false
 	onRead := func() {
-		if closeIn == nil {
-			return
-		}
-		if receivedEvents {
-			closeIn.Reset(3 * time.Second)
+		if background {
+			if receivedEvents {
+				closeIn.Reset(3 * time.Second)
+			} else {
+				closeIn.Reset(5 * time.Second)
+			}
 		} else {
-			closeIn.Reset(5 * time.Second)
+			closeIn.Reset(1 * time.Minute)
 		}
 	}
+	streamEnded := make(chan struct{})
+	defer close(streamEnded)
 	if background {
 		closeIn = time.NewTimer(10 * time.Second)
-		defer closeIn.Stop()
-		streamEnded := make(chan struct{})
-		defer close(streamEnded)
 		go func() {
 			for {
 				select {
@@ -662,7 +668,18 @@ func (c *Client) readLongPoll(log *zerolog.Logger, rc io.ReadCloser, background 
 				}
 			}
 		}()
+	} else {
+		closeIn = time.NewTimer(1 * time.Minute)
+		go func() {
+			select {
+			case <-closeIn.C:
+				log.Warn().Msg("Long polling read timed out")
+				cancel()
+			case <-streamEnded:
+			}
+		}()
 	}
+	defer closeIn.Stop()
 	var expectEOF bool
 	for {
 		n, err = reader.Read(buf)

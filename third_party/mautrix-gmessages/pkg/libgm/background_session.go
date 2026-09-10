@@ -23,7 +23,7 @@ func (c *Client) RunBackground(ctx context.Context, request func(context.Context
 	defer c.backgroundBusy.Store(false)
 	ready := make(chan struct{})
 	done := make(chan bool, 1)
-	go func() { done <- c.doLongPollContext(ctx, true, true, func() { close(ready) }) }()
+	go func() { done <- c.doLongPoll(ctx, true, true, func() { close(ready) }) }()
 	select {
 	case <-ready:
 	case <-done:

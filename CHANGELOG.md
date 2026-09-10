@@ -14,7 +14,7 @@ tag: a tag is a label and a digest is evidence.
 
 ## [Unreleased]
 
-Nothing yet.
+- Bump the pinned `mautrix-gmessages` (`libgm`) dependency from `be48a58` to `b0d61b4`, carrying the maintained background-session patch forward onto upstream's now-native context-threaded `Connect`/`ConnectBackground`/`Reconnect`/long-polling API. `ConfigVersion` is unchanged. Pending the required live gate (spec §3.6) before release; see `docs/upstream-pin.md`.
 
 ## [1.3.0] — 2026-09-10
 

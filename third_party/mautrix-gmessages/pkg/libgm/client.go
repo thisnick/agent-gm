@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"sync"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
+	"go.mau.fi/util/exhttp"
 
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/crypto"
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/events"
@@ -150,9 +150,8 @@ type Client struct {
 	PushKeys *PushKeys
 	Config   *gmproto.Config
 
-	httpTransport *http.Transport
-	http          *http.Client
-	lphttp        *http.Client
+	http   *http.Client
+	lphttp *http.Client
 }
 
 func NewAuthData() *AuthData {
@@ -162,14 +161,9 @@ func NewAuthData() *AuthData {
 	}
 }
 
-func NewClient(authData *AuthData, pk *PushKeys, logger zerolog.Logger) *Client {
+func NewClient(authData *AuthData, pk *PushKeys, logger zerolog.Logger, httpSettings exhttp.ClientSettings) *Client {
 	sessionHandler := &SessionHandler{
 		responseWaiters: make(map[string]chan<- *IncomingRPCMessage),
-	}
-	transport := &http.Transport{
-		DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 20 * time.Second,
 	}
 	cli := &Client{
 		AuthData:       authData,
@@ -177,9 +171,8 @@ func NewClient(authData *AuthData, pk *PushKeys, logger zerolog.Logger) *Client 
 		Logger:         logger,
 		sessionHandler: sessionHandler,
 
-		httpTransport: transport,
-		http:          &http.Client{Transport: transport, Timeout: 2 * time.Minute},
-		lphttp:        &http.Client{Transport: transport, Timeout: 30 * time.Minute},
+		http:   httpSettings.Compile(),
+		lphttp: httpSettings.WithGlobalTimeout(30 * time.Minute).Compile(),
 
 		pingShortCircuit:         make(chan struct{}),
 		pingInterval:             1 * time.Minute,
@@ -221,16 +214,6 @@ func (c *Client) SetDataReceiveCheckInterval(interval time.Duration) {
 	}
 }
 
-func (c *Client) SetProxy(proxy string) error {
-	proxyParsed, err := url.Parse(proxy)
-	if err != nil {
-		c.Logger.Fatal().Err(err).Msg("Failed to set proxy")
-	}
-	c.httpTransport.Proxy = http.ProxyURL(proxyParsed)
-	c.Logger.Debug().Any("proxy", proxyParsed.Host).Msg("SetProxy")
-	return nil
-}
-
 func (c *Client) checkLoggedIn() error {
 	if c.AuthData.TachyonAuthToken == nil {
 		return fmt.Errorf("no auth token")
@@ -240,7 +223,7 @@ func (c *Client) checkLoggedIn() error {
 	return nil
 }
 
-func (c *Client) startLongPolling() {
+func (c *Client) startLongPolling(ctx context.Context) {
 	c.bumpNextDataReceiveCheck(10 * time.Minute)
 
 	//webEncryptionKeyResponse, err := c.GetWebEncryptionKey()
@@ -248,11 +231,11 @@ func (c *Client) startLongPolling() {
 	//	return fmt.Errorf("failed to get web encryption key: %w", err)
 	//}
 	//c.updateWebEncryptionKey(webEncryptionKeyResponse.GetKey())
-	go c.doLongPoll(true, false, c.postConnect)
+	go c.doLongPoll(ctx, true, false, c.postConnect)
 	c.sessionHandler.startAckInterval()
 }
 
-func (c *Client) Connect() error {
+func (c *Client) Connect(ctx context.Context) error {
 	if err := c.checkLoggedIn(); err != nil {
 		return err
 	}
@@ -267,15 +250,15 @@ func (c *Client) Connect() error {
 		}
 		c.Logger.Warn().Err(err).Msg("Transient error refreshing auth token on connect, will retry in long polling loop")
 	}
-	c.startLongPolling()
+	c.startLongPolling(ctx)
 	return nil
 }
 
-func (c *Client) ConnectBackground() error {
+func (c *Client) ConnectBackground(ctx context.Context) error {
 	if err := c.checkLoggedIn(); err != nil {
 		return err
 	}
-	cleanExit := c.doLongPoll(true, true, nil)
+	cleanExit := c.doLongPoll(ctx, true, true, nil)
 	c.sessionHandler.sendAckRequest()
 	if !cleanExit {
 		return fmt.Errorf("polling exited uncleanly")
@@ -363,7 +346,7 @@ func (c *Client) IsLoggedIn() bool {
 	return c != nil && c.AuthData != nil && c.AuthData.Browser != nil && c.AuthData.HasCookies()
 }
 
-func (c *Client) Reconnect() error {
+func (c *Client) Reconnect(ctx context.Context) error {
 	c.closeLongPolling()
 	err := c.checkLoggedIn()
 	if err != nil {
@@ -371,7 +354,7 @@ func (c *Client) Reconnect() error {
 		c.triggerEvent(&events.ListenFatalError{Error: fmt.Errorf("failed to reconnect: %w", err)})
 		return err
 	}
-	c.startLongPolling()
+	c.startLongPolling(ctx)
 	c.Logger.Debug().Msg("Successfully reconnected to server")
 	return nil
 }

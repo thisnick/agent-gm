@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"go.mau.fi/util/exhttp"
+
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
 )
 
@@ -45,7 +47,7 @@ func (b *passiveBody) Close() error {
 }
 
 func TestPassiveCancellationNeverClaimsActiveSession(t *testing.T) {
-	c := NewClient(&AuthData{TachyonAuthToken: []byte{1}, TachyonExpiry: time.Now().Add(24 * time.Hour), Browser: &gmproto.Device{}}, nil, zerolog.Nop())
+	c := NewClient(&AuthData{TachyonAuthToken: []byte{1}, TachyonExpiry: time.Now().Add(24 * time.Hour), Browser: &gmproto.Device{}}, nil, zerolog.Nop(), exhttp.SensibleClientSettings)
 	var calls atomic.Int32
 	transport := passiveTransport(func(r *http.Request) (*http.Response, error) {
 		calls.Add(1)

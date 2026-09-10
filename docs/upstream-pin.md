@@ -9,7 +9,7 @@ page is the record they write to.
 
 | Dependency | Pinned | Why this one | Bumped on |
 |---|---|---|---|
-| `go.mau.fi/mautrix-gmessages` (`pkg/libgm`) | `be48a58b733825f6dfd6bb630af5f236d3bc9ae8` (`be48a58`), `ConfigVersion` 2026.9.2 | The Google Messages client library. Its `ConfigVersion` must be current enough for Google to accept conversation creation | initial pin, `v1.0.0` |
+| `go.mau.fi/mautrix-gmessages` (`pkg/libgm`) | `b0d61b4e1a4e94f0d5e6fedd43cadb80bd0a9e51` (`b0d61b4`), `ConfigVersion` 2026.9.2 (unchanged) | The Google Messages client library. Its `ConfigVersion` must be current enough for Google to accept conversation creation | pending live gate, see Bumps below |
 | `github.com/modelcontextprotocol/go-sdk` | `v1.7.0` | The MCP protocol layer. It decides the JSON-RPC framing, the `WWW-Authenticate` challenge on `/mcp` and the RFC 9728 handler | initial pin, `v1.0.0` |
 | Node | `22` (`devbox.json`, and `actions/setup-node` in `release.yml`) | Runs the `@agent-gm/cli` postinstall shim and packs the npm tarball | initial pin, `v1.0.0` |
 | npm | `>= 11.5.1`, installed into a scratch prefix by `release.yml` and passed to `scripts/release.sh` as `AGENT_GM_NPM` | Trusted publishing (OIDC) is not implemented before 11.5.1: an older npm publishes unauthenticated and the registry answers `404`. Node 22 ships npm 10 | `v1.0.1` |
@@ -66,6 +66,63 @@ A bump with no entry here is a bump nobody can review later.
 
 ## Bumps
 
-None yet beyond the initial pins above. `libgm` and `go-sdk` are at the
-revisions Agent GM `v1.0.0` shipped with; npm moved at `v1.0.1` for the reason
-in the table.
+## `libgm` be48a58 → b0d61b4 (unreleased)
+
+- **`ConfigVersion`**: 2026.9.2 → 2026.9.2 (unchanged; not urgent under D3).
+- **Symbols in spec §3.1 that changed**:
+  - `client.go`: `NewClient(authData, pk, logger)` gained a fourth parameter,
+    `httpSettings exhttp.ClientSettings`; it replaces the hardcoded transport
+    and the removed `SetProxy` method (proxying is now configured through
+    `exhttp.ClientSettings.WithProxy` before the client is built). Agent GM's
+    two call sites (`internal/gm/libgm.go`) now pass
+    `exhttp.SensibleClientSettings`.
+  - `client.go`: `Connect`, `ConnectBackground` and `Reconnect` all gained a
+    leading `ctx context.Context` parameter, threaded down into
+    `startLongPolling`/`doLongPoll`. Agent GM's callers already had a context
+    in scope at every call site and now pass it through.
+  - `pair_google.go`: `StartGaiaPairing(ctx)` became
+    `StartGaiaPairing(ctx, bgCtx context.Context)` — a second, longer-lived
+    context for the pairing long-poll goroutine, separate from the
+    per-request `ctx`. `DoGaiaPairing` (Agent GM's only entry point) passes
+    `ctx` for both and is otherwise unchanged.
+  - `pair.go`: `StartLogin()` became `StartLogin(ctx context.Context)`. Dead
+    code for Agent GM (D19: QR pairing is withdrawn and unused), updated for
+    compilation only.
+  - No symbol was removed from spec §3.1 except `SetProxy`, which Agent GM
+    never called.
+- **Delivery-state and event vocabulary**: none. No `.proto` file changed
+  between the two commits.
+- **Wire behaviour that changed**: none observed. The two commits that touch
+  `pkg/libgm/longpoll.go` (`e00c4031`, `2acd3449`) add a per-request
+  `context.CancelFunc` and a one-minute read-timeout cancellation for the
+  *foreground* (non-background) long-poll path — a case Agent GM's own
+  `Connect` uses but the maintained patch does not touch. They do not change
+  status codes, headers, or the wire payloads.
+- **Interaction with the maintained patch**
+  (`third_party/mautrix-gmessages/AGENT_GM_PATCHES.md`): upstream's own
+  `e00c40312938...` commit threads `context.Context` through `doLongPoll` and
+  the `dittoPinger`, which is the same intent as the patch's former
+  `doLongPollContext` split and its ad hoc `ctx`/`reconnectCtx` fields on
+  `dittoPinger` — upstream now carries both natively, so that part of the
+  patch is retired rather than re-applied. What the patch still adds on top,
+  unchanged in effect: `RunBackground`/`waitBackgroundRetry`/`backgroundBusy`
+  (`background_session.go`), `refreshAuthTokenContext`
+  (reintroduced in `client.go`, since upstream does not have a
+  context-aware `refreshAuthToken`), the `loggedIn && !background` recovery
+  pinger gate, the three `time.Sleep` → `waitBackgroundRetry` swaps and the
+  `ctx.Err()` early-return in `doLongPoll`'s retry loop, and `readLongPoll`'s
+  `backgroundBusy`-aware idle-close (closing the specific response body via
+  `idleClosed`/`rc.Close()` rather than `closeLongPolling()`, and counting an
+  intentional idle close as a clean return). `patches/background-session.patch`
+  was regenerated from the new base against this tree.
+- **Gate**: `go build ./...`, `go vet ./...` and `go test ./...` are clean at
+  both the repository root and the nested `third_party/mautrix-gmessages`
+  module, including `CGO_ENABLED=1 go test ./pkg/libgm -race -count=1`
+  (`TestPassiveCancellationNeverClaimsActiveSession` passes). **The live gate
+  required by spec §3.6(d) — pair, list, send one text to the approved direct
+  number, receive a reply, run by the coordinator by hand — has NOT been run.**
+  This bump must not be merged or released until that gate passes; this PR
+  was prepared without access to a physical paired phone.
+
+`go-sdk` is unchanged at this bump. npm moved at `v1.0.1` for the reason in
+the table.
