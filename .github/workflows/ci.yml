@@ -37,6 +37,28 @@ jobs:
       - uses: jetify-com/devbox-install-action@v0.13.0
         with:
           enable-cache: "true"
+      # Go and golangci-lint already maintain these caches; a fresh runner just
+      # starts with them empty, so every job recompiled the standard library
+      # three times over -- linux, windows and darwin `vet` -- and every
+      # dependency again race-instrumented. Measured on this job: 133s cold,
+      # 42s warm, and 45s warm with Agent GM's own code changed. The win is
+      # the toolchain and the dependencies, not this repository, which is why
+      # the key is the go.sum and devbox.lock hash and not the commit: the
+      # ~400MB entry is then written when a dependency moves rather than on
+      # every push.
+      #
+      # This job is the only one that SAVES. Its build is the superset every
+      # other job needs, so the rest restore the same key read-only rather
+      # than racing to upload the same entry.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+            ~/.cache/golangci-lint
+          key: go-${{ runner.os }}-${{ hashFiles('devbox.lock', 'go.sum', 'third_party/mautrix-gmessages/go.sum') }}
+          restore-keys: |
+            go-${{ runner.os }}-
       - run: devbox run check
 
   # The four platforms of spec section 13.6 must at least COMPILE, tests
@@ -55,6 +77,16 @@ jobs:
       - uses: jetify-com/devbox-install-action@v0.13.0
         with:
           enable-cache: "true"
+      # Restore the cache the `check` job saves; see the comment there.
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+            ~/.cache/golangci-lint
+          key: go-${{ runner.os }}-${{ hashFiles('devbox.lock', 'go.sum', 'third_party/mautrix-gmessages/go.sum') }}
+          restore-keys: |
+            go-${{ runner.os }}-
       - run: devbox run vet
 
   # The pin is a fact recorded in three places that must agree.
@@ -76,6 +108,16 @@ jobs:
       - uses: jetify-com/devbox-install-action@v0.13.0
         with:
           enable-cache: "true"
+      # Restore the cache the `check` job saves; see the comment there.
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+            ~/.cache/golangci-lint
+          key: go-${{ runner.os }}-${{ hashFiles('devbox.lock', 'go.sum', 'third_party/mautrix-gmessages/go.sum') }}
+          restore-keys: |
+            go-${{ runner.os }}-
       - run: devbox run fixture-validation
 
   # Nothing in the tree looks like a real phone number. This repository is
@@ -117,6 +159,16 @@ jobs:
       - uses: jetify-com/devbox-install-action@v0.13.0
         with:
           enable-cache: "true"
+      # Restore the cache the `check` job saves; see the comment there.
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+            ~/.cache/golangci-lint
+          key: go-${{ runner.os }}-${{ hashFiles('devbox.lock', 'go.sum', 'third_party/mautrix-gmessages/go.sum') }}
+          restore-keys: |
+            go-${{ runner.os }}-
       - run: devbox run conformance
 
   # The name lint of spec section 13.5: the Matrix vocabulary, asserted as a
@@ -130,6 +182,16 @@ jobs:
       - uses: jetify-com/devbox-install-action@v0.13.0
         with:
           enable-cache: "true"
+      # Restore the cache the `check` job saves; see the comment there.
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+            ~/.cache/golangci-lint
+          key: go-${{ runner.os }}-${{ hashFiles('devbox.lock', 'go.sum', 'third_party/mautrix-gmessages/go.sum') }}
+          restore-keys: |
+            go-${{ runner.os }}-
       - run: devbox run lint-names
 
   # Spec section 15.2, performed rather than described. A backup nobody has
@@ -145,6 +207,16 @@ jobs:
       - uses: jetify-com/devbox-install-action@v0.13.0
         with:
           enable-cache: "true"
+      # Restore the cache the `check` job saves; see the comment there.
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+            ~/.cache/golangci-lint
+          key: go-${{ runner.os }}-${{ hashFiles('devbox.lock', 'go.sum', 'third_party/mautrix-gmessages/go.sum') }}
+          restore-keys: |
+            go-${{ runner.os }}-
       - run: devbox run restore-drill
 
   # The container image of spec sections 14.1 and 14.2. It builds for
