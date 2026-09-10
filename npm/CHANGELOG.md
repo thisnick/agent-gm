@@ -1,5 +1,12 @@
 # @agent-gm/cli
 
+## 1.3.1
+
+### Patch Changes
+
+- 267b3f7: Keep `-race` on the live gate and stop it failing on the pinned libgm's own unsynchronised disconnect handshake: `devbox run test-live` now passes a `race_top:` ThreadSanitizer suppression list (`scripts/race-suppressions.txt`) naming only upstream access sites, so a race in Agent GM's own code still fails the gate while the two pre-existing upstream ones no longer make a red run uninformative. `internal/lint` holds the list to that shape, and the changeset check no longer demands a version bump for a `_test.go` or `testdata/` change, neither of which the Go toolchain puts in any build.
+- 7136486: Bump the pinned mautrix-gmessages (libgm) dependency from be48a58 to b0d61b4, carrying the maintained background-session patch forward onto upstream's now-native context-threaded Connect/ConnectBackground/Reconnect/long-polling API. ConfigVersion is unchanged, and still stale against Google, so conversation creation stays exposed until upstream publishes a newer one. The live gate of spec section 3.6(d) passed: list, a real text to the approved number with its echo and delivery states, and the inbound reply.
+
 ## 1.3.0
 
 ### Minor Changes
