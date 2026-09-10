@@ -16,6 +16,10 @@ tag: a tag is a label and a digest is evidence.
 
 Nothing yet.
 
+## [1.3.2] — 2026-09-10
+
+- Cache Go's build and module caches, and golangci-lint's, between CI runs. Every job started with them empty, so each one recompiled the standard library three times over — linux, windows and darwin `vet` — and every dependency again race-instrumented, which is where `check`'s five and a half minutes went. Measured locally: 133s cold, 42s warm, 45s warm with Agent GM's own code changed, so the key is the `go.sum`/`devbox.lock` hash rather than the commit, and only the `check` job saves the entry the others read.
+
 ## [1.3.1] — 2026-09-10
 
 - Bump the pinned `mautrix-gmessages` (`libgm`) dependency from `be48a58` to `b0d61b4`, carrying the maintained background-session patch forward onto upstream's now-native context-threaded `Connect`/`ConnectBackground`/`Reconnect`/long-polling API. `ConfigVersion` is unchanged, and still stale against Google, so conversation creation stays exposed until upstream publishes a newer one. The live gate of spec §3.6(d) passed: list, a real text to the approved number with its echo and delivery states, and the inbound reply. See `docs/upstream-pin.md` for what it did and did not cover.
@@ -143,7 +147,8 @@ Agent GM *is* rather than what changed.
   gate was satisfied through the public URL with Codex CLI. Adding either
   later needs no code.
 
-[Unreleased]: https://github.com/thisnick/agent-gm/compare/v1.3.1...HEAD
+[Unreleased]: https://github.com/thisnick/agent-gm/compare/v1.3.2...HEAD
+[1.3.2]: https://github.com/thisnick/agent-gm/releases/tag/v1.3.2
 [1.3.1]: https://github.com/thisnick/agent-gm/releases/tag/v1.3.1
 [1.3.0]: https://github.com/thisnick/agent-gm/releases/tag/v1.3.0
 [1.2.0]: https://github.com/thisnick/agent-gm/releases/tag/v1.2.0
