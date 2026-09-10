@@ -4,7 +4,6 @@ module github.com/thisnick/agent-gm
 // third_party/mautrix-gmessages/AGENT_GM_PATCHES.md.
 replace go.mau.fi/mautrix-gmessages => ./third_party/mautrix-gmessages
 
-
 go 1.26.0
 
 toolchain go1.27.0
@@ -14,8 +13,10 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/rs/zerolog v1.35.1
-	go.mau.fi/mautrix-gmessages v0.2608.1-0.20260904125044-be48a58b7338
+	go.mau.fi/mautrix-gmessages v0.2608.1-0.20260910090721-b0d61b4e1a4e
+	go.mau.fi/util v0.10.1-0.20260820140024-eb612d936fde
 	golang.org/x/crypto v0.55.0
+	golang.org/x/oauth2 v0.35.0
 	golang.org/x/text v0.41.0
 	google.golang.org/protobuf v1.36.12
 	modernc.org/sqlite v1.58.0
@@ -31,9 +32,8 @@ require (
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
-	go.mau.fi/util v0.10.1-0.20260820140024-eb612d936fde // indirect
 	golang.org/x/exp v0.0.0-20260813180055-c1d0aacb2297 // indirect
-	golang.org/x/oauth2 v0.35.0 // indirect
+	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/time v0.15.0 // indirect

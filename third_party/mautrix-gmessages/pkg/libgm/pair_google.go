@@ -298,7 +298,7 @@ type GaiaPairingState struct {
 }
 
 func (c *Client) DoGaiaPairing(ctx context.Context, emojiCallback func(string)) error {
-	pairingEmoji, ps, err := c.StartGaiaPairing(ctx)
+	pairingEmoji, ps, err := c.StartGaiaPairing(ctx, ctx)
 	if err != nil {
 		return err
 	}
@@ -313,7 +313,7 @@ func (c *Client) DoGaiaPairing(ctx context.Context, emojiCallback func(string)) 
 	}
 
 	go func() {
-		err := c.Reconnect()
+		err := c.Reconnect(context.TODO())
 		if err != nil {
 			c.Logger.Err(err).Msg("Failed to reconnect after Google pair success")
 		}
@@ -321,7 +321,7 @@ func (c *Client) DoGaiaPairing(ctx context.Context, emojiCallback func(string)) 
 	return nil
 }
 
-func (c *Client) StartGaiaPairing(ctx context.Context) (string, *PairingSession, error) {
+func (c *Client) StartGaiaPairing(ctx, bgCtx context.Context) (string, *PairingSession, error) {
 	if !c.AuthData.HasCookies() {
 		return "", nil, ErrNoCookies
 	}
@@ -377,7 +377,7 @@ func (c *Client) StartGaiaPairing(ctx context.Context) (string, *PairingSession,
 	c.AuthData.DestRegID = destRegUUID
 	var longPollConnectWait sync.WaitGroup
 	longPollConnectWait.Add(1)
-	go c.doLongPoll(false, false, longPollConnectWait.Done)
+	go c.doLongPoll(bgCtx, false, false, longPollConnectWait.Done)
 	longPollConnectWait.Wait()
 	ps := NewPairingSession(*destRegDev)
 	clientInit, _, err := ps.PreparePayloads()

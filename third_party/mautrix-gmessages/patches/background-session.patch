@@ -1,6 +1,6 @@
 diff --git a/pkg/libgm/background_session.go b/pkg/libgm/background_session.go
 new file mode 100644
-index 0000000..e68b838
+index 0000000..0d547cd
 --- /dev/null
 +++ b/pkg/libgm/background_session.go
 @@ -0,0 +1,63 @@
@@ -29,7 +29,7 @@ index 0000000..e68b838
 +	defer c.backgroundBusy.Store(false)
 +	ready := make(chan struct{})
 +	done := make(chan bool, 1)
-+	go func() { done <- c.doLongPollContext(ctx, true, true, func() { close(ready) }) }()
++	go func() { done <- c.doLongPoll(ctx, true, true, func() { close(ready) }) }()
 +	select {
 +	case <-ready:
 +	case <-done:
@@ -69,10 +69,10 @@ index 0000000..e68b838
 +}
 diff --git a/pkg/libgm/background_session_test.go b/pkg/libgm/background_session_test.go
 new file mode 100644
-index 0000000..e0985f1
+index 0000000..b9f0dc2
 --- /dev/null
 +++ b/pkg/libgm/background_session_test.go
-@@ -0,0 +1,71 @@
+@@ -0,0 +1,73 @@
 +package libgm
 +
 +import (
@@ -86,6 +86,8 @@ index 0000000..e0985f1
 +	"time"
 +
 +	"github.com/rs/zerolog"
++	"go.mau.fi/util/exhttp"
++
 +	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
 +)
 +
@@ -120,7 +122,7 @@ index 0000000..e0985f1
 +}
 +
 +func TestPassiveCancellationNeverClaimsActiveSession(t *testing.T) {
-+	c := NewClient(&AuthData{TachyonAuthToken: []byte{1}, TachyonExpiry: time.Now().Add(24 * time.Hour), Browser: &gmproto.Device{}}, nil, zerolog.Nop())
++	c := NewClient(&AuthData{TachyonAuthToken: []byte{1}, TachyonExpiry: time.Now().Add(24 * time.Hour), Browser: &gmproto.Device{}}, nil, zerolog.Nop(), exhttp.SensibleClientSettings)
 +	var calls atomic.Int32
 +	transport := passiveTransport(func(r *http.Request) (*http.Response, error) {
 +		calls.Add(1)
@@ -145,7 +147,7 @@ index 0000000..e0985f1
 +	}
 +}
 diff --git a/pkg/libgm/client.go b/pkg/libgm/client.go
-index 31e716a..a012431 100644
+index d385f4b..1f76469 100644
 --- a/pkg/libgm/client.go
 +++ b/pkg/libgm/client.go
 @@ -116,9 +116,11 @@ const DefaultBugleDefaultCheckInterval = 2*time.Hour + 55*time.Minute
@@ -163,7 +165,7 @@ index 31e716a..a012431 100644
  
  	longPollingConn io.Closer
  	listenID        int
-@@ -457,7 +459,7 @@ type PushKeys struct {
+@@ -440,7 +442,7 @@ type PushKeys struct {
  
  func (c *Client) RegisterPush(ctx context.Context, keys *PushKeys) error {
  	if c.PushKeys == nil || c.PushKeys.URL != keys.URL {
@@ -172,7 +174,7 @@ index 31e716a..a012431 100644
  		if err != nil {
  			return fmt.Errorf("failed to refresh auth token: %w", err)
  		}
-@@ -489,6 +491,10 @@ func isFatalRefreshError(err error) bool {
+@@ -472,6 +474,10 @@ func isFatalRefreshError(err error) bool {
  }
  
  func (c *Client) refreshAuthToken(pushKeyOverride *PushKeys) error {
@@ -183,7 +185,7 @@ index 31e716a..a012431 100644
  	if c.AuthData.Browser == nil || (time.Until(c.AuthData.TachyonExpiry) > RefreshTachyonBuffer && pushKeyOverride == nil) {
  		return nil
  	}
-@@ -546,7 +552,7 @@ func (c *Client) refreshAuthToken(pushKeyOverride *PushKeys) error {
+@@ -529,7 +535,7 @@ func (c *Client) refreshAuthToken(pushKeyOverride *PushKeys) error {
  	}
  
  	resp, err := typedHTTPResponse[*gmproto.RegisterRefreshResponse](
@@ -196,26 +198,11 @@ diff --git a/pkg/libgm/gmproto/build.sh b/pkg/libgm/gmproto/build.sh
 old mode 100755
 new mode 100644
 diff --git a/pkg/libgm/longpoll.go b/pkg/libgm/longpoll.go
-index 0741412..cc1303a 100644
+index afa0709..153ed68 100644
 --- a/pkg/libgm/longpoll.go
 +++ b/pkg/libgm/longpoll.go
-@@ -453,6 +453,10 @@ func tryReadBody(resp io.ReadCloser) []byte {
- }
- 
- func (c *Client) doLongPoll(loggedIn, background bool, onFirstConnect func()) bool {
-+	return c.doLongPollContext(context.Background(), loggedIn, background, onFirstConnect)
-+}
-+
-+func (c *Client) doLongPollContext(parent context.Context, loggedIn, background bool, onFirstConnect func()) bool {
- 	c.listenID++
- 	listenID := c.listenID
- 	listenReqID := uuid.NewString()
-@@ -461,10 +465,10 @@ func (c *Client) doLongPoll(loggedIn, background bool, onFirstConnect func()) bo
- 	defer func() {
- 		log.Debug().Msg("Long polling stopped")
- 	}()
--	ctx := log.WithContext(context.TODO())
-+	ctx := log.WithContext(parent)
+@@ -466,7 +466,7 @@ func (c *Client) doLongPoll(ctx context.Context, loggedIn, background bool, onFi
+ 	ctx = log.WithContext(ctx)
  	log.Debug().Str("listen_uuid", listenReqID).Msg("Long polling starting")
  
 -	if loggedIn {
@@ -223,7 +210,7 @@ index 0741412..cc1303a 100644
  		stopDittoPinger := make(chan struct{})
  		defer close(stopDittoPinger)
  		go (&dittoPinger{
-@@ -479,7 +483,10 @@ func (c *Client) doLongPoll(loggedIn, background bool, onFirstConnect func()) bo
+@@ -483,7 +483,10 @@ func (c *Client) doLongPoll(ctx context.Context, loggedIn, background bool, onFi
  	errorCount := 1
  	var disconnectedAt time.Time
  	for c.listenID == listenID {
@@ -235,7 +222,7 @@ index 0741412..cc1303a 100644
  		if err != nil {
  			if isFatalRefreshError(err) {
  				log.Err(err).Msg("Error refreshing auth token")
-@@ -500,7 +507,9 @@ func (c *Client) doLongPoll(loggedIn, background bool, onFirstConnect func()) bo
+@@ -504,7 +507,9 @@ func (c *Client) doLongPoll(ctx context.Context, loggedIn, background bool, onFi
  				sleepSeconds = errorCount * 2
  			}
  			log.Err(err).Int("sleep_seconds", sleepSeconds).Msg("Error refreshing auth token, retrying in a while")
@@ -246,7 +233,7 @@ index 0741412..cc1303a 100644
  			continue
  		}
  		log.Trace().Msg("Starting new long-polling request")
-@@ -533,7 +542,9 @@ func (c *Client) doLongPoll(loggedIn, background bool, onFirstConnect func()) bo
+@@ -539,7 +544,9 @@ func (c *Client) doLongPoll(ctx context.Context, loggedIn, background bool, onFi
  				sleepSeconds = errorCount * 2
  			}
  			log.Err(err).Int("sleep_seconds", sleepSeconds).Msg("Error making listen request, retrying in a while")
@@ -257,7 +244,7 @@ index 0741412..cc1303a 100644
  			continue
  		}
  		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-@@ -564,7 +575,9 @@ func (c *Client) doLongPoll(loggedIn, background bool, onFirstConnect func()) bo
+@@ -572,7 +579,9 @@ func (c *Client) doLongPoll(ctx context.Context, loggedIn, background bool, onFi
  				Int("statusCode", resp.StatusCode).
  				Int("sleep_seconds", sleepSeconds).
  				Msg("Error in long polling, retrying in a while")
@@ -268,21 +255,17 @@ index 0741412..cc1303a 100644
  			continue
  		}
  		if c.listenID != listenID {
-@@ -616,6 +629,7 @@ func (c *Client) readLongPoll(log *zerolog.Logger, rc io.ReadCloser, background
+@@ -626,6 +635,7 @@ func (c *Client) readLongPoll(log *zerolog.Logger, rc io.ReadCloser, background
  		return false
  	}
  	var closeIn *time.Timer
 +	var idleClosed atomic.Bool
  	receivedEvents := false
  	onRead := func() {
- 		if closeIn == nil {
-@@ -629,13 +643,23 @@ func (c *Client) readLongPoll(log *zerolog.Logger, rc io.ReadCloser, background
- 	}
+ 		if background {
+@@ -643,10 +653,19 @@ func (c *Client) readLongPoll(log *zerolog.Logger, rc io.ReadCloser, background
  	if background {
  		closeIn = time.NewTimer(10 * time.Second)
-+		defer closeIn.Stop()
- 		streamEnded := make(chan struct{})
- 		defer close(streamEnded)
  		go func() {
 -			select {
 -			case <-closeIn.C:
@@ -303,8 +286,14 @@ index 0741412..cc1303a 100644
 +				}
  			}
  		}()
+ 	} else {
+@@ -660,18 +679,19 @@ func (c *Client) readLongPoll(log *zerolog.Logger, rc io.ReadCloser, background
+ 			}
+ 		}()
  	}
-@@ -644,13 +668,13 @@ func (c *Client) readLongPoll(log *zerolog.Logger, rc io.ReadCloser, background
++	defer closeIn.Stop()
+ 	var expectEOF bool
+ 	for {
  		n, err = reader.Read(buf)
  		if err != nil {
  			var logEvt *zerolog.Event
@@ -321,7 +310,7 @@ index 0741412..cc1303a 100644
  			log.Warn().Msg("Didn't get EOF after stream end marker")
  		}
 diff --git a/pkg/libgm/pair_google.go b/pkg/libgm/pair_google.go
-index 53e0df6..97aaab6 100644
+index a1d2147..d438cae 100644
 --- a/pkg/libgm/pair_google.go
 +++ b/pkg/libgm/pair_google.go
 @@ -308,6 +308,9 @@ func (c *Client) DoGaiaPairing(ctx context.Context, emojiCallback func(string))
@@ -333,7 +322,7 @@ index 53e0df6..97aaab6 100644
 +	}
  
  	go func() {
- 		err := c.Reconnect()
+ 		err := c.Reconnect(context.TODO())
 diff --git a/pkg/libgm/session_handler.go b/pkg/libgm/session_handler.go
 index ba2e484..030fb36 100644
 --- a/pkg/libgm/session_handler.go

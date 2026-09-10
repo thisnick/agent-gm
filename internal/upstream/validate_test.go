@@ -129,17 +129,16 @@ func TestAssertion01_SectionThreeOneSignatures(t *testing.T) {
 
 	for _, c := range []struct{ file, sig string }{
 		{"client.go", "func NewAuthData() *AuthData {"},
-		{"client.go", "func NewClient(authData *AuthData, pk *PushKeys, logger zerolog.Logger) *Client {"},
+		{"client.go", "func NewClient(authData *AuthData, pk *PushKeys, logger zerolog.Logger, httpSettings exhttp.ClientSettings) *Client {"},
 		{"client.go", "func (c *Client) SetEventHandler(eventHandler EventHandler) {"},
 		{"client.go", "func (c *Client) FetchConfig(ctx context.Context) error {"},
-		{"client.go", "func (c *Client) Connect() error {"},
-		{"client.go", "func (c *Client) ConnectBackground() error {"},
+		{"client.go", "func (c *Client) Connect(ctx context.Context) error {"},
+		{"client.go", "func (c *Client) ConnectBackground(ctx context.Context) error {"},
 		{"client.go", "func (c *Client) Disconnect() {"},
-		{"client.go", "func (c *Client) Reconnect() error {"},
+		{"client.go", "func (c *Client) Reconnect(ctx context.Context) error {"},
 		{"client.go", "func (c *Client) IsConnected() bool {"},
 		{"client.go", "func (c *Client) IsLoggedIn() bool {"},
 		{"client.go", "func (c *Client) CurrentSessionID() string {"},
-		{"client.go", "func (c *Client) SetProxy(proxy string) error {"},
 		{"client.go", "func (c *Client) SetPingInterval(interval time.Duration) {"},
 		{"client.go", "func (c *Client) SetDataReceiveCheckInterval(interval time.Duration) {"},
 		{"client.go", "type EventHandler func(evt any)"},
@@ -189,7 +188,7 @@ func TestAssertion01_SectionThreeOneSignatures(t *testing.T) {
 
 	for _, sig := range []string{
 		"func (c *Client) DoGaiaPairing(ctx context.Context, emojiCallback func(string)) error {",
-		"func (c *Client) StartGaiaPairing(ctx context.Context) (string, *PairingSession, error) {",
+		"func (c *Client) StartGaiaPairing(ctx, bgCtx context.Context) (string, *PairingSession, error) {",
 		"func (c *Client) FinishGaiaPairing(ctx context.Context, ps *PairingSession) (string, error) {",
 	} {
 		mustContain(t, pairGoogle, sig, "section 3.1 pair_google.go")

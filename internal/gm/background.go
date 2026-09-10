@@ -17,10 +17,10 @@ func (b *LibGM) RegisterWebPush(ctx context.Context, endpoint string, public, au
 // notification behavior must still be checked on the phone. Events must be consumed and the
 // refreshed session saved by the caller after it returns.
 //
-// Upstream does not accept a context for this operation. Run the diagnostic
-// in a separate process when a hard deadline is needed.
+// This diagnostic does not take a deadline; run it in a separate process when
+// a hard deadline is needed.
 func (b *LibGM) PollBackgroundOnce() error {
-	return b.client.ConnectBackground()
+	return b.client.ConnectBackground(context.Background())
 }
 
 // BackgroundRequest executes a diagnostic batch with a bounded passive listener.

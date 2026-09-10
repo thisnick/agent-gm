@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
+	"go.mau.fi/util/exhttp"
 
 	"go.mau.fi/mautrix-gmessages/pkg/libgm"
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/events"
@@ -72,7 +73,7 @@ func newFromAuth(auth *libgm.AuthData, logger zerolog.Logger) *LibGM {
 		log:      logger,
 		eventsCh: make(chan Event, EventBufferSize),
 	}
-	b.client = libgm.NewClient(auth, nil, logger)
+	b.client = libgm.NewClient(auth, nil, logger, exhttp.SensibleClientSettings)
 	b.client.SetEventHandler(b.handleEvent)
 	return b
 }
@@ -86,7 +87,7 @@ func (b *LibGM) Connect(ctx context.Context) error {
 	if b.push != nil {
 		return b.connectPush(ctx)
 	}
-	if err := b.client.Connect(); err != nil {
+	if err := b.client.Connect(ctx); err != nil {
 		return Classify(translateError(err))
 	}
 	return nil
@@ -921,7 +922,7 @@ func (b *LibGM) LoadSession(data []byte) error {
 	// client is rebuilt around the new pointer instead, keeping this
 	// backend's event channel and counters.
 	b.auth = &auth
-	b.client = libgm.NewClient(b.auth, nil, b.log)
+	b.client = libgm.NewClient(b.auth, nil, b.log, exhttp.SensibleClientSettings)
 	b.client.SetEventHandler(b.handleEvent)
 	b.lastSessions = append([]byte(nil), data...)
 	return nil

@@ -1,35 +1,23 @@
 # Maintained libgm patch: background request sessions
 
 Read this record before updating the upstream pin or changing connection
-behavior. It describes the implementation shipped in Agent GM v1.3.0,
-including its known limitations.
-
-## The race suppressions are part of the bump
-
-`scripts/race-suppressions.txt` names the upstream symbols whose unsynchronised
-field access the live gate ignores (spec §13.3). They describe *this* pinned
-revision, so every bump re-audits them:
-
-- if upstream added locking, delete the matching entry rather than leaving it
-  to mask something new — `internal/lint` fails on an empty file, which is the
-  signal to drop the `GORACE` flag from `test-live` entirely;
-- if a bump introduces a new upstream race, add the **access site** and keep
-  `race_top:`; never add a caller frame and never switch an entry to `race:`,
-  either of which silently stops the gate from catching Agent GM's own races;
-- before trusting a green live run after a bump, inject a deliberate race into
-  Agent GM code on the livegate path and confirm the run goes red. A tight
-  write loop plus an unconditional read works; a read inside a disabled
-  `zerolog` call does not, because the compiler can sink the load into a
-  branch that never executes.
+behavior. It describes the implementation shipped in Agent GM v1.3.0 and
+carried forward, unreleased, onto the `b0d61b4` pin, including its known
+limitations.
 
 ## Source and reproducible patch
 
 - Upstream: <https://github.com/mautrix/gmessages>.
-- Base commit: `be48a58b733825f6dfd6bb630af5f236d3bc9ae8`.
-- Go version: `v0.2608.1-0.20260904125044-be48a58b7338`.
+- Base commit: `b0d61b4e1a4e94f0d5e6fedd43cadb80bd0a9e51`.
+- Go version: `v0.2608.1-0.20260910090721-b0d61b4e1a4e`.
 - Imported files: upstream `pkg/libgm`, `go.mod`, `go.sum`, `LICENSE`, and
   `LICENSE.exceptions`. The Matrix connector is not copied.
-- First shipped in commit `1f8659ed279ac1f30526078c77613def7822145a` (PR #15).
+- First shipped in commit `1f8659ed279ac1f30526078c77613def7822145a` (PR #15),
+  against base commit `be48a58b733825f6dfd6bb630af5f236d3bc9ae8`. Carried
+  forward onto `b0d61b4` per the procedure below; see
+  [docs/upstream-pin.md](../../docs/upstream-pin.md) for what changed in that
+  bump and what upstream now does natively (the former `doLongPollContext`
+  split and the `dittoPinger` context fields).
 - Exact source delta: [patches/background-session.patch](patches/background-session.patch).
   Paths are relative to the upstream repository root. The patch includes new
   source/tests, changes to existing files, and the mode difference noted below.
@@ -60,15 +48,15 @@ background request API.
 
 | File / symbol | Change and reason |
 | --- | --- |
-| `pkg/libgm/background_session.go`: `RunBackground` | New context/callback entry point. Checks login; initializes the private RPC session ID if empty without `SetActiveSession` / `GET_UPDATES`; opens the listener and waits for readiness; runs the callback; waits for drain; sends final acknowledgments. Requests must not race listener startup or outlive their response stream. |
+| `pkg/libgm/background_session.go`: `RunBackground` | New context/callback entry point. Checks login; initializes the private RPC session ID if empty without `SetActiveSession` / `GET_UPDATES`; opens the listener and waits for readiness; runs the callback; waits for drain; sends final acknowledgments. Requests must not race listener startup or outlive their response stream. Since `b0d61b4`, upstream's own `doLongPoll` already takes a `ctx context.Context`, so `RunBackground` calls `c.doLongPoll(ctx, true, true, ...)` directly; the patch no longer needs its own `doLongPollContext` wrapper (below). |
 | Same file: `waitBackgroundRetry` | Context-aware retry delay so cancellation interrupts waits. |
 | `pkg/libgm/client.go`: `backgroundBusy` | Atomic flag postpones idle closure while the callback runs. It is not a concurrency lock; callers serialize sessions. |
-| Same file: `refreshAuthTokenContext`, `RegisterPush` | Adds context-aware token-refresh HTTP, keeps the original wrapper, and passes the registration context through. |
-| `pkg/libgm/longpoll.go`: `doLongPollContext` | Adds parent context, cancellation checks, context-aware token refresh and cancellable retries. Original `doLongPoll` remains as a wrapper. |
-| Same file: recovery pinger | Starts only when `loggedIn && !background`, preventing background recovery from claiming active status. Audit any new upstream recovery path on each bump. |
-| Same file: `readLongPoll` | Postpones idle close by one second while busy, stops the timer on exit, and closes the specific response body rather than a global connection. Tracks intentional idle closure atomically and treats it as success even with no events. |
+| Same file: `refreshAuthTokenContext`, `RegisterPush` | Adds context-aware token-refresh HTTP, keeps the original wrapper, and passes the registration context through. Upstream has never had a context-aware `refreshAuthToken`; re-added on every bump so far, including `b0d61b4`. |
+| `pkg/libgm/longpoll.go`: `doLongPoll` | As of `b0d61b4`, upstream's own `doLongPoll(ctx context.Context, loggedIn, background bool, onFirstConnect func()) bool` already threads a caller-supplied context down (added by upstream commit `e00c40312938...`), which is the same intent as this patch's former `doLongPollContext` split — retired rather than reapplied. What the patch still adds on top: an `ctx.Err()` early-return and `refreshAuthTokenContext(ctx, nil)` (instead of the unauthenticated `refreshAuthToken(nil)`) at the top of the retry loop, and swapping its three `time.Sleep(...)` retry delays for `waitBackgroundRetry(ctx, ...)` so a canceled context interrupts them. |
+| Same file: recovery pinger | Starts only when `loggedIn && !background`, preventing background recovery from claiming active status. Upstream's `dittoPinger` gained its own `ctx`/`reconnectCtx` fields in `b0d61b4` (upstream commit `e00c40312938...`, replacing its prior `context.TODO()` uses in `Ping`/`recoveryLoop`) — those are upstream's own now, not part of this patch. Audit any new upstream recovery path on each bump. |
+| Same file: `readLongPoll` | Postpones idle close by one second while busy (`Reset(time.Second)` on the shared `closeIn` timer, re-checked in a loop), and closes the specific response body (`rc.Close()`) rather than the global connection (`closeLongPolling()`). Tracks intentional idle closure in an `idleClosed atomic.Bool` and treats it as a clean/expected read stop (`errors.Is(..., io.EOF) \|\| c.disconnecting \|\| idleClosed.Load()`) and a successful return (`receivedEvents \|\| idleClosed.Load()`) even with no events. Since `b0d61b4` upstream's own `readLongPoll` additionally takes a `cancel context.CancelFunc` and runs a second, *foreground*-only idle-read timeout (`1 * time.Minute`, canceling `ctx` — a case this patch does not touch) alongside the background timer this patch modifies; both timers now share one `closeIn *time.Timer` variable and are stopped via one `defer closeIn.Stop()` once assigned. |
 | `pkg/libgm/client.go`, `pair_google.go`: `DisablePostPairConnect` | Optional flag checked after `PairSuccessful`, before the asynchronous reconnect. Default false preserves upstream behavior. Push-mode pairing must not immediately become active. |
-| `pkg/libgm/session_handler.go`: `sendAckRequestContext` | Adds an error-returning helper and keeps the original void wrapper. `RunBackground` reports ACK errors; existing ACK requeue behavior is retained. See the cancellation gap below. |
+| `pkg/libgm/session_handler.go`: `sendAckRequestContext` | Adds an error-returning helper and keeps the original void wrapper. `RunBackground` reports ACK errors; existing ACK requeue behavior is retained. See the cancellation gap below. Upstream has not touched `session_handler.go` through `b0d61b4`. |
 | `pkg/libgm/background_session_test.go` | Direct library cancellation/no-active-request regression test, described below. |
 
 There is also a packaging-only mode difference: `pkg/libgm/gmproto/build.sh`
@@ -122,7 +110,7 @@ tree.
 patch_record="$PWD/third_party/mautrix-gmessages/patches/background-session.patch"
 upstream_checkout=/path/to/mautrix-gmessages
 patch_verify_dir=$(mktemp -d -t agent-gm-patch-verify-XXXXXX)
-git -C "$upstream_checkout" archive be48a58b733825f6dfd6bb630af5f236d3bc9ae8 \
+git -C "$upstream_checkout" archive b0d61b4e1a4e94f0d5e6fedd43cadb80bd0a9e51 \
   pkg/libgm go.mod go.sum LICENSE LICENSE.exceptions | tar -x -C "$patch_verify_dir"
 git -C "$patch_verify_dir" apply --check "$patch_record"
 git -C "$patch_verify_dir" apply "$patch_record"
@@ -215,6 +203,24 @@ not traverse the nested module. `fixture-validation` checks assumptions against
 pristine pinned upstream, not the patched tree. Neither it nor `pin-consistency`
 replaces the reconstruction check above.
 
+## The race suppressions are part of the bump
+
+`scripts/race-suppressions.txt` names the upstream symbols whose unsynchronised
+field access the live gate ignores (spec §13.3). They describe *this* pinned
+revision, so every bump re-audits them:
+
+- if upstream added locking, delete the matching entry rather than leaving it
+  to mask something new — `internal/lint` fails on an empty file, which is the
+  signal to drop the `GORACE` flag from `test-live` entirely;
+- if a bump introduces a new upstream race, add the **access site** and keep
+  `race_top:`; never add a caller frame and never switch an entry to `race:`,
+  either of which silently stops the gate from catching Agent GM's own races;
+- before trusting a green live run after a bump, inject a deliberate race into
+  Agent GM code on the livegate path and confirm the run goes red. A tight
+  write loop plus an unconditional read works; a read inside a disabled
+  `zerolog` call does not, because the compiler can sink the load into a
+  branch that never executes.
+
 ## Live gate for a pin or connection change
 
 Use an authorized test phone and a disposable copy of paired data. Stop other
@@ -249,5 +255,11 @@ The v1.3.0 rollout on 2026-09-09/10 exercised a race-instrumented isolated serve
 stale/warm reads, stale destination metadata, text send/receive, a user-originated
 no-push text recovered through both read paths, and a real scheduled catch-up.
 Production public-URL text send/receive then passed, including exactly-once
-storage of a reply ingested through push before any read. These are historical
+storage of a reply ingested through push before any read. The `be48a58` → `b0d61b4` pin bump passed the spec
+§13.3 suite against the real paired account on 2026-09-10 — list, a real text
+with its echo and `sending`/`sent` delivery states, the inbound reply, and
+session reload without re-pairing — run with `-race` and the suppression list
+above. That suite connects actively, so it did not cover this list's push-mode
+steps, a fresh pairing, media or group creation; see
+[`docs/upstream-pin.md`](../../docs/upstream-pin.md). These are historical
 observations; repeat relevant gates for every new upstream pin.
