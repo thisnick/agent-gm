@@ -1,0 +1,61 @@
+# ThreadSanitizer suppressions for the live gate (spec 13.3), read by
+# `devbox run test-live` as GORACE=suppressions=<this file>.
+#
+# WHY THIS FILE EXISTS
+#
+# The pinned libgm leaves its whole disconnect handshake unsynchronised:
+# longPollingConn, listenID, skipCount and disconnecting are plain fields
+# touched from both the caller's goroutine (Disconnect -> closeLongPolling)
+# and the long-polling goroutine (doLongPoll / readLongPoll / HandleRPCMsg).
+# Upstream locks the fields it cares about -- CookiesLock, bugleDefaultCheckLock,
+# nextDataReceiveCheckLock, backgroundBusy -- and simply does not lock these.
+#
+# So `-race` reports them on every live run, and it does so identically on the
+# old and new pins: a control run of the same read-only tests from the
+# be48a58 checkout produces the same reports. They are not a regression from
+# any pin bump and not something Agent GM's own code can fix, and the shipped
+# binary is not built with -race, so it is exposed to them either way.
+# Without this file the live gate fails for reasons that have nothing to do
+# with what it is gating, which makes a red run uninformative and a green run
+# impossible.
+#
+# WHAT A GREEN RUN STILL MEANS
+#
+# Every entry is `race_top:`, not `race:`. `race:` matches the symbol
+# ANYWHERE in either stack, which would have masked genuine races underneath
+# these frames -- postConnect calls triggerEvent, which runs Agent GM's own
+# event handler. `race_top:` matches only the frame that performed the
+# access. Combined with every entry naming a symbol inside
+# go.mau.fi/mautrix-gmessages, that gives the property the gate needs:
+#
+#   an access made by upstream libgm itself is ignored;
+#   an access made by github.com/thisnick/agent-gm/... still fails the run.
+#
+# `scripts/race-suppressions_test.go`-free proof: internal/livegate has a
+# deliberate-race check in the bump checklist (see
+# third_party/mautrix-gmessages/AGENT_GM_PATCHES.md) -- inject a race into
+# Agent GM code and confirm test-live still goes red before trusting a green.
+#
+# Both access sites of each race are listed. Either one alone is enough to
+# suppress the pair, but which side TSan reports as "current" and which as
+# "previous" is a timing detail, so naming both keeps the run deterministic.
+#
+# MAINTENANCE
+#
+# Re-audit on every libgm pin bump. If upstream adds locking, the matching
+# entry here becomes dead and should be deleted rather than left to mask
+# something new. Narrow the set, never widen it: adding a caller frame, or
+# switching an entry to `race:`, silently gives up the guarantee above.
+
+# Race 1 -- skipCount. postConnect (client.go, `if c.skipCount > 0`) reads it
+# while HandleRPCMsg (event_handler.go, `c.skipCount--`) decrements it from
+# the long-polling goroutine.
+race_top:go.mau.fi/mautrix-gmessages/pkg/libgm.(*Client).postConnect
+race_top:go.mau.fi/mautrix-gmessages/pkg/libgm.(*Client).HandleRPCMsg
+
+# Race 2 -- longPollingConn and listenID. closeLongPolling, reached from
+# Client.Disconnect on the caller's goroutine, reads longPollingConn and
+# bumps listenID while doLongPoll nils longPollingConn between polls and
+# bumps listenID on reconnect.
+race_top:go.mau.fi/mautrix-gmessages/pkg/libgm.(*Client).closeLongPolling
+race_top:go.mau.fi/mautrix-gmessages/pkg/libgm.(*Client).doLongPoll

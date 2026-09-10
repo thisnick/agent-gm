@@ -4484,6 +4484,20 @@ only**, never by an implementer or a reviewer, from a checkout pinned to the
 reviewer-accepted commit — never from an implementer's working tree, because a
 mid-edit tree failing to build is what makes a live gate meaningless.
 
+**The race suppressions.** The live gate runs with `-race`, and the pinned
+`libgm` leaves its disconnect handshake unsynchronised — `longPollingConn`,
+`listenID`, `skipCount` and `disconnecting` are touched from both the caller's
+goroutine and the long-polling goroutine — so the detector reports the same
+races on every live run, identically on every pin. `test-live` therefore
+passes `GORACE=suppressions=scripts/race-suppressions.txt`. Two properties
+keep a green run meaningful, and `internal/lint` enforces both: every entry is
+`race_top:`, which matches only the frame that made the access rather than the
+symbol anywhere in either stack, and every entry names a symbol inside the
+pinned upstream library. **An access made by Agent GM's own code is never
+suppressed and still fails the gate.** The offline suite carries no
+suppressions. The set is re-audited on every `libgm` pin bump (§3.6) and
+narrowed, never widened.
+
 **The approved-test-number rule.** Live sends go **only** to numbers the owner
 has approved, referred to throughout this repository by placeholder:
 
