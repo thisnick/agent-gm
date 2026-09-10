@@ -27,9 +27,18 @@
 #     which is how a bypass stops meaning anything;
 #   - the `no-release` label is the deliberate exception, named in the output
 #     so it is visible in the log of the run that used it;
+#   - a `_test.go` file, or anything under a `testdata/` directory, ships
+#     nowhere: the Go toolchain excludes both from every build, so neither can
+#     reach an archive, an image or the npm tarball. This is the same argument
+#     as the documentation one, not a second bypass -- it is decided by the
+#     toolchain rather than by anyone's judgement, and a mixed pull request is
+#     still refused on its shipping half;
 #   - everything else -- Go, the Dockerfile, devbox.json, scripts/, npm/, the
 #     workflows -- is a change to what is shipped or to how it is shipped, and
-#     a release that omits it is a release whose changelog is wrong.
+#     a release that omits it is a release whose changelog is wrong. devbox.json
+#     is on that list on purpose: release.yml triggers on it and every release
+#     step is a `devbox run`, so its toolchain pins decide what the binaries
+#     are built with.
 set -euo pipefail
 
 die() { echo "changeset-check: $*" >&2; exit 1; }
@@ -52,6 +61,7 @@ if [ -z "${changed//[[:space:]]/}" ]; then
 fi
 
 has_changeset=0
+saw_tests=0
 code_paths=()
 
 while IFS= read -r p; do
@@ -66,6 +76,8 @@ while IFS= read -r p; do
     # which release.sh copies into every archive AND into the npm tarball, so
     # it is not on this list however much it reads like prose.
     docs/*|plans/*) ;;
+    # Test-only paths, which the Go toolchain keeps out of every build.
+    *_test.go|testdata/*|*/testdata/*) saw_tests=1 ;;
     *.md) case "$p" in */*) code_paths+=("$p") ;; esac ;;
     *) code_paths+=("$p") ;;
   esac
@@ -77,7 +89,11 @@ if [ "$has_changeset" = 1 ]; then
 fi
 
 if [ "${#code_paths[@]}" = 0 ]; then
-  echo "changeset-check: documentation only; no changeset needed"
+  if [ "$saw_tests" = 1 ]; then
+    echo "changeset-check: documentation and tests only; no changeset needed"
+  else
+    echo "changeset-check: documentation only; no changeset needed"
+  fi
   exit 0
 fi
 
