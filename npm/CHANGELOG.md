@@ -1,5 +1,11 @@
 # @agent-gm/cli
 
+## 1.3.0
+
+### Minor Changes
+
+- f14e4ea: Refresh stale conversation, message and contact reads on demand, always refresh destinations before sending, and restore passive catch-up every fifteen minutes with durable freshness tracking and push diagnostics.
+
 ## 1.2.0
 
 ### Minor Changes
