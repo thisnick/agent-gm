@@ -102,6 +102,60 @@ func TestAPullRequestThatShipsSomethingIsRefusedWithoutAChangeset(t *testing.T) 
 	}
 }
 
+// A `_test.go` file and anything under `testdata/` ship nowhere: the Go
+// toolchain excludes both from every build, so neither can reach an archive,
+// an image or the npm tarball. Requiring a version bump to add a test is the
+// docs problem again -- it either cuts releases nobody wants or teaches
+// everyone to reach for the bypass label.
+//
+// This is decided by the toolchain, not by judgement, which is what keeps it
+// from being a second bypass. The half that could become one -- a shipping
+// change smuggled in beside a test -- is asserted separately below.
+func TestATestOnlyPullRequestNeedsNoChangeset(t *testing.T) {
+	testOnly := [][]string{
+		{"internal/lint/race_suppressions_test.go"},
+		{"internal/release/changeset_check_test.go"},
+		{"testdata/libgm/be48a58/README.md"},
+		{"internal/mcp/testdata/tools.json"},
+		{"internal/authz/testdata/scopes.json"},
+		// Tests plus the prose describing them, which is still nothing shipped.
+		{"internal/gm/libgm_test.go", "docs/operations.md"},
+	}
+	for _, paths := range testOnly {
+		t.Run(strings.Join(paths, ","), func(t *testing.T) {
+			code, out := runCheck(t, "", paths...)
+			if code != 0 {
+				t.Fatalf("a test-only pull request was refused:\n%s", out)
+			}
+			if !strings.Contains(out, "no changeset needed") {
+				t.Errorf("the pass does not say why:\n%s", out)
+			}
+		})
+	}
+}
+
+// The half of the test-file rule that could quietly become a bypass: a change
+// that ships something is still refused when a test file is changed beside it,
+// and the refusal names the shipping path alone, so nobody reads it as "the
+// test tripped it" and deletes the test.
+func TestATestFileDoesNotCarryAShippingChangePast(t *testing.T) {
+	for _, shipping := range []string{"devbox.json", "internal/api/health.go", "scripts/release.sh"} {
+		t.Run(shipping, func(t *testing.T) {
+			code, out := runCheck(t, "", "internal/lint/race_suppressions_test.go", shipping)
+			if code == 0 {
+				t.Fatalf("%s was accepted with no changeset because a test file was changed too:\n%s",
+					shipping, out)
+			}
+			if !strings.Contains(out, shipping) {
+				t.Errorf("the refusal does not name %s:\n%s", shipping, out)
+			}
+			if strings.Contains(out, "_test.go") {
+				t.Errorf("the refusal blames the test file, which ships nothing:\n%s", out)
+			}
+		})
+	}
+}
+
 // The bypass, which is deliberate and is meant to be visible: it says what it
 // let through, in the log of the run that let it through.
 func TestTheNoReleaseLabelIsTheWayPast(t *testing.T) {
