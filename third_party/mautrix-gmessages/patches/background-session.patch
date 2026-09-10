@@ -1,0 +1,364 @@
+diff --git a/pkg/libgm/background_session.go b/pkg/libgm/background_session.go
+new file mode 100644
+index 0000000..e68b838
+--- /dev/null
++++ b/pkg/libgm/background_session.go
+@@ -0,0 +1,63 @@
++package libgm
++
++import (
++	"context"
++	"errors"
++	"time"
++
++	"github.com/google/uuid"
++)
++
++// RunBackground serves one push or RPC batch without claiming an active
++// session or starting the recovery pinger. Callers must serialize calls and
++// must not run Connect/Disconnect concurrently. The listener remains open
++// while request executes, then drains until idle. Context cancels its HTTP.
++func (c *Client) RunBackground(ctx context.Context, request func(context.Context) error) error {
++	if err := c.checkLoggedIn(); err != nil {
++		return err
++	}
++	if c.sessionHandler.sessionID == "" {
++		c.sessionHandler.sessionID = uuid.NewString()
++	}
++	c.backgroundBusy.Store(true)
++	defer c.backgroundBusy.Store(false)
++	ready := make(chan struct{})
++	done := make(chan bool, 1)
++	go func() { done <- c.doLongPollContext(ctx, true, true, func() { close(ready) }) }()
++	select {
++	case <-ready:
++	case <-done:
++		if ctx.Err() != nil {
++			return ctx.Err()
++		}
++		return errors.New("background listener failed to open")
++	}
++	var requestErr error
++	if request != nil {
++		requestErr = request(ctx)
++	}
++	c.backgroundBusy.Store(false)
++	clean := <-done
++	ackErr := c.sessionHandler.sendAckRequestContext(ctx)
++	if requestErr != nil {
++		return requestErr
++	}
++	if ctx.Err() != nil {
++		return ctx.Err()
++	}
++	if !clean {
++		return errors.New("background listener closed uncleanly")
++	}
++	return ackErr
++}
++
++func waitBackgroundRetry(ctx context.Context, d time.Duration) bool {
++	timer := time.NewTimer(d)
++	defer timer.Stop()
++	select {
++	case <-ctx.Done():
++		return false
++	case <-timer.C:
++		return true
++	}
++}
+diff --git a/pkg/libgm/background_session_test.go b/pkg/libgm/background_session_test.go
+new file mode 100644
+index 0000000..e0985f1
+--- /dev/null
++++ b/pkg/libgm/background_session_test.go
+@@ -0,0 +1,71 @@
++package libgm
++
++import (
++	"context"
++	"errors"
++	"io"
++	"net/http"
++	"strings"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/rs/zerolog"
++	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
++)
++
++type passiveTransport func(*http.Request) (*http.Response, error)
++
++func (f passiveTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
++
++type passiveBody struct {
++	ctx    context.Context
++	opened bool
++	closed chan struct{}
++	once   atomic.Bool
++}
++
++func (b *passiveBody) Read(out []byte) (int, error) {
++	if !b.opened {
++		b.opened = true
++		return copy(out, "[["), nil
++	}
++	select {
++	case <-b.ctx.Done():
++		return 0, b.ctx.Err()
++	case <-b.closed:
++		return 0, io.EOF
++	}
++}
++func (b *passiveBody) Close() error {
++	if b.once.CompareAndSwap(false, true) {
++		close(b.closed)
++	}
++	return nil
++}
++
++func TestPassiveCancellationNeverClaimsActiveSession(t *testing.T) {
++	c := NewClient(&AuthData{TachyonAuthToken: []byte{1}, TachyonExpiry: time.Now().Add(24 * time.Hour), Browser: &gmproto.Device{}}, nil, zerolog.Nop())
++	var calls atomic.Int32
++	transport := passiveTransport(func(r *http.Request) (*http.Response, error) {
++		calls.Add(1)
++		if !strings.HasSuffix(r.URL.Path, "/ReceiveMessages") {
++			t.Errorf("unexpected network request %s", r.URL.Path)
++		}
++		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: &passiveBody{ctx: r.Context(), closed: make(chan struct{})}}, nil
++	})
++	c.http = &http.Client{Transport: transport}
++	c.lphttp = &http.Client{Transport: transport}
++	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
++	defer cancel()
++	err := c.RunBackground(ctx, func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() })
++	if !errors.Is(err, context.DeadlineExceeded) {
++		t.Fatalf("got %v", err)
++	}
++	if calls.Load() != 1 {
++		t.Fatalf("unexpected requests: %d", calls.Load())
++	}
++	if c.CurrentSessionID() == "" {
++		t.Fatal("missing RPC session identifier")
++	}
++}
+diff --git a/pkg/libgm/client.go b/pkg/libgm/client.go
+index 31e716a..a012431 100644
+--- a/pkg/libgm/client.go
++++ b/pkg/libgm/client.go
+@@ -116,9 +116,11 @@ const DefaultBugleDefaultCheckInterval = 2*time.Hour + 55*time.Minute
+ const minBugleDefaultCheckInterval = 1 * time.Hour
+ 
+ type Client struct {
+-	Logger         zerolog.Logger
+-	evHandler      EventHandler
+-	sessionHandler *SessionHandler
++	DisablePostPairConnect bool
++	backgroundBusy         atomic.Bool
++	Logger                 zerolog.Logger
++	evHandler              EventHandler
++	sessionHandler         *SessionHandler
+ 
+ 	longPollingConn io.Closer
+ 	listenID        int
+@@ -457,7 +459,7 @@ type PushKeys struct {
+ 
+ func (c *Client) RegisterPush(ctx context.Context, keys *PushKeys) error {
+ 	if c.PushKeys == nil || c.PushKeys.URL != keys.URL {
+-		err := c.refreshAuthToken(keys)
++		err := c.refreshAuthTokenContext(ctx, keys)
+ 		if err != nil {
+ 			return fmt.Errorf("failed to refresh auth token: %w", err)
+ 		}
+@@ -489,6 +491,10 @@ func isFatalRefreshError(err error) bool {
+ }
+ 
+ func (c *Client) refreshAuthToken(pushKeyOverride *PushKeys) error {
++	return c.refreshAuthTokenContext(context.Background(), pushKeyOverride)
++}
++
++func (c *Client) refreshAuthTokenContext(ctx context.Context, pushKeyOverride *PushKeys) error {
+ 	if c.AuthData.Browser == nil || (time.Until(c.AuthData.TachyonExpiry) > RefreshTachyonBuffer && pushKeyOverride == nil) {
+ 		return nil
+ 	}
+@@ -546,7 +552,7 @@ func (c *Client) refreshAuthToken(pushKeyOverride *PushKeys) error {
+ 	}
+ 
+ 	resp, err := typedHTTPResponse[*gmproto.RegisterRefreshResponse](
+-		c.makeProtobufHTTPRequest(util.RegisterRefreshURL, payload, ContentTypePBLite),
++		c.makeProtobufHTTPRequestContext(ctx, util.RegisterRefreshURL, payload, ContentTypePBLite, false),
+ 	)
+ 	if err != nil {
+ 		return err
+diff --git a/pkg/libgm/gmproto/build.sh b/pkg/libgm/gmproto/build.sh
+old mode 100755
+new mode 100644
+diff --git a/pkg/libgm/longpoll.go b/pkg/libgm/longpoll.go
+index 0741412..cc1303a 100644
+--- a/pkg/libgm/longpoll.go
++++ b/pkg/libgm/longpoll.go
+@@ -453,6 +453,10 @@ func tryReadBody(resp io.ReadCloser) []byte {
+ }
+ 
+ func (c *Client) doLongPoll(loggedIn, background bool, onFirstConnect func()) bool {
++	return c.doLongPollContext(context.Background(), loggedIn, background, onFirstConnect)
++}
++
++func (c *Client) doLongPollContext(parent context.Context, loggedIn, background bool, onFirstConnect func()) bool {
+ 	c.listenID++
+ 	listenID := c.listenID
+ 	listenReqID := uuid.NewString()
+@@ -461,10 +465,10 @@ func (c *Client) doLongPoll(loggedIn, background bool, onFirstConnect func()) bo
+ 	defer func() {
+ 		log.Debug().Msg("Long polling stopped")
+ 	}()
+-	ctx := log.WithContext(context.TODO())
++	ctx := log.WithContext(parent)
+ 	log.Debug().Str("listen_uuid", listenReqID).Msg("Long polling starting")
+ 
+-	if loggedIn {
++	if loggedIn && !background {
+ 		stopDittoPinger := make(chan struct{})
+ 		defer close(stopDittoPinger)
+ 		go (&dittoPinger{
+@@ -479,7 +483,10 @@ func (c *Client) doLongPoll(loggedIn, background bool, onFirstConnect func()) bo
+ 	errorCount := 1
+ 	var disconnectedAt time.Time
+ 	for c.listenID == listenID {
+-		err := c.refreshAuthToken(nil)
++		if ctx.Err() != nil {
++			return false
++		}
++		err := c.refreshAuthTokenContext(ctx, nil)
+ 		if err != nil {
+ 			if isFatalRefreshError(err) {
+ 				log.Err(err).Msg("Error refreshing auth token")
+@@ -500,7 +507,9 @@ func (c *Client) doLongPoll(loggedIn, background bool, onFirstConnect func()) bo
+ 				sleepSeconds = errorCount * 2
+ 			}
+ 			log.Err(err).Int("sleep_seconds", sleepSeconds).Msg("Error refreshing auth token, retrying in a while")
+-			time.Sleep(time.Duration(sleepSeconds) * time.Second)
++			if !waitBackgroundRetry(ctx, time.Duration(sleepSeconds)*time.Second) {
++				return false
++			}
+ 			continue
+ 		}
+ 		log.Trace().Msg("Starting new long-polling request")
+@@ -533,7 +542,9 @@ func (c *Client) doLongPoll(loggedIn, background bool, onFirstConnect func()) bo
+ 				sleepSeconds = errorCount * 2
+ 			}
+ 			log.Err(err).Int("sleep_seconds", sleepSeconds).Msg("Error making listen request, retrying in a while")
+-			time.Sleep(time.Duration(sleepSeconds) * time.Second)
++			if !waitBackgroundRetry(ctx, time.Duration(sleepSeconds)*time.Second) {
++				return false
++			}
+ 			continue
+ 		}
+ 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+@@ -564,7 +575,9 @@ func (c *Client) doLongPoll(loggedIn, background bool, onFirstConnect func()) bo
+ 				Int("statusCode", resp.StatusCode).
+ 				Int("sleep_seconds", sleepSeconds).
+ 				Msg("Error in long polling, retrying in a while")
+-			time.Sleep(time.Duration(sleepSeconds) * time.Second)
++			if !waitBackgroundRetry(ctx, time.Duration(sleepSeconds)*time.Second) {
++				return false
++			}
+ 			continue
+ 		}
+ 		if c.listenID != listenID {
+@@ -616,6 +629,7 @@ func (c *Client) readLongPoll(log *zerolog.Logger, rc io.ReadCloser, background
+ 		return false
+ 	}
+ 	var closeIn *time.Timer
++	var idleClosed atomic.Bool
+ 	receivedEvents := false
+ 	onRead := func() {
+ 		if closeIn == nil {
+@@ -629,13 +643,23 @@ func (c *Client) readLongPoll(log *zerolog.Logger, rc io.ReadCloser, background
+ 	}
+ 	if background {
+ 		closeIn = time.NewTimer(10 * time.Second)
++		defer closeIn.Stop()
+ 		streamEnded := make(chan struct{})
+ 		defer close(streamEnded)
+ 		go func() {
+-			select {
+-			case <-closeIn.C:
+-				c.closeLongPolling()
+-			case <-streamEnded:
++			for {
++				select {
++				case <-closeIn.C:
++					if c.backgroundBusy.Load() {
++						closeIn.Reset(time.Second)
++						continue
++					}
++					idleClosed.Store(true)
++					_ = rc.Close()
++					return
++				case <-streamEnded:
++					return
++				}
+ 			}
+ 		}()
+ 	}
+@@ -644,13 +668,13 @@ func (c *Client) readLongPoll(log *zerolog.Logger, rc io.ReadCloser, background
+ 		n, err = reader.Read(buf)
+ 		if err != nil {
+ 			var logEvt *zerolog.Event
+-			if (errors.Is(err, io.EOF) && expectEOF) || c.disconnecting {
++			if (errors.Is(err, io.EOF) && expectEOF) || c.disconnecting || idleClosed.Load() {
+ 				logEvt = log.Trace()
+ 			} else {
+ 				logEvt = log.Warn()
+ 			}
+ 			logEvt.Err(err).Msg("Stopped reading data from server")
+-			return receivedEvents
++			return receivedEvents || idleClosed.Load()
+ 		} else if expectEOF {
+ 			log.Warn().Msg("Didn't get EOF after stream end marker")
+ 		}
+diff --git a/pkg/libgm/pair_google.go b/pkg/libgm/pair_google.go
+index 53e0df6..97aaab6 100644
+--- a/pkg/libgm/pair_google.go
++++ b/pkg/libgm/pair_google.go
+@@ -308,6 +308,9 @@ func (c *Client) DoGaiaPairing(ctx context.Context, emojiCallback func(string))
+ 		return err
+ 	}
+ 	c.triggerEvent(&events.PairSuccessful{PhoneID: phoneID})
++	if c.DisablePostPairConnect {
++		return nil
++	}
+ 
+ 	go func() {
+ 		err := c.Reconnect()
+diff --git a/pkg/libgm/session_handler.go b/pkg/libgm/session_handler.go
+index ba2e484..030fb36 100644
+--- a/pkg/libgm/session_handler.go
++++ b/pkg/libgm/session_handler.go
+@@ -354,12 +354,16 @@ func (s *SessionHandler) startAckInterval() {
+ }
+ 
+ func (s *SessionHandler) sendAckRequest() {
++	_ = s.sendAckRequestContext(context.Background())
++}
++
++func (s *SessionHandler) sendAckRequestContext(ctx context.Context) error {
+ 	s.ackMapLock.Lock()
+ 	dataToAck := s.ackMap
+ 	s.ackMap = nil
+ 	s.ackMapLock.Unlock()
+ 	if len(dataToAck) == 0 {
+-		return
++		return nil
+ 	}
+ 	ackMessages := make([]*gmproto.AckMessageRequest_Message, len(dataToAck))
+ 	for i, reqID := range dataToAck {
+@@ -398,4 +402,5 @@ func (s *SessionHandler) sendAckRequest() {
+ 	} else {
+ 		s.client.Logger.Trace().Strs("message_ids", dataToAck).Msg("Sent acks")
+ 	}
++	return err
+ }

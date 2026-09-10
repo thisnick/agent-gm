@@ -455,6 +455,15 @@ recreate the container, and the process migrates before it binds.
 
 ### The `libgm` pin policy
 
+**The compiled library is a locally patched source snapshot.** Before any pin
+bump, read the [libgm patch maintenance record](../third_party/mautrix-gmessages/AGENT_GM_PATCHES.md).
+It contains the reapplicable patch, exact reconstruction procedure, upstream
+update steps, known limitations, and automated/live test inventory. The commands
+below update pin metadata; they do not replace or reapply the local source.
+Reconstruct and verify the old snapshot first, then import and patch the new
+snapshot as that record describes. A `go get` alone leaves the compiled local
+replacement unchanged.
+
 Every pin, and the entry each bump writes, is in
 [upstream-pin.md](upstream-pin.md).
 

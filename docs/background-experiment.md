@@ -36,8 +36,9 @@ the notification suppression that motivated this change.
 
 ## Implementation and verification
 
-`third_party/mautrix-gmessages/AGENT_GM_PATCHES.md` records the small extension
-to the pinned upstream library. Passive batches initialize an RPC session ID,
+The [libgm patch maintenance record](../third_party/mautrix-gmessages/AGENT_GM_PATCHES.md)
+contains the exact patch, reapplication instructions, test inventory, and known
+limitations (including final acknowledgment cancellation). Passive batches initialize an RPC session ID,
 keep the listener open while a request is pending, drain and acknowledge
 updates, then close. They do not send GET_UPDATES or start the recovery pinger.
 Pairing does not automatically reconnect in active mode.

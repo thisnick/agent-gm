@@ -21,6 +21,11 @@ move any of them.
 
 ## Bumping a pin
 
+For libgm, begin with the [maintained patch and reapplication guide](../third_party/mautrix-gmessages/AGENT_GM_PATCHES.md).
+The local `replace` means the imported source must be updated as well as the
+recorded hashes. The guide distinguishes direct library tests, adapter tests,
+live validation, and known gaps; verify reconstruction against each new base.
+
 The full procedures, with the commands, are in
 [operations.md](operations.md#the-libgm-pin-policy) (`libgm`) and
 [operations.md](operations.md#the-go-sdk-pin) (`go-sdk`). In outline:

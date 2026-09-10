@@ -1,0 +1,2 @@
+# Unified-diff context prefixes intentionally precede blank lines and Go tabs.
+*.patch -whitespace
