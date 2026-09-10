@@ -16,16 +16,20 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/rs/zerolog"
 )
 
 // PushSubscription is stored in an encrypted sidecar next to AuthData.
 // Generation/Delivered make acknowledged HTTP wakes survive a process crash.
 type PushSubscription struct {
-	Private    []byte `json:"private"`
-	Auth       []byte `json:"auth"`
-	Token      string `json:"token"`
-	Generation uint64 `json:"generation"`
-	Delivered  uint64 `json:"delivered"`
+	Private         []byte `json:"private"`
+	Auth            []byte `json:"auth"`
+	Token           string `json:"token"`
+	Generation      uint64 `json:"generation"`
+	Delivered       uint64 `json:"delivered"`
+	LastReceivedMS  int64  `json:"last_received_ms,omitempty"`
+	LastCompletedMS int64  `json:"last_completed_ms,omitempty"`
 }
 
 type pushRuntime struct {
@@ -133,7 +137,7 @@ func (b *LibGM) connectPush(ctx context.Context) error {
 		default:
 		}
 	}
-	b.log.Info().Msg("Push connection ready; no scheduled message polling")
+	b.pushInfo("push connection ready")
 	return nil
 }
 
@@ -157,8 +161,22 @@ func (b *LibGM) disconnectPush() {
 }
 
 // withPush serializes all protocol access. An idle account has no Google
-// listener. API requests and authenticated pushes are the only wake sources.
+// listener. API requests, authenticated pushes, and catch-up sweeps wake it.
+type passiveSessionKey struct{}
+
+// WithSession lets a serialized refresh or mutation reuse one passive listener.
+// The callback must issue protocol calls sequentially and not retain its context.
+func (b *LibGM) WithSession(ctx context.Context, request func(context.Context) error) error {
+	return b.withPush(ctx, func(ctx context.Context) error {
+		return request(context.WithValue(ctx, passiveSessionKey{}, b))
+	})
+}
+
 func (b *LibGM) withPush(ctx context.Context, request func(context.Context) error) error {
+	if ctx.Value(passiveSessionKey{}) == b {
+		return request(ctx)
+	}
+
 	p := b.push
 	if p == nil {
 		return request(ctx)
@@ -216,15 +234,18 @@ func (b *LibGM) pushWorker() {
 			if err == nil {
 				p.mu.Lock()
 				old := p.state.Delivered
+				oldCompleted := p.state.LastCompletedMS
+				p.state.LastCompletedMS = time.Now().UnixMilli()
 				p.state.Delivered = generation
 				err = p.persistLocked()
 				if err != nil {
 					p.state.Delivered = old
+					p.state.LastCompletedMS = oldCompleted
 				}
 				p.mu.Unlock()
 			}
 			if err == nil {
-				b.log.Info().Msg("Push updates fetched; Google connection idle")
+				b.pushInfo("push fetch completed")
 				backoff = time.Second
 				continue
 			}
@@ -282,10 +303,13 @@ func (b *LibGM) HandlePush(w http.ResponseWriter, r *http.Request, token string)
 		return
 	}
 	old := p.state.Generation
+	oldReceived := p.state.LastReceivedMS
+	p.state.LastReceivedMS = time.Now().UnixMilli()
 	p.state.Generation++
 	err = p.persistLocked()
 	if err != nil {
 		p.state.Generation = old
+		p.state.LastReceivedMS = oldReceived
 	}
 	p.mu.Unlock()
 	if err != nil {
@@ -296,9 +320,17 @@ func (b *LibGM) HandlePush(w http.ResponseWriter, r *http.Request, token string)
 	case p.wake <- struct{}{}:
 	default:
 	}
+	b.pushInfo("push received")
 	w.WriteHeader(http.StatusCreated)
 }
 
 // SetPushPairingMode prevents the upstream post-pair active reconnect. The
 // supervisor configures the account's durable push endpoint after pairing.
 func (b *LibGM) SetPushPairingMode() { b.client.DisablePostPairConnect = true }
+
+func (b *LibGM) SetPushLogger(log zerolog.Logger) { b.pushLog = &log }
+func (b *LibGM) pushInfo(message string) {
+	if b.pushLog != nil {
+		b.pushLog.Info().Msg(message)
+	}
+}

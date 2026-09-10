@@ -65,12 +65,13 @@ func DefaultConfig() Config {
 // section 13.2 can assert no cross-talk by construction rather than by
 // inspection.
 type Account struct {
-	ID      string
-	Store   *store.Store
-	Backend gm.Backend
-	Clock   clock.Clock
-	Config  Config
-	Log     Logger
+	Freshness *Freshener
+	ID        string
+	Store     *store.Store
+	Backend   gm.Backend
+	Clock     clock.Clock
+	Config    Config
+	Log       Logger
 	// Audit is the section 12.4 writer. It may be nil in a narrow unit test;
 	// every call site tolerates that.
 	Audit *audit.Writer

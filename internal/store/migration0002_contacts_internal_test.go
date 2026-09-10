@@ -194,6 +194,7 @@ func windBackToV1(t *testing.T, path string) {
 		`DROP TABLE IF EXISTS media_cache_entries`,
 		`DROP TABLE IF EXISTS download_tickets`,
 		`DROP TABLE IF EXISTS uploads`,
+		`DROP TABLE IF EXISTS refresh_state`,
 		`DROP TABLE IF EXISTS backfill_state`,
 		`DROP TABLE IF EXISTS operations`,
 		`DROP TABLE IF EXISTS reactions`,

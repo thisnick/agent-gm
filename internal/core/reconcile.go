@@ -45,6 +45,13 @@ func Reconcile(ctx context.Context, a *Account, since time.Time) error {
 
 // Reconcile is the method form of the package-level Reconcile.
 func (a *Account) Reconcile(ctx context.Context, since time.Time) error {
+	if a.Freshness != nil {
+		return a.Freshness.refresh(ctx, a, "conversations", true, &since)
+	}
+	return a.reconcile(ctx, since)
+}
+
+func (a *Account) reconcile(ctx context.Context, since time.Time) error {
 	sinceMS := since.UnixMilli()
 	if since.IsZero() {
 		sinceMS = 0

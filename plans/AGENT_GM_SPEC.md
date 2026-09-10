@@ -343,6 +343,20 @@ payloads (`pair.go:93,115`), never as a runtime network value.
 | `(*Client).PairCallback` | — | **not called.** Listed only because leaving it nil is load-bearing: see the prose below |
 | `(*Client).GaiaHackyDeviceSwitcher` | `int` field (`client.go:143`) | selects among several primary-looking devices as `primaryDevices[switcher % len]` after a newest-first sort (`pair_google.go:364`). Agent GM exposes it as `agm pair --device-index N` and as `device_index` on `POST /v1/pairing/start`. |
 
+**On-demand freshness (owner decision, 2026-09-09):** Paired-account reads
+refresh stale (older than one minute or never refreshed) conversation lists,
+message threads/searches and contacts before returning stored results. Recent
+conversation sweeps remain bounded to 100 per included folder and use the
+existing message timestamp cutoff; exhaustive historical synchronization is
+not promised. A passive catch-up runs every 15 minutes even without requests.
+Sends always refresh destination metadata before capability checks and sending.
+Concurrent refreshes are serialized per account with freshness rechecked after
+waiting. Successful refresh start (catch-up cutoff) and completion (freshness) times are persisted by account/scope only
+after the fetch finishes; failed refreshes surface errors and do not advance
+freshness. Signed-out historical reads remain available. See
+`docs/background-experiment.md` for details. These rules supersede the original
+push rollout's no-periodic-sweep and database-only-read rules below.
+
 **Push background mode (owner decision, 2026-09-09):** The server defaults
  to `AGENT_GM_CONNECTION_MODE=push`; `active` retains the former lifecycle.
  The local pinned libgm extension `RunBackground(ctx, request)` serializes

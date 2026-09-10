@@ -167,3 +167,27 @@ func TestSessionSaveHoldsPassiveGateUntilDiskWriteCompletes(t *testing.T) {
 		t.Fatal("save failure leaked gate")
 	}
 }
+
+func TestPassiveBatchReusesOneSession(t *testing.T) {
+	b := New(zerolog.Nop())
+	if err := b.EnablePush("https://example.test/push/account", nil, func([]byte) error { return nil }, func([]byte) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	p := b.push
+	p.ctx, p.cancel = context.WithCancel(context.Background())
+	defer p.cancel()
+	p.started.Store(true)
+	sessions, calls := 0, 0
+	p.run = func(ctx context.Context, fn func(context.Context) error) error { sessions++; return fn(ctx) }
+	err := b.WithSession(context.Background(), func(ctx context.Context) error {
+		for range 3 {
+			if err := b.withPush(ctx, func(context.Context) error { calls++; return nil }); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil || sessions != 1 || calls != 3 {
+		t.Fatalf("sessions=%d calls=%d error=%v", sessions, calls, err)
+	}
+}

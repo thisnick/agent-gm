@@ -30,6 +30,7 @@ import (
 // singleton, so section 13.1's "one fake is one account" test can build a
 // whole server over two fakes, its own clock and its own temporary directory.
 type HandlerDeps struct {
+	Freshness  *core.Freshener
 	Store      *store.Store
 	Sessions   *store.SessionStore
 	Supervisor *accounts.Supervisor
@@ -38,13 +39,13 @@ type HandlerDeps struct {
 	// OAuth is the authorization server of spec section 9. The admin routes
 	// of section 9.5 delegate to it; it is nil in a narrow unit test, and
 	// those routes then answer internal_error rather than pretending.
-	OAuth      *oauth.Server
-	Audit      *audit.Writer
-	Signer     *media.Signer
-	Cache      *media.Cache
-	Clock      clock.Clock
-	DataKey    store.DataKey
-	Log        core.Logger
+	OAuth   *oauth.Server
+	Audit   *audit.Writer
+	Signer  *media.Signer
+	Cache   *media.Cache
+	Clock   clock.Clock
+	DataKey store.DataKey
+	Log     core.Logger
 
 	// DataDir is where backups, the media cache and staged upload bytes
 	// live. The caller of POST /v1/admin/backup does not choose a path
@@ -159,15 +160,16 @@ func (d *HandlerDeps) engine(accountID, source string) (*core.Account, error) {
 	}
 	key := d.DataKey
 	return &core.Account{
-		ID:      accountID,
-		Store:   d.Store,
-		Backend: sup.Backend,
-		Clock:   d.Clock,
-		Config:  d.Core,
-		Log:     d.Log,
-		Audit:   d.Audit,
-		Source:  source,
-		DataKey: &key,
+		Freshness: d.Freshness,
+		ID:        accountID,
+		Store:     d.Store,
+		Backend:   sup.Backend,
+		Clock:     d.Clock,
+		Config:    d.Core,
+		Log:       d.Log,
+		Audit:     d.Audit,
+		Source:    source,
+		DataKey:   &key,
 	}, nil
 }
 

@@ -154,6 +154,7 @@ func buildV3WithRawParticipants(t *testing.T, dir string) string {
 	} {
 		exec(`DROP TABLE IF EXISTS ` + table)
 	}
+	exec(`DROP TABLE refresh_state`)
 	exec(`PRAGMA user_version = 3`)
 	return path
 }
