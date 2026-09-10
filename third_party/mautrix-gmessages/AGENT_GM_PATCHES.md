@@ -5,24 +5,6 @@ behavior. It describes the implementation shipped in Agent GM v1.3.0 and
 carried forward, unreleased, onto the `b0d61b4` pin, including its known
 limitations.
 
-## The race suppressions are part of the bump
-
-`scripts/race-suppressions.txt` names the upstream symbols whose unsynchronised
-field access the live gate ignores (spec §13.3). They describe *this* pinned
-revision, so every bump re-audits them:
-
-- if upstream added locking, delete the matching entry rather than leaving it
-  to mask something new — `internal/lint` fails on an empty file, which is the
-  signal to drop the `GORACE` flag from `test-live` entirely;
-- if a bump introduces a new upstream race, add the **access site** and keep
-  `race_top:`; never add a caller frame and never switch an entry to `race:`,
-  either of which silently stops the gate from catching Agent GM's own races;
-- before trusting a green live run after a bump, inject a deliberate race into
-  Agent GM code on the livegate path and confirm the run goes red. A tight
-  write loop plus an unconditional read works; a read inside a disabled
-  `zerolog` call does not, because the compiler can sink the load into a
-  branch that never executes.
-
 ## Source and reproducible patch
 
 - Upstream: <https://github.com/mautrix/gmessages>.
@@ -221,6 +203,24 @@ not traverse the nested module. `fixture-validation` checks assumptions against
 pristine pinned upstream, not the patched tree. Neither it nor `pin-consistency`
 replaces the reconstruction check above.
 
+## The race suppressions are part of the bump
+
+`scripts/race-suppressions.txt` names the upstream symbols whose unsynchronised
+field access the live gate ignores (spec §13.3). They describe *this* pinned
+revision, so every bump re-audits them:
+
+- if upstream added locking, delete the matching entry rather than leaving it
+  to mask something new — `internal/lint` fails on an empty file, which is the
+  signal to drop the `GORACE` flag from `test-live` entirely;
+- if a bump introduces a new upstream race, add the **access site** and keep
+  `race_top:`; never add a caller frame and never switch an entry to `race:`,
+  either of which silently stops the gate from catching Agent GM's own races;
+- before trusting a green live run after a bump, inject a deliberate race into
+  Agent GM code on the livegate path and confirm the run goes red. A tight
+  write loop plus an unconditional read works; a read inside a disabled
+  `zerolog` call does not, because the compiler can sink the load into a
+  branch that never executes.
+
 ## Live gate for a pin or connection change
 
 Use an authorized test phone and a disposable copy of paired data. Stop other
@@ -255,5 +255,11 @@ The v1.3.0 rollout on 2026-09-09/10 exercised a race-instrumented isolated serve
 stale/warm reads, stale destination metadata, text send/receive, a user-originated
 no-push text recovered through both read paths, and a real scheduled catch-up.
 Production public-URL text send/receive then passed, including exactly-once
-storage of a reply ingested through push before any read. These are historical
+storage of a reply ingested through push before any read. The `be48a58` → `b0d61b4` pin bump passed the spec
+§13.3 suite against the real paired account on 2026-09-10 — list, a real text
+with its echo and `sending`/`sent` delivery states, the inbound reply, and
+session reload without re-pairing — run with `-race` and the suppression list
+above. That suite connects actively, so it did not cover this list's push-mode
+steps, a fresh pairing, media or group creation; see
+[`docs/upstream-pin.md`](../../docs/upstream-pin.md). These are historical
 observations; repeat relevant gates for every new upstream pin.
