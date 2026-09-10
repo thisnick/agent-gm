@@ -30,6 +30,7 @@ var migrations = []migration{
 	migration0005,
 	migration0006,
 	migration0007,
+	migration0008,
 }
 
 var migration0001 = migration{
@@ -790,7 +791,7 @@ var migration0006 = migration{
 // server-minted ID.
 //
 // The column therefore has to be nullable, and the uniqueness has to become a
-// PARTIAL index. `''` was not an option: an empty string is a value, so a
+// PARTIAL index. `”` was not an option: an empty string is a value, so a
 // second keyless send by the same authorization to the same account would
 // have collided with the first and been refused as a duplicate -- silently
 // turning "no key" into "one call, ever". `NULL` is never equal to `NULL` in
@@ -849,4 +850,16 @@ var migration0007 = migration{
 		    ON operations(authorization_id, account_id, kind, idempotency_key)
 		    WHERE idempotency_key IS NOT NULL`,
 	},
+}
+
+var migration0008 = migration{
+	version: 8,
+	name:    "successful on-demand refresh timestamps",
+	stmts: []string{`CREATE TABLE refresh_state (
+ account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+ scope TEXT NOT NULL,
+ refreshed_at_ms INTEGER NOT NULL,
+ since_at_ms INTEGER NOT NULL,
+ PRIMARY KEY (account_id, scope)
+ )`},
 }

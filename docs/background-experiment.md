@@ -3,8 +3,8 @@
 The server defaults to `AGENT_GM_CONNECTION_MODE=push`. It registers a Web
 Push subscription with Google using the public HTTPS URL, receives encrypted
 notifications, and opens a bounded passive listener to fetch pending updates.
-API operations open the same serialized listener on demand. Startup performs
-reconciliation. There is no periodic message sweep or active recovery pinger.
+API operations open the same serialized listener on demand. Reads refresh data older than one minute; sends always refresh destination metadata before sending. Startup performs
+reconciliation. A passive reconciliation sweep runs every 15 minutes. There is no active recovery pinger.
 An idle account has no open Google listener. `connected` means the push
 subscription is ready, including while its transport is idle.
 
@@ -52,3 +52,34 @@ and vibration cannot be established by server logs alone.
 `spike background-once` and `spike push-probe` remain diagnostic commands.
 Run them only when every other process using that pairing is stopped. They
 are not the production ingestion path and do not persist message history.
+
+## Freshness and bounded catch-up
+
+Conversation listings and message searches refresh the recent 100 conversations
+per included folder when stale. Direct thread reads refresh that thread's
+metadata and messages, including threads outside the recent list. Contacts have
+a separate one-minute freshness window. Signed-out history remains readable
+without a live refresh; a failed required refresh on a paired account returns
+an error instead of silently presenting stale data as current.
+
+Successful refresh start and completion times are persisted in `refresh_state`, by account and
+scope (`conversations`, `contacts`, or conversation ID). Completion time controls the one-minute freshness window. Start times are committed
+only after the fetch succeeds, so messages arriving during the fetch remain in
+the next catch-up interval. Message pagination stops before the first message
+older than the previous successful sync timestamp; IDs deduplicate repeated
+fetches. This bounds recent synchronization, not every historical edit/deletion.
+Newly discovered threads use the account sweep cutoff; backfill covers history.
+
+Concurrent stale requests share one refresh. Each batch reuses a passive
+listener. Before text or media sends, the destination metadata is always fetched
+and saved before capability checks and the send. Refreshing does not advance a
+thread's message checkpoint unless messages were also fetched. Existing send
+idempotency and uncertain-outcome handling remain in effect.
+
+Safe application logs record refresh start/completion/failure and push receipt
+and completion. The encrypted push sidecar also stores last receipt/completion
+timestamps. No message bodies, phone numbers, push URLs or keys are logged.
+
+Schema migration 8 adds freshness state. Back up data before upgrading. An older
+binary cannot open the newer schema; rollback requires its pre-upgrade backup
+(or a forward fix), not just changing the image tag.

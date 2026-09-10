@@ -30,6 +30,13 @@ type SendTextInput struct {
 
 // SendText is the send_text mutation.
 func (a *Account) SendText(ctx context.Context, in SendTextInput) (Result, error) {
+	if a.Freshness != nil {
+		return a.freshSend(ctx, in.ConversationID, func(ctx context.Context) (Result, error) { return a.sendText(ctx, in) })
+	}
+	return a.sendText(ctx, in)
+}
+
+func (a *Account) sendText(ctx context.Context, in SendTextInput) (Result, error) {
 	conv, err := a.writableConversation(ctx, in.ConversationID, "send")
 	if err != nil {
 		return Result{}, err
@@ -73,6 +80,13 @@ type SendMediaInput struct {
 
 // SendMedia is the send_media mutation.
 func (a *Account) SendMedia(ctx context.Context, in SendMediaInput) (Result, error) {
+	if a.Freshness != nil {
+		return a.freshSend(ctx, in.ConversationID, func(ctx context.Context) (Result, error) { return a.sendMedia(ctx, in) })
+	}
+	return a.sendMedia(ctx, in)
+}
+
+func (a *Account) sendMedia(ctx context.Context, in SendMediaInput) (Result, error) {
 	conv, err := a.writableConversation(ctx, in.ConversationID, "send")
 	if err != nil {
 		return Result{}, err

@@ -232,7 +232,13 @@ func buildServer(ctx context.Context, addrOverride string) (*built, int) {
 	// `account.*` row of any kind in a server that had paired twice and
 	// resumed three times.
 	sup.Audit = audit.NewFieldsAppender(aud, "server")
+	var freshness *core.Freshener
+	if cfg.Backend == config.BackendLibGM {
+		freshness = &core.Freshener{}
+	}
 	deps := &api.HandlerDeps{
+		Freshness:  freshness,
+		Log:        coreLog{log},
 		Store:      st,
 		Sessions:   sessions,
 		Supervisor: sup,
@@ -276,6 +282,7 @@ func buildServer(ctx context.Context, addrOverride string) (*built, int) {
 			backend := gm.New(libLog)
 			if cfg.ConnectionMode == "push" {
 				backend.SetPushPairingMode()
+				backend.SetPushLogger(log)
 			}
 			return backend, nil
 		},
@@ -292,6 +299,7 @@ func buildServer(ctx context.Context, addrOverride string) (*built, int) {
 		}
 		k := cfg.DataKey
 		return &core.Account{
+			Freshness: freshness, Log: deps.Log,
 			ID: accountID, Store: st, Backend: a.Backend, Clock: clk,
 			Config: core.DefaultConfig(), Audit: aud, Source: "server", DataKey: &k,
 		}, nil
@@ -403,7 +411,7 @@ func buildServer(ctx context.Context, addrOverride string) (*built, int) {
 
 	handler := mcp.Mount(mountOAuth(srv, oauthSrv), mcpHandler)
 	if cfg.ConnectionMode == "push" && cfg.Backend == config.BackendLibGM {
-		configureServerPush(sup, sessions, cfg.PublicURL)
+		configureServerPush(sup, sessions, cfg.PublicURL, log)
 		handler = mountPush(handler, sup)
 	}
 	return &built{

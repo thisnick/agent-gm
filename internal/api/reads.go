@@ -111,6 +111,9 @@ func (d *HandlerDeps) conversationsList(r *Request) (*Response, error) {
 		q.ParticipantID, q.ParticipantPhone = id, phone
 	}
 
+	if err := d.refreshRead(r, res.AccountID, "conversations"); err != nil {
+		return nil, err
+	}
 	rows, err := d.Store.ListConversations(r.Ctx, q)
 	if err != nil {
 		return nil, err
@@ -155,6 +158,13 @@ func (d *HandlerDeps) conversationsGet(r *Request) (*Response, error) {
 	c, e := d.conversation(r)
 	if e != nil {
 		return nil, e
+	}
+	if err := d.refreshMessages(r, c.AccountID, c.ID); err != nil {
+		return nil, err
+	}
+	c, err := d.Store.Conversation(r.Ctx, c.ID)
+	if err != nil {
+		return nil, err
 	}
 	dto, err := d.conversationFrom(r.Ctx, c, d.peerTypingUntil(c.ID))
 	if err != nil {
@@ -304,6 +314,9 @@ func (d *HandlerDeps) conversationMessagesList(r *Request) (*Response, error) {
 }
 
 func (d *HandlerDeps) serveMessages(r *Request, p page, q store.MessageQuery) (*Response, error) {
+	if err := d.refreshMessages(r, q.AccountID, q.ConversationID); err != nil {
+		return nil, err
+	}
 	rows, err := d.Store.ListMessages(r.Ctx, q)
 	if err != nil {
 		return nil, err
@@ -339,6 +352,13 @@ func (d *HandlerDeps) messagesGet(r *Request) (*Response, error) {
 	m, e := d.message(r)
 	if e != nil {
 		return nil, e
+	}
+	if err := d.refreshMessages(r, m.AccountID, m.ConversationID); err != nil {
+		return nil, err
+	}
+	m, err := d.Store.Message(r.Ctx, m.ID)
+	if err != nil {
+		return nil, err
 	}
 	dto, err := d.messageFrom(r.Ctx, m)
 	if err != nil {
@@ -491,6 +511,12 @@ func (d *HandlerDeps) searchMessages(r *Request) (*Response, error) {
 		}
 	}
 
+	if err := d.refreshMessages(r, res.AccountID, convID); err != nil {
+		return nil, err
+	}
+	if err := d.refreshMessages(r, res.AccountID, convID); err != nil {
+		return nil, err
+	}
 	hits, err := d.Store.SearchMessages(r.Ctx, sq)
 	if err != nil {
 		return nil, err
@@ -576,6 +602,9 @@ func (d *HandlerDeps) contactsList(r *Request) (*Response, error) {
 	top, e := boolFlag(r.Query, "top")
 	if e != nil {
 		return nil, e
+	}
+	if err := d.refreshRead(r, res.AccountID, "contacts"); err != nil {
+		return nil, err
 	}
 	rows, err := d.Store.ListContacts(r.Ctx, store.ContactQuery{
 		AccountID:   res.AccountID,

@@ -24,10 +24,11 @@ import (
 // It is the only place in Agent GM that imports libgm or gmproto
 // (spec section 2.3).
 type LibGM struct {
-	push   *pushRuntime
-	client *libgm.Client
-	auth   *libgm.AuthData
-	log    zerolog.Logger
+	pushLog *zerolog.Logger
+	push    *pushRuntime
+	client  *libgm.Client
+	auth    *libgm.AuthData
+	log     zerolog.Logger
 
 	eventsCh chan Event
 

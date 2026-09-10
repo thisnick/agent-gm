@@ -5,20 +5,21 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/rs/zerolog"
+
 	"github.com/thisnick/agent-gm/internal/accounts"
 	"github.com/thisnick/agent-gm/internal/gm"
 	"github.com/thisnick/agent-gm/internal/store"
 )
 
-func configureServerPush(sup *accounts.Supervisor, sessions *store.SessionStore, publicURL string) {
-	// Push and API requests wake the client. Reconciliation still runs on
-	// startup and explicit requests, but never from a periodic sweep timer.
-	sup.SweepInterval = 0
+func configureServerPush(sup *accounts.Supervisor, sessions *store.SessionStore, publicURL string, log zerolog.Logger) {
+	// Keep the supervisor's 15-minute reconciliation timer in push mode.
 	sup.PrepareBackend = func(id string, backend gm.Backend) error {
 		b, ok := backend.(*gm.LibGM)
 		if !ok {
 			return nil
 		}
+		b.SetPushLogger(log.With().Str("account_id", id).Logger())
 		saved, err := sessions.Load(id + "-push")
 		if err != nil && !errors.Is(err, store.ErrNoSession) {
 			return err
