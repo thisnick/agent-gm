@@ -75,7 +75,8 @@ only), `6ce6b49` streaming downloads, `10110fd` full `ListConversationsRequest`,
 `e6cc299` long-poll timeout logs, `d7b1aaf` nil safety on public methods.
 
 - **`ConfigVersion`**: 2026.9.2 → 2026.9.2 (unchanged; still stale against
-  Google's live 2026.9.9, so §3.6 D3 still applies to conversation creation).
+  Google's live version, 2026.9.10 at the gate below, so §3.6 D3 still
+  applies to conversation creation).
 - **Symbols in spec §3.1 that changed**:
   - `methods.go`: `ListConversations(ctx, count int, folder)` became
     `ListConversations(ctx, req *gmproto.ListConversationsRequest)`. Agent GM's
