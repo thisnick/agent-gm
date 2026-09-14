@@ -7,8 +7,21 @@
 name: ci
 
 on:
+  # A pull request is where a change is reviewed, so a pull request is where
+  # it is checked. A push to any other branch used to start a second run of
+  # every job beside the pull request's own -- the same commit, the same
+  # verdict, twice the runners -- and the second run was the lesser one,
+  # because the `changeset` job can only run with a pull request to read.
+  #
+  # `main` is the exception, and the reason a push trigger remains at all:
+  # the push run on a merge commit is the one `version.yml` waits on before it
+  # cuts a tag and the one `release.yml` requires green before it publishes
+  # (both ask for `event == "push"` by name), and it is the run that pushes
+  # the `main` image to GHCR. A `v*` tag is a push too, and it stays for the
+  # same reason: `release.yml` waits for the image tagged with the version,
+  # and the tag's own run is what builds it.
   push:
-    branches: ["**"]
+    branches: ["main"]
     tags: ["v*"]
   pull_request:
   # A tag pushed by `version.yml` with the workflow's GITHUB_TOKEN does not
@@ -197,7 +210,8 @@ jobs:
   # Spec section 15.2, performed rather than described. A backup nobody has
   # restored is a file, not a backup -- and the restore path is the one path
   # in the system that is only ever exercised on the worst day of the year,
-  # so it is exercised on every push instead. It also asserts the documented
+  # so it is exercised on every pull request and every push to main instead.
+  # It also asserts the documented
   # FAILURE mode: with the wrong data key the accounts come back signed_out
   # and the history is intact, and the server still serves.
   restore-drill:

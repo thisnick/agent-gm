@@ -174,7 +174,8 @@ account address rather than from the device.
 ### The drill
 
 `devbox run restore-drill` performs the whole of this section against a
-throwaway server on the fake backend, and CI runs it on every push:
+throwaway server on the fake backend, and CI runs it on every pull request
+and every push to `main`:
 
 1. it pairs an account, starts a conversation and sends one message, so the
    restore has content to be judged on;
