@@ -16,6 +16,11 @@ tag: a tag is a label and a digest is evidence.
 
 Nothing yet.
 
+## [1.3.3] — 2026-09-14
+
+- Run CI on pull requests and on pushes to `main` and to version tags only. A push to any other branch started a second run of every job beside the pull request's own — the same commit, the same verdict, twice the runners — so the branch push trigger is gone and the pull request run is the one that counts. `main` keeps its push run because `version.yml` waits on it before cutting a tag and `release.yml` requires it green before publishing, and a `v*` tag keeps its run because that is what builds the image `release.yml` waits for.
+- Bump the pinned mautrix-gmessages (libgm) dependency from b0d61b4 to d7b1aaf, carrying the maintained background-session patch forward. Upstream adds nil-receiver guards to the public Client methods, streams attachment downloads instead of buffering them, caps avatar downloads at 5 MiB, and takes the whole ListConversationsRequest; Agent GM adapts its two call sites and keeps the []byte Download contract. ConfigVersion is unchanged and still stale against Google, so conversation creation stays exposed until upstream publishes a newer one.
+
 ## [1.3.2] — 2026-09-14
 
 - Cache Go's build and module caches, and golangci-lint's, between CI runs. Every job started with them empty, so each one recompiled the standard library three times over — linux, windows and darwin `vet` — and every dependency again race-instrumented, which is where `check`'s five and a half minutes went. Measured locally: 133s cold, 42s warm, 45s warm with Agent GM's own code changed, so the key is the `go.sum`/`devbox.lock` hash rather than the commit, and only the `check` job saves the entry the others read.
@@ -148,7 +153,8 @@ Agent GM *is* rather than what changed.
   gate was satisfied through the public URL with Codex CLI. Adding either
   later needs no code.
 
-[Unreleased]: https://github.com/thisnick/agent-gm/compare/v1.3.2...HEAD
+[Unreleased]: https://github.com/thisnick/agent-gm/compare/v1.3.3...HEAD
+[1.3.3]: https://github.com/thisnick/agent-gm/releases/tag/v1.3.3
 [1.3.2]: https://github.com/thisnick/agent-gm/releases/tag/v1.3.2
 [1.3.1]: https://github.com/thisnick/agent-gm/releases/tag/v1.3.1
 [1.3.0]: https://github.com/thisnick/agent-gm/releases/tag/v1.3.0
