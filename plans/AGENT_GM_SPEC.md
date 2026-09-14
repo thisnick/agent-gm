@@ -4657,7 +4657,9 @@ block quoting upstream, `send_mode`, `search.mode` — are not.
 
 ### 13.6 CI
 
-GitHub Actions, on push and pull request:
+GitHub Actions, on every pull request and on every push to `main` or to a
+`v*` tag (a push to any other branch is checked by its pull request, not
+twice):
 
 | Job | What |
 |---|---|

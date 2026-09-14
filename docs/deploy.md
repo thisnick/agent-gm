@@ -40,7 +40,9 @@ clients use is the one configured, not one derived from a `Host` header.
 ghcr.io/thisnick/agent-gm
 ```
 
-Built by CI from [`../Dockerfile`](../Dockerfile) on every push. Two stages:
+Built by CI from [`../Dockerfile`](../Dockerfile) on every pull request and
+every push to `main`; only a push to `main` or to a version tag publishes it.
+Two stages:
 `golang:1.27` builds, and the runtime is
 `gcr.io/distroless/static-debian12:nonroot` — no libc, no shell, no package
 manager, no `curl`. That is possible because `CGO_ENABLED=0` and the SQLite
