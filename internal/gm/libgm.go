@@ -775,7 +775,7 @@ func (b *LibGM) rawDownload(ctx context.Context, mediaID string, key []byte) ([]
 			done <- result{nil, err}
 			return
 		}
-		defer stream.Close()
+		defer func() { _ = stream.Close() }()
 		data, err := io.ReadAll(stream)
 		done <- result{data, err}
 	}()
