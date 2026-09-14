@@ -1,5 +1,12 @@
 # @agent-gm/cli
 
+## 1.3.3
+
+### Patch Changes
+
+- d1a0317: Run CI on pull requests and on pushes to `main` and to version tags only. A push to any other branch started a second run of every job beside the pull request's own — the same commit, the same verdict, twice the runners — so the branch push trigger is gone and the pull request run is the one that counts. `main` keeps its push run because `version.yml` waits on it before cutting a tag and `release.yml` requires it green before publishing, and a `v*` tag keeps its run because that is what builds the image `release.yml` waits for.
+- 88765f7: Bump the pinned mautrix-gmessages (libgm) dependency from b0d61b4 to d7b1aaf, carrying the maintained background-session patch forward. Upstream adds nil-receiver guards to the public Client methods, streams attachment downloads instead of buffering them, caps avatar downloads at 5 MiB, and takes the whole ListConversationsRequest; Agent GM adapts its two call sites and keeps the []byte Download contract. ConfigVersion is unchanged and still stale against Google, so conversation creation stays exposed until upstream publishes a newer one.
+
 ## 1.3.2
 
 ### Patch Changes
