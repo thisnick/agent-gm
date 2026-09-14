@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -379,7 +380,10 @@ func copyCookies(in map[string]string) map[string]string {
 // sends BUGLE_ANNOTATION and later calls BUGLE_MESSAGE, and the flag lives on
 // the Client, of which there is one per account (spec section 3.7).
 func (b *LibGM) rawListConversations(ctx context.Context, folder Folder, count int) ([]Conversation, error) {
-	resp, err := b.client.ListConversations(ctx, count, gmproto.ListConversationsRequest_Folder(folder))
+	resp, err := b.client.ListConversations(ctx, &gmproto.ListConversationsRequest{
+		Count:  int64(count),
+		Folder: gmproto.ListConversationsRequest_Folder(folder),
+	})
 	if err != nil {
 		return nil, Classify(translateError(err))
 	}
@@ -766,7 +770,13 @@ func (b *LibGM) rawDownload(ctx context.Context, mediaID string, key []byte) ([]
 	}
 	done := make(chan result, 1)
 	go func() {
-		data, err := b.client.DownloadMedia(mediaID, key)
+		stream, err := b.client.DownloadMedia(mediaID, key)
+		if err != nil {
+			done <- result{nil, err}
+			return
+		}
+		defer func() { _ = stream.Close() }()
+		data, err := io.ReadAll(stream)
 		done <- result{data, err}
 	}()
 	select {

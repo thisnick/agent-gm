@@ -214,14 +214,7 @@ func TestLiveSendToTheApprovedDirectNumber(t *testing.T) {
 	}
 	// The target is never in question: this is the conversation whose only
 	// other participant is the approved direct number.
-	for _, p := range conv.Participants {
-		if p.IsMe || p.PhoneE164 == "" {
-			continue
-		}
-		if !sameNumber(p.PhoneE164, numbers.Direct) {
-			t.Fatalf("the conversation has a participant that is not the approved number; refusing to send")
-		}
-	}
+	refuseUnlessOnlyApproved(t, conv, numbers.Direct)
 
 	tmpID := gm.GenerateTmpID()
 	res, err := a.Backend.SendText(ctx, gm.SendTextRequest{
@@ -387,6 +380,35 @@ func waitForEcho(t *testing.T, ctx context.Context, a *accounts.Account, tmpID s
 	}
 	t.Fatalf("no echo carrying tmp_id %s within %s", tmpID, within)
 	return gm.Message{}
+}
+
+// refuseUnlessOnlyApproved fails the test unless every participant other than
+// the owner is the approved number. Google Messages lists the owner's own
+// number a second time on some threads as a hidden, non-"me" participant
+// (seen live on 2026-09-14); that entry is the paired phone itself, not a
+// third party, so it is allowed through only when it is hidden AND carries
+// the same number as the "me" participant.
+func refuseUnlessOnlyApproved(t *testing.T, conv gm.Conversation, approved string) {
+	t.Helper()
+	var own string
+	for _, p := range conv.Participants {
+		if p.IsMe {
+			own = p.PhoneE164
+		}
+	}
+	for _, p := range conv.Participants {
+		if p.IsMe || p.PhoneE164 == "" {
+			continue
+		}
+		if sameNumber(p.PhoneE164, approved) {
+			continue
+		}
+		if !p.IsVisible && own != "" && sameNumber(p.PhoneE164, own) {
+			t.Logf("ignoring hidden participant %s carrying the owner's own number", p.SourceID)
+			continue
+		}
+		t.Fatalf("the conversation has a participant that is not the approved number; refusing to send")
+	}
 }
 
 // sameNumber compares two numbers by their digits, so formatting differences

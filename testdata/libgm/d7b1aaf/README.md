@@ -11,6 +11,6 @@ anything from a session file goes in one.
 
 Slice 1 adds none. The assertions of spec section 13.4 read the pinned
 upstream tree directly -- `devbox run fixture-validation` clones
-mautrix-gmessages at `b0d61b4` and runs `internal/upstream` against it -- so
+mautrix-gmessages at `d7b1aaf` and runs `internal/upstream` against it -- so
 there is nothing here yet for them to consume. Later slices that need a
 recorded `gmproto` payload put it here.

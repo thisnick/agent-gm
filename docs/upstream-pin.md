@@ -9,7 +9,7 @@ page is the record they write to.
 
 | Dependency | Pinned | Why this one | Bumped on |
 |---|---|---|---|
-| `go.mau.fi/mautrix-gmessages` (`pkg/libgm`) | `b0d61b4e1a4e94f0d5e6fedd43cadb80bd0a9e51` (`b0d61b4`), `ConfigVersion` 2026.9.2 (unchanged) | The Google Messages client library. Its `ConfigVersion` must be current enough for Google to accept conversation creation | `be48a58` → `b0d61b4`, live gate passed; see Bumps below |
+| `go.mau.fi/mautrix-gmessages` (`pkg/libgm`) | `d7b1aaf69303163c7b96eb646f4b2f2a81daf8e2` (`d7b1aaf`), `ConfigVersion` 2026.9.2 (unchanged) | The Google Messages client library. Its `ConfigVersion` must be current enough for Google to accept conversation creation | `b0d61b4` → `d7b1aaf`, live gate passed 2026-09-14; see Bumps below |
 | `github.com/modelcontextprotocol/go-sdk` | `v1.7.0` | The MCP protocol layer. It decides the JSON-RPC framing, the `WWW-Authenticate` challenge on `/mcp` and the RFC 9728 handler | initial pin, `v1.0.0` |
 | Node | `22` (`devbox.json`, and `actions/setup-node` in `release.yml`) | Runs the `@agent-gm/cli` postinstall shim and packs the npm tarball | initial pin, `v1.0.0` |
 | npm | `>= 11.5.1`, installed into a scratch prefix by `release.yml` and passed to `scripts/release.sh` as `AGENT_GM_NPM` | Trusted publishing (OIDC) is not implemented before 11.5.1: an older npm publishes unauthenticated and the registry answers `404`. Node 22 ships npm 10 | `v1.0.1` |
@@ -65,6 +65,143 @@ without cloning anything:
 A bump with no entry here is a bump nobody can review later.
 
 ## Bumps
+
+## `libgm` b0d61b4 → d7b1aaf (unreleased)
+
+Eight upstream commits, all by the upstream maintainer on 2026-09-11 and
+2026-09-14: `a894267` (`.github` only), `40b0f43` (`pkg/connector/login.go`
+only), `6ce6b49` streaming downloads, `10110fd` full `ListConversationsRequest`,
+`612eadb` empty phone in `DeleteConversation`, `f4089e7` (connector only),
+`e6cc299` long-poll timeout logs, `d7b1aaf` nil safety on public methods.
+
+- **`ConfigVersion`**: 2026.9.2 → 2026.9.2 (unchanged; still stale against
+  Google's live version, 2026.9.10 at the gate below, so §3.6 D3 still
+  applies to conversation creation).
+- **Symbols in spec §3.1 that changed**:
+  - `methods.go`: `ListConversations(ctx, count int, folder)` became
+    `ListConversations(ctx, req *gmproto.ListConversationsRequest)`. Agent GM's
+    one call site (`internal/gm/libgm.go`, `rawListConversations`) now builds
+    `&gmproto.ListConversationsRequest{Count, Folder}`; the
+    `conversationsFetchedOnce` behaviour (§3.7) is unchanged.
+  - `media.go`: `DownloadMedia(mediaID, key)` returns `io.ReadCloser` instead
+    of `[]byte` — a streaming AES-GCM decryptor (`crypto.AESGCMDecryptStream`,
+    new file `crypto/aesgcmstream.go`) over the HTTP body, decrypting chunk by
+    chunk with a 4 MiB chunk ceiling. Agent GM's one call site (`rawDownload`)
+    drains it with `io.ReadAll` inside the existing goroutine and closes it, so
+    `Backend.Download` still returns `[]byte` and the media cache is unchanged.
+  - `media.go`: `DownloadAvatar` keeps its signature but is now capped at
+    5 MiB by `http.MaxBytesReader`; a larger avatar fails the read instead of
+    being buffered.
+  - `methods.go`: `DeleteConversation` now sends `Phone` only when non-empty
+    (`ptr.NonZero`). Agent GM always passes a phone, so no observable change.
+  - `client.go` and friends: every public method on a nil `*Client` (and
+    `ResetSessionID`/`buildMessage` on a nil `*SessionHandler`) now returns
+    `ErrClientIsNil` or no-ops instead of panicking; `getSessionHandler()` is
+    the nil-safe accessor `methods.go` uses. Agent GM never holds a nil client,
+    so this is defensive only. `triggerEvent` takes `any` instead of
+    `interface{}` (identical type).
+  - Nothing else in §3.1 moved; `NewClient`, `Connect`, `ConnectBackground`,
+    `Reconnect`, pairing and every RPC wrapper keep their `b0d61b4` signatures.
+- **Delivery-state and event vocabulary**: none. No `.proto` file changed.
+- **Wire behaviour that changed**: none on the Google side. Downloads now
+  decrypt as the body streams rather than after `io.ReadAll`; the request
+  headers and URL are the same. The foreground long-poll read timeout
+  (`e6cc299`) only adds `last_read_start`/`last_read` to the warning it
+  already logged.
+- **`go.mod` in the nested module**: `go.mau.fi/util` `eb612d93` → `8d876c16`
+  (for `ptr.NonZero`), `maunium.net/go/mautrix` `4ed72472` → `e984191a`
+  (connector-only, not compiled here), and `gabriel-vasile/mimetype` dropped
+  as a direct requirement. The root `go.mod` follows `go.mau.fi/util`; the
+  `replace` and the local import of the patched tree are unchanged.
+- **`pkg/connector`** (not vendored): `handlegmessages.go` streams downloads
+  into Matrix uploads, `chatsync.go` dispatches `GMChatResync` asynchronously,
+  `login.go` fixes the override-login context. None of it is behaviour Agent
+  GM mirrors.
+- **Interaction with the maintained patch**
+  (`third_party/mautrix-gmessages/AGENT_GM_PATCHES.md`): nothing retired,
+  nothing added. Every hunk applied cleanly against the pristine `d7b1aaf`
+  tree except `readLongPoll`, where upstream's `lastRead`/`lastReadStart`
+  timestamps land inside the function the patch rewrites; that hunk was
+  merged by hand and both sides are kept. The patch file was regenerated from
+  pristine `d7b1aaf`, reconstructs the committed tree exactly, and now carries
+  18 hunks (was 17: the timestamps split one `readLongPoll` hunk in two).
+- **Race suppressions** (`scripts/race-suppressions.txt`): re-audited. Upstream
+  added no locking around `skipCount`, `longPollingConn`, `listenID` or
+  `disconnecting`, and the four suppressed frames (`postConnect`,
+  `HandleRPCMsg`, `closeLongPolling`, `doLongPoll`) still exist and still
+  perform the accesses; every entry stays.
+- **Gate**, automated: `go build ./...` and `go vet ./...` are clean at the
+  root and in the nested module; `CGO_ENABLED=1 go test ./... -race -count=1`
+  passes at the root and `CGO_ENABLED=1 go test ./pkg/libgm -race -count=1`
+  in the nested module (`TestPassiveCancellationNeverClaimsActiveSession`
+  among them); `pin-consistency`, `fixture-validation` (the §13.4 assertions
+  against a fresh clone of `d7b1aaf`, with the two signature strings above
+  updated), `lint-names`, `no-real-numbers`, `no-deployment-host` and
+  `changeset-check` pass, as does `conformance` against
+  `scripts/mcp-conformance-baseline.yaml` in both directions. The old-base
+  reconstruction check in the patch guide was run first and matched pristine
+  `b0d61b4` exactly.
+- **Live gate** (spec §3.6(d), §13.3), run by the coordinator on 2026-09-14
+  against the real paired account from this branch at `59f4ab6` plus the two
+  test-harness changes below, with the deployment stopped so the gate owned
+  the session and a copy of the data directory taken first; every test with
+  `-race` and the suppression list:
+  - **list** — the approved direct conversation is in
+    `ListConversations(FolderInbox)` through the new request struct and
+    ingests to a `conv_` ID.
+  - **send one text** — `SendText` returned `SUCCESS`; the echo carried the
+    sent `TmpID`, then `sending` and `sent`; confirmed in the receiving
+    handset's SMS thread.
+  - **receive a reply** — the inbound text from the approved number arrived
+    inside the ten-second window with the right direction and sender.
+  - **session reload** — the account reloaded from its session file and
+    reached `connected` without re-pairing.
+  - **ConfigVersion and default SMS app** — `config_version_compiled`
+    2026.9.2.4.6 against `config_version_live` **2026.9.10.4.6** (Google moved
+    from 2026.9.9 since the last gate), so `stale=true`; `is_default_sms_app=true`.
+    Upstream `d7b1aaf` is upstream `HEAD` and still carries 2026.9.2, so
+    conversation *creation* stays exposed to `google_undocumented_status` (D3).
+  - **media download** (the path this bump rewrote) — every attachment in the
+    approved direct conversation(s), eight files from 5 KB to 2.4 MB, PNG and
+    a HEIF that Google serves as a JPEG, downloaded through the streaming
+    decryptor. **The same test run from the `b0d61b4` checkout against the
+    same data produced byte-identical files** (`cmp` on all of them), so the
+    chunked `AESGCMDecryptStream` reproduces the old `io.ReadAll`-then-decrypt
+    output exactly, including across chunk boundaries. Note for anyone
+    reading the store: Google declares the *original* size on an attachment
+    it has transcoded, so `size_bytes` can be smaller than the download;
+    that predates this bump.
+  - **media send** — `Upload` of a 5 KB PNG, an immediate `Download` of the
+    fresh upload (identical bytes), `SendMedia` with a caption returned
+    `SUCCESS`, the echo carried the `TmpID` and one attachment, then
+    `sending` and `sent`; the attachment, downloaded after it was listed, is
+    identical to the uploaded file. Two observations: the phone answers
+    `FAILURE_3` to the header-only `tinyJPEG` the Slice 2 gate uses through
+    the server, so this leg sends a real image; and the `sent` echo does not
+    yet carry the media id and key, which appear once the message is listed.
+  - **Harness changes made to run it**, both in `internal/livegate`: the send
+    guard (`refuseUnlessOnlyApproved`) now ignores a *hidden* participant
+    that carries the owner's own number — Google Messages lists the paired
+    phone a second time on this thread as a non-"me" participant, on both
+    pins, and the old guard refused to send; and `media_live_test.go` adds the
+    two media tests above.
+- **What the gate did not cover**: a fresh pairing, an *inbound* MMS from the
+  test phone (its automation sends SMS only; download was exercised on
+  attachments the phone had already received and on the echo of the media
+  send), the push-mode checklist, and group creation. One `openLive` connect
+  during the run timed out with `phone_not_responding` after 60 s and
+  succeeded on the next attempt; the same happened on no other of the
+  eleven connects, and the old pin was not tried at that moment, so it is
+  recorded as transient rather than attributed.
+- **Reviewer notes on the vendored tree**: upstream's `readLongPoll` now
+  writes `lastRead`/`lastReadStart` in the read loop and reads them from the
+  one-minute foreground timeout goroutine without synchronisation. That is a
+  new upstream race site that fires only when the foreground long-poll goes
+  a minute without a read, so the gate did not hit it; it is outside the four
+  suppressed frames and would fail a `-race` run that did. `DownloadMedia`
+  still does not check the HTTP status code (it never did), so a non-2xx body
+  now fails in the decryptor's header check instead of the old
+  `failed to decrypt media`.
 
 ## `libgm` be48a58 → b0d61b4 (unreleased)
 
