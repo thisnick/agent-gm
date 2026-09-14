@@ -264,6 +264,9 @@ session reload without re-pairing — run with `-race` and the suppression list
 above. That suite connects actively, so it did not cover this list's push-mode
 steps, a fresh pairing, media or group creation; see
 [`docs/upstream-pin.md`](../../docs/upstream-pin.md). The `b0d61b4` →
-`d7b1aaf` bump (2026-09-14) has passed only the automated gates so far; its
-live gate is still owed and is recorded as such there. These are historical
-observations; repeat relevant gates for every new upstream pin.
+`d7b1aaf` bump passed the same suite on 2026-09-14, plus a media leg: every
+attachment in the approved conversation downloaded byte-identical to the
+`b0d61b4` checkout, and a real media send round-tripped; see
+[`docs/upstream-pin.md`](../../docs/upstream-pin.md) for what it did not
+cover. These are historical observations; repeat relevant gates for every new
+upstream pin.
