@@ -145,8 +145,7 @@ func (d *HandlerDeps) accountsReconnect(r *Request) (*Response, error) {
 	if err != nil {
 		return nil, apierr.NotFound("account")
 	}
-	d.Supervisor.Stop(a)
-	if err := d.Supervisor.Start(r.Ctx, a); err != nil {
+	if err := d.Supervisor.Reconnect(r.Ctx, a); err != nil {
 		return nil, err
 	}
 	return &Response{Data: map[string]any{"account_id": row.ID, "reconnected": true}}, nil
@@ -362,6 +361,15 @@ func (d *HandlerDeps) accountsRefreshCookies(r *Request) (*Response, error) {
 			"those cookies belong to a different Google account than this one; nothing was changed")
 	}
 	if err := a.PersistSession(r.Ctx); err != nil {
+		return nil, err
+	}
+	// RefreshGoogleCookies validates and installs the cookies, but a running
+	// push backend's Connect is deliberately idempotent. Restart this account
+	// in-process so a signed-out state is cleared immediately and any stopped
+	// ingest, sweep and push workers are restored without restarting the
+	// server. The session is persisted first so a reconnect failure still
+	// leaves the valid replacement credentials available for the next try.
+	if err := d.Supervisor.Reconnect(r.Ctx, a); err != nil {
 		return nil, err
 	}
 	return &Response{Data: map[string]any{"account_id": row.ID, "refreshed": true}}, nil

@@ -577,6 +577,15 @@ func (s *Supervisor) Stop(a *Account) {
 	}
 }
 
+// Reconnect restarts one account's backend and workers in this process. It
+// is the account-scoped equivalent of a process restart: no session or
+// indexed data is removed, and Start performs the normal config refresh,
+// reconciliation sweep and state transition after the connection is ready.
+func (s *Supervisor) Reconnect(ctx context.Context, a *Account) error {
+	s.Stop(a)
+	return s.Start(ctx, a)
+}
+
 // StopAll persists every session and stops every account, which is what
 // graceful shutdown does.
 func (s *Supervisor) StopAll(ctx context.Context) {
