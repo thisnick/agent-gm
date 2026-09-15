@@ -16,6 +16,10 @@ tag: a tag is a label and a digest is evidence.
 
 Nothing yet.
 
+## [1.4.0] — 2026-09-15
+
+- Add owner-declared OAuth clients, for connectors that cannot register themselves. `POST /v1/admin/clients` and `agm admin clients create <client-id> --redirect <uri>` declare a public client whose id the owner chooses, which is what a connector that asks its operator to paste a client*id needs; an id beginning client* is refused, since that prefix is what /oauth/register mints. Such a client may carry --default-resource, letting it omit `resource` at /oauth/authorize, read as this server's one canonical resource. Nothing else is relaxed: the redirect rules, PKCE, the enrollment code and the owner's approval all apply unchanged, and creation writes a client.created audit row. Migration 0009 adds the two columns; existing registrations read back unchanged.
+
 ## [1.3.3] — 2026-09-14
 
 - Run CI on pull requests and on pushes to `main` and to version tags only. A push to any other branch started a second run of every job beside the pull request's own — the same commit, the same verdict, twice the runners — so the branch push trigger is gone and the pull request run is the one that counts. `main` keeps its push run because `version.yml` waits on it before cutting a tag and `release.yml` requires it green before publishing, and a `v*` tag keeps its run because that is what builds the image `release.yml` waits for.
@@ -153,7 +157,8 @@ Agent GM *is* rather than what changed.
   gate was satisfied through the public URL with Codex CLI. Adding either
   later needs no code.
 
-[Unreleased]: https://github.com/thisnick/agent-gm/compare/v1.3.3...HEAD
+[Unreleased]: https://github.com/thisnick/agent-gm/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/thisnick/agent-gm/releases/tag/v1.4.0
 [1.3.3]: https://github.com/thisnick/agent-gm/releases/tag/v1.3.3
 [1.3.2]: https://github.com/thisnick/agent-gm/releases/tag/v1.3.2
 [1.3.1]: https://github.com/thisnick/agent-gm/releases/tag/v1.3.1
