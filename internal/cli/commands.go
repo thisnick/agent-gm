@@ -531,6 +531,16 @@ var Commands = []Command{
 		Notes:       "revoking an authorization revokes every token of it, so the connector's next call is a 401.",
 	},
 	{
+		Name: "admin clients create", Routes: []string{"admin_clients_create"},
+		Supplies: map[string]string{
+			"client_id":        "positional <client-id>",
+			"name":             "--name",
+			"redirect_uris":    "--redirect",
+			"default_resource": "--default-resource",
+		},
+		Notes: "for a connector that cannot register itself. Every other client registers through DCR, and a `client_` id is refused here because that prefix is what this server mints.",
+	},
+	{
 		Name: "admin clients list", Routes: []string{"admin_clients_list"},
 		Supplies:   map[string]string{},
 		LocalFlags: map[string]string{"--all": "include expired and inactive entries"},

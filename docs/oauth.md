@@ -13,10 +13,12 @@ detail:
   owner does two separate things: issue an enrollment code, and approve the
   request that code produces. A leaked code still cannot mint anything without
   a person looking at a screen and saying yes.
-- **Client resolution is DCR-only.** There is no preregistered client
-  table, no Client ID Metadata Document fetch, and therefore **no outbound
-  HTTP from the OAuth layer at all** — which removes the SSRF surface rather
-  than defending it. Every client this server will ever see registers itself.
+- **A client either registers itself, or the owner declares it.** There is no
+  Client ID Metadata Document fetch and therefore **no outbound HTTP from the
+  OAuth layer at all** — which removes the SSRF surface rather than defending
+  it. Dynamic registration is how every ordinary client arrives; an
+  owner-declared client, created with `agm admin clients create`, is the
+  exception for a connector that cannot register itself.
 - **Nothing stores a credential value.** Enrollment codes, authorization
   codes, access tokens, refresh tokens and the two browser secrets all reach
   the database as hashes. There is no column that could hold a plaintext one.
@@ -180,6 +182,55 @@ bind an authorization to the client that started it.
   ignoring it would leave the client believing it registered an ID it did not
   get, and the first authorization would fail naming a client nobody has heard
   of.
+
+## Owner-declared clients
+
+Some connectors do not implement RFC 7591. They ask their operator to paste a
+`client_id` and then go straight to `/oauth/authorize` with it, which this
+server answers `invalid_client` / `unknown client_id`, because no such
+registration exists. `POST /v1/admin/clients`, `admin` only, is how the owner
+declares one:
+
+```bash
+agm admin clients create muse \
+  --redirect https://example.test/api/oauth/callback \
+  --name "Example connector" --default-resource
+```
+
+- The owner chooses the id. An id beginning `client_` is refused, because that
+  prefix is what `/oauth/register` mints and the two kinds should stay
+  distinguishable on sight. Otherwise it is letters, digits and `-`, `_`, `.`,
+  at most 128 characters.
+- **The redirect rules are the same ones above.** Nothing is relaxed.
+- The row is created already activated and with no expiry, so the 24-hour
+  sweep never touches it. That sweep exists to clear registrations nobody
+  completed; the owner completed this one by typing it.
+- It does not count against the 20-per-source-per-hour registration budget,
+  which bounds what an unknown caller can create at `/oauth/register`.
+- A duplicate id is `invalid_request`, not an update. To change a redirect,
+  revoke and re-declare — revoking takes the authorizations with it, which a
+  silent update would leave pointing at a callback nobody reviewed.
+- Creating one writes a `client.created` audit row. Dynamic registration
+  writes none, because anyone may register and the row is its own record;
+  an owner declaring a client is an administrative act.
+
+**`--default-resource` is the only other thing being owner-declared buys.**
+With it, an authorization request from that client may omit `resource`, and
+the omission is read as this server's one canonical resource. It is a
+relaxation of RFC 8707 §2.1's MUST, granted per client and never by default,
+because a connector that cannot register itself usually cannot be told to send
+the parameter either. It is safe for the reason the token endpoint already
+relies on: this server has exactly one audience, so there is no second
+resource an omission could mean. The defaulted value is bound into the signed
+context, the authorization code and the token exactly as a sent one would be.
+
+**What it does not buy.** An owner-declared `client_id` is guessable in a way
+a minted UUID is not, and that is deliberate — it has to be typed into another
+product's settings screen. It is worth nothing on its own: PKCE still binds the
+exchange, the redirect must still match a registered one, and the client still
+gets no token until the owner issues an enrollment code and approves the
+request. Anyone can *start* an authorization naming `muse`; they cannot finish
+one.
 
 ### Redirect URIs
 

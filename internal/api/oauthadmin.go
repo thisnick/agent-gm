@@ -344,6 +344,41 @@ func (d *HandlerDeps) adminAuthorizationsRevoke(r *Request) (*Response, error) {
 	}}, nil
 }
 
+// staticClientBody is POST /v1/admin/clients: an owner-declared client, for a
+// connector that cannot register itself. Every field is validated in
+// internal/oauth, not here.
+type staticClientBody struct {
+	ClientID        string   `json:"client_id"`
+	Name            string   `json:"name"`
+	RedirectURIs    []string `json:"redirect_uris"`
+	DefaultResource bool     `json:"default_resource"`
+}
+
+func (d *HandlerDeps) adminClientsCreate(r *Request) (*Response, error) {
+	srv, aerr := d.oauthServer()
+	if aerr != nil {
+		return nil, aerr
+	}
+	var body staticClientBody
+	if e := r.DecodeBody(&body); e != nil {
+		return nil, e
+	}
+	client, cerr := srv.CreateStaticClient(r.Ctx, oauth.StaticClientRequest{
+		ClientID:        body.ClientID,
+		Name:            body.Name,
+		RedirectURIs:    body.RedirectURIs,
+		DefaultResource: body.DefaultResource,
+	}, r.Source)
+	if cerr != nil {
+		return nil, cerr
+	}
+	d.writeAudit(r.Ctx, audit.Event{Kind: audit.KindClientCreated, Result: "ok", Payload: map[string]any{
+		"client_id":        client.ID,
+		"default_resource": client.DefaultResource,
+	}})
+	return &Response{Data: client}, nil
+}
+
 func (d *HandlerDeps) adminClientsList(r *Request) (*Response, error) {
 	srv, aerr := d.oauthServer()
 	if aerr != nil {

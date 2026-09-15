@@ -85,6 +85,8 @@ func invocationFor(t *testing.T, name string) (args []string, stdin string) {
 		"admin authorizations show":   {"admin", "authorizations", "show", "auth_01k4zb"},
 		"admin authorizations revoke": {"admin", "authorizations", "revoke", "auth_01k4zb", "--yes"},
 
+		"admin clients create": {"admin", "clients", "create", "a-declared-client",
+			"--redirect", "https://connector.example.test/cb"},
 		"admin clients list":   {"admin", "clients", "list"},
 		"admin clients show":   {"admin", "clients", "show", "client_01k4zc"},
 		"admin clients revoke": {"admin", "clients", "revoke", "client_01k4zc", "--yes"},

@@ -464,6 +464,7 @@ agm admin authorization-requests deny <authreq-id> [--reason <text>]
 agm admin authorizations list [--include-revoked]
 agm admin authorizations show <auth-id>
 agm admin authorizations revoke <auth-id> [--reason <text>] [--yes]
+agm admin clients create <client-id> --redirect <uri> [--name <text>] [--default-resource]
 agm admin clients list [--all]
 agm admin clients show <client-id>
 agm admin clients revoke <client-id> [--reason <text>] [--yes]
@@ -502,6 +503,18 @@ approval that could widen it would grant access the screen never described.
 once, so the client's next call is a `401` and it cannot refresh its way back.
 `agm admin clients revoke` goes further and removes the registration too, after
 revoking every authorization it holds.
+
+`agm admin clients create` is the one command that brings a client into
+existence without the client asking. It is for a connector that cannot
+register itself — one that asks its operator to paste a `client_id` instead of
+fetching this server's metadata and calling `/oauth/register`. The owner
+chooses the id, so an id beginning `client_` is refused: that prefix is what
+this server mints. Several callbacks are one space-separated `--redirect`
+value, and `--default-resource` lets that client omit `resource` at
+`/oauth/authorize`, which the same kind of connector usually also omits.
+Nothing else is relaxed: the redirect must still match exactly, and the client
+still gets nothing until the owner issues an enrollment code and approves the
+request it raises.
 
 `agm completion bash|zsh|fish` and `agm version` drive no route and are not
 listed above. `agm version` prints the release version and the **source

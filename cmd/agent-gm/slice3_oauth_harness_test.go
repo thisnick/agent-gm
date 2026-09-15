@@ -363,6 +363,10 @@ type authorizeParams struct {
 	Scope       string
 	Method      string
 	NoMethod    bool
+	// NoResource omits `resource` entirely, which is what a connector that
+	// cannot register itself generally sends. An owner-declared client
+	// marked default_resource is the only kind for which that is accepted.
+	NoResource bool
 }
 
 func (p authorizeParams) query(h *oauthHarness) string {
@@ -381,11 +385,13 @@ func (p authorizeParams) query(h *oauthHarness) string {
 		}
 		q.Set("code_challenge_method", method)
 	}
-	resource := p.Resource
-	if resource == "" {
-		resource = oauthTestIssuer + "/mcp"
+	if !p.NoResource {
+		resource := p.Resource
+		if resource == "" {
+			resource = oauthTestIssuer + "/mcp"
+		}
+		q.Set("resource", resource)
 	}
-	q.Set("resource", resource)
 	if p.Scope != "" {
 		q.Set("scope", p.Scope)
 	}

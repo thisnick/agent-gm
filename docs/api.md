@@ -400,9 +400,10 @@ during backfill is not read as an absent message.
 | `GET` | `/v1/admin/authorizations` | `admin` | query `include_revoked` | Every credential this server has issued, admin bootstrap and OAuth alike. No token and no hash appears |
 | `GET` | `/v1/admin/authorizations/{authorization_id}` | `admin` | — | One authorization |
 | `DELETE` | `/v1/admin/authorizations/{authorization_id}` | `admin` | query `reason` | Revokes it and **every token of it**, so the client's next call is `401` and it cannot refresh its way back |
-| `GET` | `/v1/admin/clients` | `admin` | — | Every dynamic registration. There is no `client_secret` anywhere: public native clients only |
+| `POST` | `/v1/admin/clients` | `admin` | body `client_id`, `name`, `redirect_uris`, `default_resource` | Declares a client that **cannot register itself**. The owner chooses `client_id`, so an id beginning `client_` is refused: that prefix belongs to registrations this server mints. `default_resource` lets this one client omit `resource` at `/oauth/authorize`. A duplicate id is `invalid_request` rather than an update — revoke and re-declare, so the authorizations the old row held go with it |
+| `GET` | `/v1/admin/clients` | `admin` | — | Every registration, owner-declared and dynamic alike. There is no `client_secret` anywhere: public native clients only |
 | `GET` | `/v1/admin/clients/{client_id}` | `admin` | — | One registration |
-| `DELETE` | `/v1/admin/clients/{client_id}` | `admin` | query `reason` | Removes the registration **and** revokes every authorization it holds. Removing the row alone would leave live tokens behind |
+| `DELETE` | `/v1/admin/clients/{client_id}` | `admin` | query `reason` | Removes the registration, owner-declared or dynamic, **and** revokes every authorization it holds. Removing the row alone would leave live tokens behind |
 
 <!-- route-inventory:end -->
 

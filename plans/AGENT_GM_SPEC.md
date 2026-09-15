@@ -3141,13 +3141,55 @@ exactly.
 > problem the allowance solves. `agm auth login` registers
 > `http://127.0.0.1:<port>/callback`.
 
-**Client resolution is DCR-only.** Agent MX resolved a client through three
-tiers — preregistered metadata, a fetched Client ID Metadata Document, then
-DCR — with an SSRF-safe outbound fetcher behind it. Agent GM keeps only DCR
-(D20). There is no `AGENT_GM_OAUTH_CLIENTS`, no CIMD fetch, and therefore no
-outbound HTTP from the OAuth layer at all, which removes the SSRF surface
-rather than defending it. Every client this server will ever see registers
-itself.
+**No Client ID Metadata Document, ever.** Agent MX resolved a client through
+three tiers — preregistered metadata, a fetched CIMD, then DCR — with an
+SSRF-safe outbound fetcher behind it. Agent GM drops the middle tier
+permanently: there is no CIMD fetch and therefore no outbound HTTP from the
+OAuth layer at all, which removes the SSRF surface rather than defending it
+(D20).
+
+**A client comes to exist in exactly two ways**, and there is no third:
+
+1. **It registers itself** at `POST /oauth/register`, above. This is how every
+   ordinary client arrives, and the `client_id` is minted here.
+2. **The owner declares it** at `POST /v1/admin/clients`, `admin`-scoped. This
+   is for a connector that does not implement RFC 7591 — one that asks its
+   operator to paste a `client_id` and then calls `/oauth/authorize` with it.
+
+#### Owner-declared clients
+
+The owner chooses the `client_id`. An id beginning `client_` is refused,
+because that prefix is what `/oauth/register` mints and the two kinds must stay
+distinguishable on sight; otherwise it is letters, digits and `-`, `_`, `.`, at
+most 128 characters. The redirect URI rules of this section apply unchanged.
+
+An owner-declared row is created already activated and with no expiry, so the
+24-hour sweep never touches it — that sweep clears registrations nobody
+completed, and the owner completed this one by typing it. It does not count
+against the 20-per-source-per-hour budget, which bounds what an unknown caller
+can create at `/oauth/register`. A duplicate id is `invalid_request` rather
+than an update: changing a redirect means revoke and re-declare, so the
+authorizations the old row held are revoked with it. Creation writes a
+`client.created` audit row; dynamic registration writes none, because anyone
+may register and the row is its own record.
+
+**`default_resource`.** An owner-declared client may be marked to omit
+`resource` at `/oauth/authorize`, the omission then being read as this server's
+canonical resource. This is a relaxation of RFC 8707 §2.1's MUST, granted per
+client and never by default, because a connector that cannot register itself
+usually cannot be told to send the parameter either. It is sound for the reason
+`/oauth/token` already relies on (§9.6): this server has exactly one audience,
+so there is no second resource an omission could denote. The defaulted value is
+written into the signed context before it is built, so the form echo, the
+authorization code and the issued token are bound to the canonical resource
+exactly as a client-sent value would be.
+
+**What being owner-declared does not buy.** The `client_id` is guessable, which
+is inherent — it is typed into another product's settings screen. Nothing else
+is relaxed: PKCE binds the exchange, the presented redirect must match a
+registered one, and no token is issued until the owner issues an enrollment
+code and approves the request (§9.4, §9.5). Starting an authorization that
+names a declared client is possible for anyone; finishing one is not.
 
 ### 9.4 Authorization
 
@@ -5623,7 +5665,7 @@ add missing tools to `devbox.json` rather than installing on the host.
 | D17 | The npm package is a downloading wrapper, not a bundle | Six platform binaries in one tarball is 100 MB+ for a CLI. Checksums are pinned into the tarball so a compromised release page cannot re-target an old version |
 | D18 | The interface-layering rubric is reduced to one axis | With no Matrix and no second provider, axes A and B are meaningless |
 | **D19** | **The Google-account (gaia) flow is the only pairing path.** `agm pair` launches system Chrome with a dedicated profile, reads the seven cookies over CDP, starts gaia pairing and prints the emoji; `agm pair --paste` is the fallback. **QR pairing is removed: Google Messages no longer supports it.** Owner decision, 2026-09-06 | Google withdrew the QR device-pairing option, so there is nothing to choose between. Corroborating the withdrawal from the pinned tree: `events.QR` exists at `events/qr.go:7` but has **zero emitters** at `be48a58`, and the QR payload was only ever a return value of `StartLogin`/`RefreshPhoneRelay` — the reviewer's F-3, which flagged that Agent GM would have waited on an event that never fires. Consequence, stated wherever it matters (§3.2, §11.4, §12.1, §15.2): each account's session file holds **live Google account cookies** for the life of the pairing (`http.go:58`, `client.go:73-81,407`) — the whole Google account, not a scoped token. There is no lower-privilege alternative to plan for, only handling rules to follow. Cookie expiry does **not** force a re-pair (`connector/login.go:246-289`), which is what makes a single flow sustainable |
-| **D20** | **OAuth client resolution is DCR-only** | Agent MX had three tiers — preregistered, Client ID Metadata Document, DCR — and an SSRF-safe outbound fetcher to support the middle one. Dropping CIMD removes all outbound HTTP from the OAuth layer, which eliminates the SSRF surface rather than defending it. Every client this server will see registers itself |
+| **D20** | **OAuth client resolution is DCR plus owner-declared clients; no Client ID Metadata Document, ever.** Amended 2026-09-15; the original decision was DCR-only | Agent MX had three tiers — preregistered, Client ID Metadata Document, DCR — and an SSRF-safe outbound fetcher to support the middle one. Dropping CIMD removes all outbound HTTP from the OAuth layer, which eliminates the SSRF surface rather than defending it, and **that half is permanent**. The original also dropped preregistration, on the premise that every client registers itself. A real connector falsified the premise: it asks its operator to paste a `client_id` and never calls `/oauth/register`, so it could not connect at all. Refusing it bought nothing, because an owner-declared client is still a public client bound by PKCE, an exact registered redirect, an enrollment code and the owner's approval — the guessability of its id is worth nothing against those. So preregistration returns as `POST /v1/admin/clients`: `admin`-scoped, owner-created only, never self-service, and with no outbound fetch anywhere near it. §9.3 records both ways a client comes to exist |
 | **D21** | **`conv_` is the conversation prefix** | Agent MX retired `conv_` for `room_` because a conversation there was a *facet of a Matrix room*. Here there is no room and a conversation is the primary noun, so `conv_` is simply correct. This is a reversal of an Agent MX decision, recorded so it is not read as an oversight |
 | **D22** | **`tmp_id` is a bare UUID, not the operation ID** | `util.GenerateTmpID()` is `uuid.NewString()` with the comment *"Matches what the native app does"* (`util/func.go:9-12`). A prefixed opaque ID would diverge from every other client of this protocol for no benefit |
 | **D23** | **One reaction per person per message** | Google's picker is single-select and `SendReactionRequest_SWITCH` exists precisely to replace (`gmproto/client.proto:305-317`). A schema permitting several would be modelling something Google does not do |

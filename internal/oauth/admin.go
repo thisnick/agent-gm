@@ -522,6 +522,12 @@ type Client struct {
 	ActivatedAt  *string  `json:"activated_at"`
 	ExpiresAt    *string  `json:"expires_at"`
 	CreatedAt    *string  `json:"created_at"`
+	// Static is true for an owner-declared client. It is reported rather
+	// than inferred from the id's shape, because an owner reading this
+	// listing is entitled to know which rows they created themselves.
+	Static bool `json:"static"`
+	// DefaultResource is the one relaxation being owner-declared buys.
+	DefaultResource bool `json:"default_resource"`
 }
 
 func clientDTO(c store.OAuthClient) Client {
@@ -534,7 +540,128 @@ func clientDTO(c store.OAuthClient) Client {
 		ActivatedAt:  msTime(c.ActivatedAtMS),
 		ExpiresAt:    msTime(c.ExpiresAtMS),
 		CreatedAt:    msTime(c.CreatedAtMS),
+
+		Static:          c.Static,
+		DefaultResource: c.DefaultResource,
 	}
+}
+
+// MaxStaticClientIDLength bounds an owner-chosen `client_id`.
+const MaxStaticClientIDLength = 128
+
+// StaticClientRequest is POST /v1/admin/clients.
+type StaticClientRequest struct {
+	ClientID        string
+	Name            string
+	RedirectURIs    []string
+	DefaultResource bool
+}
+
+// validStaticClientID accepts letters, digits, and `-`, `_`, `.` and nothing
+// else. The id travels in a query string and is echoed into an HTML form, so
+// the safe move is a closed charset rather than an escaping argument.
+func validStaticClientID(id string) bool {
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '-', r == '_', r == '.':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// CreateStaticClient declares a client the owner names, for a connector that
+// cannot register itself (spec section 9.3).
+//
+// It is the ONE way a client_id comes into existence without the client
+// asking for it, and it is `admin`-scoped: there is no self-service here and
+// no public route that reaches this function. What being owner-declared buys
+// is exactly two things -- an id the owner chooses, and the option to omit
+// `resource` -- and nothing else is relaxed. The redirect rules, PKCE, the
+// enrollment code and the owner's approval all apply unchanged, which is what
+// keeps a guessable id like `muse` from being worth anything on its own.
+func (s *Server) CreateStaticClient(ctx context.Context, req StaticClientRequest, source string) (*Client, *apierr.Error) {
+	id := strings.TrimSpace(req.ClientID)
+	switch {
+	case id == "":
+		return nil, invalidRequest("client_id", "an owner-declared client needs a client_id")
+	case len(id) > MaxStaticClientIDLength:
+		return nil, invalidRequest("client_id",
+			"a client_id may be at most 128 characters")
+	case !validStaticClientID(id):
+		return nil, invalidRequest("client_id",
+			"a client_id may use only letters, digits, and - _ .")
+	case strings.HasPrefix(id, store.PrefixClient):
+		// The prefix is what this server mints at /oauth/register. Letting an
+		// owner take one would make a dynamically registered id and a
+		// declared id indistinguishable to everyone who reads them.
+		return nil, invalidRequest("client_id",
+			"the client_ prefix is reserved for registrations this server mints")
+	}
+
+	if len(req.RedirectURIs) == 0 {
+		return nil, invalidRequest("redirect_uris", "at least one redirect URI is required")
+	}
+	if len(req.RedirectURIs) > MaxRedirectURIs {
+		return nil, invalidRequest("redirect_uris", "at most 10 redirect URIs may be registered")
+	}
+	for _, uri := range req.RedirectURIs {
+		if err := ValidateRedirectURI(uri); err != nil {
+			return nil, invalidRequest("redirect_uris", err.Error())
+		}
+	}
+
+	// A duplicate is refused rather than silently updated: an owner who meant
+	// to change a redirect should revoke and re-declare, so that the
+	// authorizations the old row held are revoked with it.
+	if _, err := s.st.OAuthClientByID(ctx, id); err == nil {
+		return nil, invalidRequest("client_id", "a client with this id already exists")
+	} else if !errors.Is(err, store.ErrClientNotFound) {
+		return nil, apierr.New(apierr.CodeInternalError, "the registration could not be read")
+	}
+
+	now := s.now()
+	client := store.OAuthClient{
+		ID:                      id,
+		Name:                    req.Name,
+		RedirectURIs:            req.RedirectURIs,
+		GrantTypes:              []string{"authorization_code", "refresh_token"},
+		ResponseTypes:           []string{"code"},
+		TokenEndpointAuthMethod: "none",
+		MetadataJSON: mustJSON(map[string]any{
+			"client_id":                  id,
+			"client_name":                req.Name,
+			"redirect_uris":              req.RedirectURIs,
+			"grant_types":                []string{"authorization_code", "refresh_token"},
+			"response_types":             []string{"code"},
+			"token_endpoint_auth_method": "none",
+		}),
+		Source:          source,
+		Static:          true,
+		DefaultResource: req.DefaultResource,
+		// Activated at creation, and with no expiry. The 24-hour sweep exists
+		// to clear registrations nobody ever completed; the owner completed
+		// this one by typing it.
+		ActivatedAtMS: now.UnixMilli(),
+		CreatedAtMS:   now.UnixMilli(),
+	}
+	if err := s.st.AuthzTx(ctx, func(t *store.AuthzTx) error {
+		if err := t.CreateOAuthClient(client); err != nil {
+			return err
+		}
+		return t.AppendAudit("client.created", "ok", "", "", source, mustJSON(map[string]any{
+			"client_id":        id,
+			"static":           true,
+			"default_resource": req.DefaultResource,
+			"redirect_uris":    req.RedirectURIs,
+		}))
+	}); err != nil {
+		return nil, apierr.New(apierr.CodeInternalError, "the client could not be recorded")
+	}
+	out := clientDTO(client)
+	return &out, nil
 }
 
 // ListClients lists every registration.

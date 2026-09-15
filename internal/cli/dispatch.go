@@ -648,6 +648,20 @@ func buildCommandTable() []*command {
 			},
 		},
 		{
+			words:     []string{"admin", "clients", "create"},
+			inventory: "admin clients create", route: "admin_clients_create",
+			summary: "declare a client that cannot register itself",
+			pos:     []posDef{{name: "<client-id>", param: "client_id", where: wBody, required: true}},
+			flags: []flagDef{
+				{name: "--redirect", kind: kString, param: "redirect_uris", where: wBody,
+					help: "the client's exact callback; several are separated by spaces"},
+				{name: "--name", kind: kString, param: "name", where: wBody,
+					help: "a label for the listing"},
+				{name: "--default-resource", kind: kBool, param: "default_resource", where: wBody,
+					help: "let this client omit `resource` at /oauth/authorize"},
+			},
+		},
+		{
 			words:     []string{"admin", "clients", "list"},
 			inventory: "admin clients list", route: "admin_clients_list",
 			summary: "unexpired dynamically registered clients",
