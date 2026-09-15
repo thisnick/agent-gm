@@ -31,6 +31,7 @@ var migrations = []migration{
 	migration0006,
 	migration0007,
 	migration0008,
+	migration0009,
 }
 
 var migration0001 = migration{
@@ -862,4 +863,23 @@ var migration0008 = migration{
  since_at_ms INTEGER NOT NULL,
  PRIMARY KEY (account_id, scope)
  )`},
+}
+
+// Migration 0009 adds the two columns an owner-declared OAuth client needs
+// (spec section 9.3). Both default to 0, so every registration that already
+// exists reads back exactly as it did: dynamically registered, and required
+// to send `resource` like everything else.
+//
+// `static` is what the row IS -- an owner typed it, rather than a client
+// registering itself -- and `default_resource` is the single relaxation that
+// being owner-declared buys. They are two columns rather than one because a
+// static client does not have to want the relaxation, and reading "is this
+// owner-declared" off the id's shape would be inference where a fact will do.
+var migration0009 = migration{
+	version: 9,
+	name:    "owner-declared static OAuth clients",
+	stmts: []string{
+		`ALTER TABLE oauth_clients ADD COLUMN static INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE oauth_clients ADD COLUMN default_resource INTEGER NOT NULL DEFAULT 0`,
+	},
 }

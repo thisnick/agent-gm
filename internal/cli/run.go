@@ -506,6 +506,13 @@ func flagValue(inv *invocation, f flagDef) (any, error) {
 	if f.where == wBody && (f.param == "scopes" || f.param == "allow_scopes") {
 		return strings.Fields(strings.ReplaceAll(inv.str(f.name), ",", " ")), nil
 	}
+	// redirect_uris splits on WHITESPACE ONLY, unlike the scope fields above.
+	// A comma is a legal character in a URI path or query, so splitting on one
+	// would quietly cut a redirect in half; a space cannot appear in a URI at
+	// all, which makes it the one safe separator here.
+	if f.where == wBody && f.param == "redirect_uris" {
+		return strings.Fields(inv.str(f.name)), nil
+	}
 	switch f.kind {
 	case kBool:
 		return inv.boolean(f.name), nil

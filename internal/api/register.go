@@ -109,6 +109,7 @@ func RegisterAll(s *Server, d *HandlerDeps) error {
 		"admin_authorizations_list":            d.adminAuthorizationsList,
 		"admin_authorizations_get":             d.adminAuthorizationsGet,
 		"admin_authorizations_revoke":          d.adminAuthorizationsRevoke,
+		"admin_clients_create":                 d.adminClientsCreate,
 		"admin_clients_list":                   d.adminClientsList,
 		"admin_clients_get":                    d.adminClientsGet,
 		"admin_clients_revoke":                 d.adminClientsRevoke,

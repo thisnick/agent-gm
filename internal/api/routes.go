@@ -463,6 +463,12 @@ var Routes = []Route{
 		Notes: "revoking any authorization revokes every token of it. This is the route section 16 Slice 3 test 29 uses to cut a connector off.",
 	},
 	{
+		Method: http.MethodPost, Path: "/v1/admin/clients", Name: "admin_clients_create",
+		Scope: ScopeAdmin,
+		Body:  []string{"client_id", "name", "redirect_uris", "default_resource"},
+		Notes: "declares a client that cannot register itself (9.3). The owner chooses `client_id`, so a `client_` id is refused: that prefix belongs to registrations this server mints. `default_resource` lets the client omit `resource` at /oauth/authorize.",
+	},
+	{
 		Method: http.MethodGet, Path: "/v1/admin/clients", Name: "admin_clients_list", Scope: ScopeAdmin,
 	},
 	{
@@ -473,7 +479,7 @@ var Routes = []Route{
 		Method: http.MethodDelete, Path: "/v1/admin/clients/{client_id}", Name: "admin_clients_revoke",
 		Scope: ScopeAdmin,
 		Query: []string{"reason"},
-		Notes: "removes a dynamic registration and revokes every authorization it holds.",
+		Notes: "removes a registration, owner-declared or dynamic, and revokes every authorization it holds.",
 	},
 	{
 		Method: http.MethodGet, Path: "/v1/admin/diagnostics", Name: "admin_diagnostics", Scope: ScopeAdmin,

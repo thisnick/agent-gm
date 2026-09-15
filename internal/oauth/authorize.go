@@ -105,7 +105,7 @@ func (s *Server) authorizeGet(w http.ResponseWriter, r *http.Request) {
 	// that name as secret-derived. Naming an OAuth error string `code` here
 	// would make the audit either wrong or noisy, and a noisy audit is one
 	// somebody eventually silences.
-	if errCode, desc := s.validateAuthorize(&p); errCode != "" {
+	if errCode, desc := s.validateAuthorize(&p, client); errCode != "" {
 		s.redirectError(w, p, errCode, desc)
 		return
 	}
@@ -155,7 +155,7 @@ func (s *Server) authorizeGet(w http.ResponseWriter, r *http.Request) {
 // validateAuthorize applies section 9.4's refusal table, in its order. Every
 // row of it redirects; the two that do not (unknown client, unregistered
 // redirect) are handled by the caller before this runs.
-func (s *Server) validateAuthorize(p *authorizeParams) (code, description string) {
+func (s *Server) validateAuthorize(p *authorizeParams, client store.OAuthClient) (code, description string) {
 	if p.ResponseType != "code" {
 		return ErrUnsupportedResponseType, "the only response_type is `code`"
 	}
@@ -173,6 +173,21 @@ func (s *Server) validateAuthorize(p *authorizeParams) (code, description string
 	}
 	if !validChallenge(p.CodeChallenge) {
 		return ErrInvalidRequest, "code_challenge must be a base64url S256 challenge"
+	}
+	// An OWNER-DECLARED client may omit `resource`, and the omission is then
+	// read as this server's one canonical resource (spec section 9.3).
+	//
+	// This is a relaxation of RFC 8707 section 2.1's MUST, granted per client
+	// and never by default, because a connector that cannot register itself
+	// generally cannot be told to send the parameter either. It is safe here
+	// for the reason the token endpoint already relies on: this server has
+	// exactly ONE audience, so there is no second resource an omission could
+	// be read as. The defaulted value is written back into p BEFORE the
+	// signed context is built, so the form echo, the authorization code and
+	// the token are all bound to the canonical resource exactly as they would
+	// be had the client sent it.
+	if p.Resource == "" && client.DefaultResource {
+		p.Resource = s.Resource()
 	}
 	if p.Resource != s.Resource() {
 		return ErrInvalidTarget, "resource must be " + s.Resource()

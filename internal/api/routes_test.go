@@ -100,6 +100,7 @@ func TestRouteInventoryMatchesTheSpec(t *testing.T) {
 		{http.MethodGet, "/v1/admin/authorizations", api.ScopeAdmin},
 		{http.MethodGet, "/v1/admin/authorizations/{authorization_id}", api.ScopeAdmin},
 		{http.MethodDelete, "/v1/admin/authorizations/{authorization_id}", api.ScopeAdmin},
+		{http.MethodPost, "/v1/admin/clients", api.ScopeAdmin},
 		{http.MethodGet, "/v1/admin/clients", api.ScopeAdmin},
 		{http.MethodGet, "/v1/admin/clients/{client_id}", api.ScopeAdmin},
 		{http.MethodDelete, "/v1/admin/clients/{client_id}", api.ScopeAdmin},

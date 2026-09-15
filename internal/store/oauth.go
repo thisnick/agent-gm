@@ -86,6 +86,15 @@ type OAuthClient struct {
 	ActivatedAtMS int64
 	ExpiresAtMS   int64
 	CreatedAtMS   int64
+	// Static marks an OWNER-DECLARED client: one the owner created through
+	// POST /v1/admin/clients because the client cannot register itself
+	// (spec section 9.3). Every other row here registered itself.
+	Static bool
+	// DefaultResource lets this client omit `resource` at /oauth/authorize,
+	// where the omission is then read as this server's canonical resource.
+	// It is only ever set on a static row: a client that can register itself
+	// can send the parameter its own metadata document advertises.
+	DefaultResource bool
 }
 
 // Activated reports whether an authorization has ever used this registration.
@@ -93,19 +102,23 @@ type OAuthClient struct {
 func (c OAuthClient) Activated() bool { return c.ActivatedAtMS != 0 }
 
 const oauthClientColumns = `id, client_name, redirect_uris, grant_types, response_types,
-	token_endpoint_auth_method, metadata_json, source, activated_at_ms, expires_at_ms, created_at_ms`
+	token_endpoint_auth_method, metadata_json, source, activated_at_ms, expires_at_ms, created_at_ms,
+	static, default_resource`
 
 func scanOAuthClient(sc rowScanner) (OAuthClient, error) {
 	var c OAuthClient
 	var name, source sql.NullString
 	var redirects, grants, responses string
 	var activated, expires sql.NullInt64
+	var static, defaultResource int64
 	err := sc.Scan(&c.ID, &name, &redirects, &grants, &responses,
 		&c.TokenEndpointAuthMethod, &c.MetadataJSON, &source,
-		&activated, &expires, &c.CreatedAtMS)
+		&activated, &expires, &c.CreatedAtMS, &static, &defaultResource)
 	if err != nil {
 		return c, err
 	}
+	c.Static = static != 0
+	c.DefaultResource = defaultResource != 0
 	c.Name = name.String
 	c.Source = source.String
 	c.ActivatedAtMS = activated.Int64
@@ -135,8 +148,12 @@ func (s *Store) OAuthClientByID(ctx context.Context, id string) (OAuthClient, er
 // forgiving it on restart would be forgiving something that is still there.
 func (s *Store) CountRegistrationsSince(ctx context.Context, source string, sinceMS int64) (int, error) {
 	var n int
+	// Static rows are excluded: the budget exists to bound what an unknown
+	// caller can create at /oauth/register, and an owner-declared client came
+	// from an admin-scoped call the owner made.
 	err := s.read.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM oauth_clients WHERE source = ? AND created_at_ms >= ?`,
+		`SELECT COUNT(*) FROM oauth_clients
+		  WHERE source = ? AND created_at_ms >= ? AND static = 0`,
 		source, sinceMS).Scan(&n)
 	return n, err
 }
@@ -152,10 +169,11 @@ func (t *AuthzTx) CreateOAuthClient(c OAuthClient) error {
 	}
 	_, err = t.tx.ExecContext(t.ctx, `
 		INSERT INTO oauth_clients (`+oauthClientColumns+`)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		c.ID, nullString(c.Name), string(redirects), joinList(c.GrantTypes), joinList(c.ResponseTypes),
 		c.TokenEndpointAuthMethod, c.MetadataJSON, nullString(c.Source),
-		nullInt(c.ActivatedAtMS), nullInt(c.ExpiresAtMS), c.CreatedAtMS)
+		nullInt(c.ActivatedAtMS), nullInt(c.ExpiresAtMS), c.CreatedAtMS,
+		oauthFlag(c.Static), oauthFlag(c.DefaultResource))
 	return err
 }
 
@@ -186,7 +204,8 @@ func (t *AuthzTx) ActivateOAuthClient(id string) error {
 func (t *AuthzTx) ExpiredUnreferencedClients() ([]string, error) {
 	rows, err := t.tx.QueryContext(t.ctx, `
 		SELECT id FROM oauth_clients
-		 WHERE activated_at_ms IS NULL
+		 WHERE static = 0
+		   AND activated_at_ms IS NULL
 		   AND expires_at_ms IS NOT NULL AND expires_at_ms <= ?
 		   AND id NOT IN (SELECT client_id FROM authorization_requests)
 		 ORDER BY id`, t.nowMS)
@@ -203,6 +222,14 @@ func (t *AuthzTx) ExpiredUnreferencedClients() ([]string, error) {
 		out = append(out, id)
 	}
 	return out, rows.Err()
+}
+
+// oauthFlag renders one of the two boolean columns migration 0009 added.
+func oauthFlag(b bool) int64 {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // DeleteOAuthClient removes one registration.

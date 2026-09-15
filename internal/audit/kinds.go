@@ -88,6 +88,11 @@ const (
 	KindAuthorizationExpired  Kind = "authorization.expired"
 	KindAuthorizationRevoked  Kind = "authorization.revoked"
 
+	// KindClientCreated is an OWNER-DECLARED client (spec section 9.3).
+	// Dynamic registration writes no audit row -- anyone may register and the
+	// row itself is the record -- but an owner declaring a client is an
+	// administrative act, so it leaves one.
+	KindClientCreated Kind = "client.created"
 	KindClientRevoked Kind = "client.revoked"
 )
 
@@ -164,6 +169,7 @@ var kinds = map[Kind]AccountRule{
 	KindAuthorizationExpired:  AccountForbidden,
 	KindAuthorizationRevoked:  AccountForbidden,
 
+	KindClientCreated: AccountForbidden,
 	KindClientRevoked: AccountForbidden,
 }
 

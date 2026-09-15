@@ -95,6 +95,7 @@ var routeTable = map[string]route{
 	"admin_authorizations_list":            {method: http.MethodGet, path: "/v1/admin/authorizations", idempotent: false},
 	"admin_authorizations_get":             {method: http.MethodGet, path: "/v1/admin/authorizations/{authorization_id}", idempotent: false},
 	"admin_authorizations_revoke":          {method: http.MethodDelete, path: "/v1/admin/authorizations/{authorization_id}", idempotent: false},
+	"admin_clients_create":                 {method: http.MethodPost, path: "/v1/admin/clients", idempotent: false},
 	"admin_clients_list":                   {method: http.MethodGet, path: "/v1/admin/clients", idempotent: false},
 	"admin_clients_get":                    {method: http.MethodGet, path: "/v1/admin/clients/{client_id}", idempotent: false},
 	"admin_clients_revoke":                 {method: http.MethodDelete, path: "/v1/admin/clients/{client_id}", idempotent: false},
