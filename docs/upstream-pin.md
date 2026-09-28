@@ -86,16 +86,15 @@ Three touch the vendored `pkg/libgm`: `c1b622f`, `a3ce80c`, `caaeaa7`.
     `fmt.Sprintf("%s/%d", ..., cmp.Or(ps.DestRegDevice.UnknownTS,
     ps.DestRegDevice.UnknownInt))` — it prefers the new `UnknownTS` field
     whenever Google populates it (falling back to the old `UnknownInt`
-    otherwise). This is load-bearing: Agent GM stores this string verbatim as
-    the `phone_id` column and spec §3.2 (D28) documents it as the
-    device/session-scoped half of account identity. A pairing performed after
-    this bump may therefore get a differently-shaped second component than a
-    pairing performed before it, for the same physical phone, if Google now
-    returns a nonzero `Item8.UnknownTimestamp`. Nothing recomputes an existing
-    account's stored `phone_id`, so already-paired accounts are unaffected
-    retroactively; a *new* pairing (or `agm pair` re-run) needs to be watched
-    at the live gate. Neither `StartGaiaPairing`'s nor `FinishGaiaPairing`'s
-    signature moved.
+    otherwise). Agent GM stores this string verbatim in the `phone_id` column
+    and treats it as opaque: it is not part of account identity, which is
+    `AuthData.Mobile.SourceID` (spec §3.2, D28, where this return value is
+    listed among the device-scoped fields that are unusable as an account
+    key). So the effect is cosmetic: a pairing performed after this bump may
+    store a differently-shaped second component than one performed before it,
+    for the same physical phone, if Google now returns a nonzero
+    `Item8.UnknownTimestamp`. Existing rows are never recomputed. Neither
+    `StartGaiaPairing`'s nor `FinishGaiaPairing`'s signature moved.
   - `pkg/libgm/gmproto/authentication.proto` / `authentication.pb.go`:
     `RPCGaiaData.Item4.Item8.unknownTimestamp` widened from `int32` to
     `uint64` (`a3ce80c`), and a new sibling field `unknownInt2` (`int32`, tag
@@ -162,7 +161,7 @@ Three touch the vendored `pkg/libgm`: `c1b622f`, `a3ce80c`, `caaeaa7`.
   files: `background_session.go`, `background_session_test.go`, `client.go`,
   `gmproto/build.sh`, `longpoll.go`, `pair_google.go`, `session_handler.go`).
 - **Race suppressions** (`scripts/race-suppressions.txt`): re-audited against
-  the `caaeaa7` diff. None of the three touched files (`client.go`,
+  the `caaeaa7` diff. None of the four touched files (`client.go`,
   `event_handler.go`, `session_handler.go`, `pair_google.go`) intersect
   `postConnect`, `HandleRPCMsg`, `closeLongPolling` or `doLongPoll`, the four
   suppressed frames; no new unsynchronized access was introduced in this
@@ -179,20 +178,18 @@ Three touch the vendored `pkg/libgm`: `c1b622f`, `a3ce80c`, `caaeaa7`.
   §13.4 assertions against a fresh clone of `caaeaa7`; none of them assert on
   `FinishGaiaPairing`'s implementation, only its signature, so they do not
   exercise the `UnknownTS`/`UnknownInt` change above), `lint-names`,
-  `no-real-numbers` and `no-deployment-host` pass. `golangci-lint`,
-  `devbox run check`'s Windows/Darwin `go vet` legs, the full root test suite,
-  and `conformance` were not run in this environment (no `devbox` binary
-  available; MCP conformance is unrelated to this pin) — run them before
-  merge.
-- **Live gate**: **not run.** Spec §3.6(d) requires pair, list, send one text,
-  receive a reply, run by the maintainer by hand against a real paired
+  `no-real-numbers` and `no-deployment-host` pass, as do `go vet` for Windows
+  and Darwin and `CGO_ENABLED=1 go test ./... -race -count=1` at the root.
+  CI on the PR (#29) passed every job, including `check` (which runs
+  `golangci-lint`) and `conformance`.
+- **Live gate**: **not recorded.** Spec §3.6(d) requires pair, list, send one
+  text, receive a reply, run by the maintainer by hand against a real paired
   account; this bump was prepared by an automated dependency-update routine
-  with no phone to pair against. Do not merge without it. Priority checks for
-  this specific bump, beyond the usual list/send/receive/session-reload
-  suite: (1) what `FinishGaiaPairing` actually returns on a fresh pairing —
-  confirm whether Google now populates `Item8.UnknownTimestamp` and, if so,
-  that the resulting `phone_id` still round-trips through account lookup the
-  way spec §3.2 D28 expects; (2) that a `GaiaLoggedOut` event (logging the
+  with no phone to pair against, and no run has been recorded here since. It
+  is owed. Beyond the usual list/send/receive/session-reload suite, check:
+  (1) what `FinishGaiaPairing` returns on a fresh pairing, i.e. whether
+  Google now populates `Item8.UnknownTimestamp` (informational; `phone_id` is
+  not an account key); (2) that a `GaiaLoggedOut` event (logging the
   paired Google account out, or waiting for cookies to expire) still reaches
   `EventGaiaLoggedOut` correctly now that libgm acks pending events
   synchronously on that path.

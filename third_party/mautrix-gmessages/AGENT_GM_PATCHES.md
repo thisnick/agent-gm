@@ -276,19 +276,18 @@ attachment in the approved conversation downloaded byte-identical to the
 cover. These are historical observations; repeat relevant gates for every new
 upstream pin.
 
-**The `d7b1aaf` → `caaeaa7` pin bump has not yet passed a live gate.** The
-automated evidence (build, vet, the direct `pkg/libgm` race suite, and
+**No live gate has been recorded for the `d7b1aaf` → `caaeaa7` pin bump.**
+The automated evidence (build, vet, the direct `pkg/libgm` race suite, and
 `fixture-validation` against a fresh `caaeaa7` clone) is recorded in
-[`docs/upstream-pin.md`](../../docs/upstream-pin.md), but §3.6(d)'s
+[`docs/upstream-pin.md`](../../docs/upstream-pin.md); §3.6(d)'s
 pair/list/send-one-text/receive-a-reply gate against a real paired account is
-run by the maintainer, by hand, and could not be run here. Do not merge this
-bump past that record without it. It also flags a symbol-level change the
-automated suites do not exercise: `FinishGaiaPairing`'s returned phone ID
-(`"<sourceID>/<destRegDevice int>"`, load-bearing for the stored `phone_id`
-column and account scoping, spec §3.2 D28) now prefers a new
+run by the maintainer, by hand, and is owed. One change the automated suites
+do not exercise: `FinishGaiaPairing`'s returned phone ID
+(`"<sourceID>/<destRegDevice int>"`) now prefers a new
 `DestRegDevice.UnknownTS` field over the old `UnknownInt` whenever Google
 populates it (upstream `cmp.Or(ps.DestRegDevice.UnknownTS,
-ps.DestRegDevice.UnknownInt)`), so a *new* pairing after this bump may embed a
-differently-shaped integer than a pairing performed before it. The live gate
-should re-pair (or at least re-run `DoGaiaPairing` against a test account) and
-confirm what `FinishGaiaPairing` actually returns before this is accepted.
+ps.DestRegDevice.UnknownInt)`), so a *new* pairing may store a
+differently-shaped `phone_id` than one performed before the bump. That column
+is opaque and not an account key (accounts are keyed on
+`AuthData.Mobile.SourceID`, spec §3.2 D28), so this is informational; a
+fresh pairing at the gate shows which value Google now sends.
