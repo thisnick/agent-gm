@@ -16,6 +16,10 @@ tag: a tag is a label and a digest is evidence.
 
 Nothing yet.
 
+## [1.4.1] — 2026-09-28
+
+- Bump the pinned mautrix-gmessages (libgm) dependency from d7b1aaf to caaeaa7, carrying the maintained background-session patch forward. Upstream acks pending events immediately on logout, and `FinishGaiaPairing`'s returned phone ID now prefers a new `DestRegDevice.UnknownTS` field over the old `UnknownInt` whenever Google populates it, so a pairing performed after this bump may store a differently-shaped phone_id than one performed before it; phone_id is not an account key, so existing and new accounts are identified as before. ConfigVersion is unchanged and still stale against Google, so conversation creation stays exposed until upstream publishes a newer one. The live gate of spec §3.6(d) is not yet recorded; see `docs/upstream-pin.md`.
+
 ## [1.4.0] — 2026-09-15
 
 - Add owner-declared OAuth clients, for connectors that cannot register themselves. `POST /v1/admin/clients` and `agm admin clients create <client-id> --redirect <uri>` declare a public client whose id the owner chooses, which is what a connector that asks its operator to paste a client*id needs; an id beginning client* is refused, since that prefix is what /oauth/register mints. Such a client may carry --default-resource, letting it omit `resource` at /oauth/authorize, read as this server's one canonical resource. Nothing else is relaxed: the redirect rules, PKCE, the enrollment code and the owner's approval all apply unchanged, and creation writes a client.created audit row. Migration 0009 adds the two columns; existing registrations read back unchanged.
@@ -157,7 +161,8 @@ Agent GM *is* rather than what changed.
   gate was satisfied through the public URL with Codex CLI. Adding either
   later needs no code.
 
-[Unreleased]: https://github.com/thisnick/agent-gm/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/thisnick/agent-gm/compare/v1.4.1...HEAD
+[1.4.1]: https://github.com/thisnick/agent-gm/releases/tag/v1.4.1
 [1.4.0]: https://github.com/thisnick/agent-gm/releases/tag/v1.4.0
 [1.3.3]: https://github.com/thisnick/agent-gm/releases/tag/v1.3.3
 [1.3.2]: https://github.com/thisnick/agent-gm/releases/tag/v1.3.2
