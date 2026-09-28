@@ -2,24 +2,29 @@
 
 Read this record before updating the upstream pin or changing connection
 behavior. It describes the implementation shipped in Agent GM v1.3.0 and
-carried forward onto the `b0d61b4` and then the `d7b1aaf` pin, including its
-known limitations.
+carried forward onto the `b0d61b4`, then the `d7b1aaf`, and now the `caaeaa7`
+pin, including its known limitations.
 
 ## Source and reproducible patch
 
 - Upstream: <https://github.com/mautrix/gmessages>.
-- Base commit: `d7b1aaf69303163c7b96eb646f4b2f2a81daf8e2`.
-- Go version: `v0.2608.1-0.20260914111609-d7b1aaf69303`.
+- Base commit: `caaeaa7d8d56b828c225cb1f1ad2d15c8a3f1d0d`.
+- Go version: `v0.2609.1-0.20260922114237-caaeaa7d8d56`.
 - Imported files: upstream `pkg/libgm`, `go.mod`, `go.sum`, `LICENSE`, and
   `LICENSE.exceptions`. The Matrix connector is not copied.
 - First shipped in commit `1f8659ed279ac1f30526078c77613def7822145a` (PR #15),
   against base commit `be48a58b733825f6dfd6bb630af5f236d3bc9ae8`. Carried
-  forward onto `b0d61b4` and then `d7b1aaf` per the procedure below; see
-  [docs/upstream-pin.md](../../docs/upstream-pin.md) for what changed in each
-  bump and what upstream now does natively (the former `doLongPollContext`
-  split and the `dittoPinger` context fields). The `d7b1aaf` bump added
-  nothing to and retired nothing from the patch; only the `readLongPoll` hunk
-  had to be merged by hand (see its row below).
+  forward onto `b0d61b4`, then `d7b1aaf`, and now `caaeaa7` per the procedure
+  below; see [docs/upstream-pin.md](../../docs/upstream-pin.md) for what
+  changed in each bump and what upstream now does natively (the former
+  `doLongPollContext` split and the `dittoPinger` context fields). The
+  `d7b1aaf` bump added nothing to and retired nothing from the patch; only the
+  `readLongPoll` hunk had to be merged by hand. The `caaeaa7` bump likewise
+  added nothing to and retired nothing from the patch; only the
+  `sendAckRequest` hunk had to be merged by hand, because upstream's own new
+  nil-receiver guard on `sendAckRequest` lands inside the same function this
+  patch splits into `sendAckRequest`/`sendAckRequestContext` (see its row
+  below).
 - Exact source delta: [patches/background-session.patch](patches/background-session.patch).
   Paths are relative to the upstream repository root. The patch includes new
   source/tests, changes to existing files, and the mode difference noted below.
@@ -57,8 +62,8 @@ background request API.
 | `pkg/libgm/longpoll.go`: `doLongPoll` | As of `b0d61b4`, upstream's own `doLongPoll(ctx context.Context, loggedIn, background bool, onFirstConnect func()) bool` already threads a caller-supplied context down (added by upstream commit `e00c40312938...`), which is the same intent as this patch's former `doLongPollContext` split — retired rather than reapplied. What the patch still adds on top: an `ctx.Err()` early-return and `refreshAuthTokenContext(ctx, nil)` (instead of the unauthenticated `refreshAuthToken(nil)`) at the top of the retry loop, and swapping its three `time.Sleep(...)` retry delays for `waitBackgroundRetry(ctx, ...)` so a canceled context interrupts them. |
 | Same file: recovery pinger | Starts only when `loggedIn && !background`, preventing background recovery from claiming active status. Upstream's `dittoPinger` gained its own `ctx`/`reconnectCtx` fields in `b0d61b4` (upstream commit `e00c40312938...`, replacing its prior `context.TODO()` uses in `Ping`/`recoveryLoop`) — those are upstream's own now, not part of this patch. Audit any new upstream recovery path on each bump. |
 | Same file: `readLongPoll` | Postpones idle close by one second while busy (`Reset(time.Second)` on the shared `closeIn` timer, re-checked in a loop), and closes the specific response body (`rc.Close()`) rather than the global connection (`closeLongPolling()`). Tracks intentional idle closure in an `idleClosed atomic.Bool` and treats it as a clean/expected read stop (`errors.Is(..., io.EOF) \|\| c.disconnecting \|\| idleClosed.Load()`) and a successful return (`receivedEvents \|\| idleClosed.Load()`) even with no events. Since `b0d61b4` upstream's own `readLongPoll` additionally takes a `cancel context.CancelFunc` and runs a second, *foreground*-only idle-read timeout (`1 * time.Minute`, canceling `ctx` — a case this patch does not touch) alongside the background timer this patch modifies; both timers now share one `closeIn *time.Timer` variable and are stopped via one `defer closeIn.Stop()` once assigned. In `d7b1aaf` upstream (commit `e6cc299`) added `lastRead`/`lastReadStart` timestamps around `reader.Read` and on the *foreground* timeout log, inside this same function, so the hunk no longer applied textually and was merged by hand: the background branch, the `idleClosed` bookkeeping and the return value are the patch's; the two timestamps are upstream's and are kept. |
-| `pkg/libgm/client.go`, `pair_google.go`: `DisablePostPairConnect` | Optional flag checked after `PairSuccessful`, before the asynchronous reconnect. Default false preserves upstream behavior. Push-mode pairing must not immediately become active. |
-| `pkg/libgm/session_handler.go`: `sendAckRequestContext` | Adds an error-returning helper and keeps the original void wrapper. `RunBackground` reports ACK errors; existing ACK requeue behavior is retained. See the cancellation gap below. Upstream's only change to `session_handler.go` through `d7b1aaf` is nil guards on `ResetSessionID` and `buildMessage`, which do not overlap this hunk. |
+| `pkg/libgm/client.go`, `pair_google.go`: `DisablePostPairConnect` | Optional flag checked after `PairSuccessful`, before the asynchronous reconnect. Default false preserves upstream behavior. Push-mode pairing must not immediately become active. `caaeaa7` added a `cmp` import, a new `UnknownTS` field on the local `primaryDeviceID` struct, and changed `FinishGaiaPairing`'s returned int (see `docs/upstream-pin.md`); none of those hunks land in or near the `DisablePostPairConnect` check, which still applies cleanly. |
+| `pkg/libgm/session_handler.go`: `sendAckRequestContext` | Adds an error-returning helper and keeps the original void wrapper. `RunBackground` reports ACK errors; existing ACK requeue behavior is retained. See the cancellation gap below. Upstream's only change to `session_handler.go` through `d7b1aaf` is nil guards on `ResetSessionID` and `buildMessage`, which do not overlap this hunk. In `caaeaa7` upstream (commit `c1b622f`) added a nil-receiver guard (`if s == nil { return }`) as the first statement of the *original* `sendAckRequest()`, to let the new `GaiaLoggedOut` handling in `event_handler.go` call it unconditionally; that upstream hunk no longer applied textually, since this patch had already turned `sendAckRequest()` into a one-line wrapper around `sendAckRequestContext`. Merged by hand: the guard now opens `sendAckRequestContext` (the real body both the wrapper and any future direct caller reach) rather than the wrapper, returning `nil` instead of bare `return`. |
 | `pkg/libgm/background_session_test.go` | Direct library cancellation/no-active-request regression test, described below. |
 
 There is also a packaging-only mode difference: `pkg/libgm/gmproto/build.sh`
@@ -112,7 +117,7 @@ tree.
 patch_record="$PWD/third_party/mautrix-gmessages/patches/background-session.patch"
 upstream_checkout=/path/to/mautrix-gmessages
 patch_verify_dir=$(mktemp -d -t agent-gm-patch-verify-XXXXXX)
-git -C "$upstream_checkout" archive d7b1aaf69303163c7b96eb646f4b2f2a81daf8e2 \
+git -C "$upstream_checkout" archive caaeaa7d8d56b828c225cb1f1ad2d15c8a3f1d0d \
   pkg/libgm go.mod go.sum LICENSE LICENSE.exceptions | tar -x -C "$patch_verify_dir"
 git -C "$patch_verify_dir" apply --check "$patch_record"
 git -C "$patch_verify_dir" apply "$patch_record"
@@ -270,3 +275,20 @@ attachment in the approved conversation downloaded byte-identical to the
 [`docs/upstream-pin.md`](../../docs/upstream-pin.md) for what it did not
 cover. These are historical observations; repeat relevant gates for every new
 upstream pin.
+
+**The `d7b1aaf` → `caaeaa7` pin bump has not yet passed a live gate.** The
+automated evidence (build, vet, the direct `pkg/libgm` race suite, and
+`fixture-validation` against a fresh `caaeaa7` clone) is recorded in
+[`docs/upstream-pin.md`](../../docs/upstream-pin.md), but §3.6(d)'s
+pair/list/send-one-text/receive-a-reply gate against a real paired account is
+run by the maintainer, by hand, and could not be run here. Do not merge this
+bump past that record without it. It also flags a symbol-level change the
+automated suites do not exercise: `FinishGaiaPairing`'s returned phone ID
+(`"<sourceID>/<destRegDevice int>"`, load-bearing for the stored `phone_id`
+column and account scoping, spec §3.2 D28) now prefers a new
+`DestRegDevice.UnknownTS` field over the old `UnknownInt` whenever Google
+populates it (upstream `cmp.Or(ps.DestRegDevice.UnknownTS,
+ps.DestRegDevice.UnknownInt)`), so a *new* pairing after this bump may embed a
+differently-shaped integer than a pairing performed before it. The live gate
+should re-pair (or at least re-run `DoGaiaPairing` against a test account) and
+confirm what `FinishGaiaPairing` actually returns before this is accepted.

@@ -9,7 +9,7 @@ page is the record they write to.
 
 | Dependency | Pinned | Why this one | Bumped on |
 |---|---|---|---|
-| `go.mau.fi/mautrix-gmessages` (`pkg/libgm`) | `d7b1aaf69303163c7b96eb646f4b2f2a81daf8e2` (`d7b1aaf`), `ConfigVersion` 2026.9.2 (unchanged) | The Google Messages client library. Its `ConfigVersion` must be current enough for Google to accept conversation creation | `b0d61b4` → `d7b1aaf`, live gate passed 2026-09-14; see Bumps below |
+| `go.mau.fi/mautrix-gmessages` (`pkg/libgm`) | `caaeaa7d8d56b828c225cb1f1ad2d15c8a3f1d0d` (`caaeaa7`), `ConfigVersion` 2026.9.2 (unchanged) | The Google Messages client library. Its `ConfigVersion` must be current enough for Google to accept conversation creation | `d7b1aaf` → `caaeaa7`, automated gate only — **live gate outstanding**; see Bumps below |
 | `github.com/modelcontextprotocol/go-sdk` | `v1.7.0` | The MCP protocol layer. It decides the JSON-RPC framing, the `WWW-Authenticate` challenge on `/mcp` and the RFC 9728 handler | initial pin, `v1.0.0` |
 | Node | `22` (`devbox.json`, and `actions/setup-node` in `release.yml`) | Runs the `@agent-gm/cli` postinstall shim and packs the npm tarball | initial pin, `v1.0.0` |
 | npm | `>= 11.5.1`, installed into a scratch prefix by `release.yml` and passed to `scripts/release.sh` as `AGENT_GM_NPM` | Trusted publishing (OIDC) is not implemented before 11.5.1: an older npm publishes unauthenticated and the registry answers `404`. Node 22 ships npm 10 | `v1.0.1` |
@@ -65,6 +65,141 @@ without cloning anything:
 A bump with no entry here is a bump nobody can review later.
 
 ## Bumps
+
+## `libgm` d7b1aaf → caaeaa7 (unreleased, live gate outstanding)
+
+Six upstream commits, all by the upstream maintainer between 2026-09-16 and
+2026-09-22: `1574ae8` (`pkg/connector` only), `26b9ec6` (version bump to
+`v26.09`, `go.mod`/`go.sum` and `CHANGELOG.md` only), `c6d5cae` (`pkg/connector`
+only), `c1b622f` ack pending events immediately on logout, `a3ce80c` more
+stable id for Google logins, `caaeaa7` allow re-pairing with existing cookies.
+Three touch the vendored `pkg/libgm`: `c1b622f`, `a3ce80c`, `caaeaa7`.
+
+- **`ConfigVersion`**: 2026.9.2 → 2026.9.2 (unchanged; no fresher `ConfigVersion`
+  has been published upstream since the `d7b1aaf` bump).
+- **Symbols in spec §3.1 that changed**:
+  - `pair_google.go`: the local `primaryDeviceID` struct gained an `UnknownTS
+    uint64` field, populated from `dev.GetItem8().GetUnknownTimestamp()` (new
+    in `a3ce80c`) inside `StartGaiaPairing`. **`FinishGaiaPairing`'s returned
+    phone ID changed**: it was
+    `fmt.Sprintf("%s/%d", ..., ps.DestRegDevice.UnknownInt)` and is now
+    `fmt.Sprintf("%s/%d", ..., cmp.Or(ps.DestRegDevice.UnknownTS,
+    ps.DestRegDevice.UnknownInt))` — it prefers the new `UnknownTS` field
+    whenever Google populates it (falling back to the old `UnknownInt`
+    otherwise). This is load-bearing: Agent GM stores this string verbatim as
+    the `phone_id` column and spec §3.2 (D28) documents it as the
+    device/session-scoped half of account identity. A pairing performed after
+    this bump may therefore get a differently-shaped second component than a
+    pairing performed before it, for the same physical phone, if Google now
+    returns a nonzero `Item8.UnknownTimestamp`. Nothing recomputes an existing
+    account's stored `phone_id`, so already-paired accounts are unaffected
+    retroactively; a *new* pairing (or `agm pair` re-run) needs to be watched
+    at the live gate. Neither `StartGaiaPairing`'s nor `FinishGaiaPairing`'s
+    signature moved.
+  - `pkg/libgm/gmproto/authentication.proto` / `authentication.pb.go`:
+    `RPCGaiaData.Item4.Item8.unknownTimestamp` widened from `int32` to
+    `uint64` (`a3ce80c`), and a new sibling field `unknownInt2` (`int32`, tag
+    4) was added but is not read by Agent GM or by libgm's own pairing code.
+  - `client.go`: `AuthData` gained a `ClearPairing()` method (zeroes
+    `Browser`, `Mobile`, `TachyonAuthToken`, `TachyonExpiry`, `TachyonTTL`,
+    `WebEncryptionKey`, `PairingID`) and `AuthData.TachyonExpiry`'s JSON tag
+    changed from `omitempty` to `omitzero` (`caaeaa7`, for the connector's new
+    re-pairing-with-existing-cookies flow in `pkg/connector/login.go`, not
+    vendored). Agent GM does not call `ClearPairing` and does not serialize
+    `AuthData` through `encoding/json` for this field's purpose, so this is
+    available-but-unused, not a behavior change for Agent GM today.
+  - `event_handler.go`: `handleUpdatesEvent`'s `GaiaLoggedOut` branch now
+    calls `c.sessionHandler.sendAckRequest()` before triggering the event
+    (`c1b622f`), so the pending-events ack fires immediately on logout instead
+    of waiting for the next ack tick. Agent GM's `EventGaiaLoggedOut` handling
+    (`internal/gm/libgm.go:852`) does not change; this only affects when
+    upstream's own ack HTTP request fires relative to the logout event, which
+    Agent GM does not observe directly.
+  - `session_handler.go`: `sendAckRequest` (now `sendAckRequestContext`, see
+    the patch note below) gained a nil-receiver guard so the new
+    unconditional call above cannot panic on a nil `*SessionHandler`.
+  - Nothing else in §3.1 moved.
+- **Delivery-state and event vocabulary**: none. No `.proto` file other than
+  `authentication.proto` changed, and that change (above) is pairing-only,
+  not delivery-state or event traffic.
+- **Wire behaviour that changed**: an ack request for queued events now fires
+  synchronously when a `GaiaLoggedOut` event is decoded, rather than waiting
+  for the next five-second ack tick or the next `RunBackground` drain.
+  Nothing else observed; the `Item8.unknownTimestamp` widening is a decode
+  change for a field libgm already read as part of pairing, not a new
+  request/response shape.
+- **`go.mod` in the nested module**: copied verbatim from upstream `caaeaa7`,
+  same as every prior bump (`AGENT_GM_PATCHES.md`'s imported-files list).
+  `go.mau.fi/util` `8d876c16` → `a4c0d5b8`, `maunium.net/go/mautrix`
+  `e984191a` → `0748d1ea` (connector-only, not compiled here),
+  `github.com/stretchr/testify` `v1.11.1` → `v1.12.0`, `golang.org/x/crypto`
+  `v0.55.0` → `v0.57.0`, `golang.org/x/exp`, `golang.org/x/net`,
+  `golang.org/x/sys`, `golang.org/x/text`, `github.com/mattn/go-sqlite3`,
+  `github.com/petermattis/goid` and `github.com/yuin/goldmark` each moved to
+  their upstream-pinned patch releases. `go build`/`go vet`/`go test` against
+  the nested module (only `pkg/libgm` present, `pkg/connector` not vendored)
+  are unaffected by the requires only the connector would need
+  (`github.com/lib/pq`, `github.com/skip2/go-qrcode`,
+  `maunium.net/go/mauflag`) still being listed — same as at `d7b1aaf`, where
+  they are present too and equally unused by the vendored subset. The root
+  `go.mod`'s `replace` and the local import of the patched tree are
+  unchanged; the root `require` now pins
+  `v0.2609.1-0.20260922114237-caaeaa7d8d56`.
+- **`pkg/connector`** (not vendored): `bridgestate.go`, `client.go`,
+  `handlegmessages.go` and `login.go` implement re-pairing with existing
+  cookies (`caaeaa7`); `capabilities.go` rejects captions in RCS chats
+  (`c6d5cae`); `handlegmessages.go` also stops forcing the other-user sender
+  on DM deletions (`1574ae8`). None of it is behaviour Agent GM mirrors.
+- **Interaction with the maintained patch**
+  (`third_party/mautrix-gmessages/AGENT_GM_PATCHES.md`): nothing retired,
+  nothing added. Every hunk applied cleanly against the pristine `caaeaa7`
+  tree except `session_handler.go`'s `sendAckRequest`, where upstream's new
+  nil-receiver guard (`c1b622f`) lands inside the same function this patch
+  splits into `sendAckRequest`/`sendAckRequestContext`; that hunk was merged
+  by hand, moving the guard into `sendAckRequestContext` (the real body) and
+  returning `nil` instead of a bare `return`. The patch file was regenerated
+  from pristine `caaeaa7` and reconstructs the committed tree exactly (still 7
+  files: `background_session.go`, `background_session_test.go`, `client.go`,
+  `gmproto/build.sh`, `longpoll.go`, `pair_google.go`, `session_handler.go`).
+- **Race suppressions** (`scripts/race-suppressions.txt`): re-audited against
+  the `caaeaa7` diff. None of the three touched files (`client.go`,
+  `event_handler.go`, `session_handler.go`, `pair_google.go`) intersect
+  `postConnect`, `HandleRPCMsg`, `closeLongPolling` or `doLongPoll`, the four
+  suppressed frames; no new unsynchronized access was introduced in this
+  bump's diff. `longpoll.go`, where those frames live, is unchanged by
+  `caaeaa7`.
+- **Gate**, automated: `go build ./...` and `go vet ./...` are clean in the
+  nested `third_party/mautrix-gmessages` module against the reconstructed
+  `caaeaa7` + patch tree; `CGO_ENABLED=1 go test ./pkg/libgm/... -race
+  -count=1` passes there (`TestPassiveCancellationNeverClaimsActiveSession`
+  among them). The old-base reconstruction check in the patch guide was run
+  first and matched pristine `d7b1aaf` exactly; the new-base reconstruction
+  (pristine `caaeaa7` + regenerated patch) matches the committed tree exactly
+  (`diff -rq`, zero output). `pin-consistency`, `fixture-validation` (the
+  §13.4 assertions against a fresh clone of `caaeaa7`; none of them assert on
+  `FinishGaiaPairing`'s implementation, only its signature, so they do not
+  exercise the `UnknownTS`/`UnknownInt` change above), `lint-names`,
+  `no-real-numbers` and `no-deployment-host` pass. `golangci-lint`,
+  `devbox run check`'s Windows/Darwin `go vet` legs, the full root test suite,
+  and `conformance` were not run in this environment (no `devbox` binary
+  available; MCP conformance is unrelated to this pin) — run them before
+  merge.
+- **Live gate**: **not run.** Spec §3.6(d) requires pair, list, send one text,
+  receive a reply, run by the maintainer by hand against a real paired
+  account; this bump was prepared by an automated dependency-update routine
+  with no phone to pair against. Do not merge without it. Priority checks for
+  this specific bump, beyond the usual list/send/receive/session-reload
+  suite: (1) what `FinishGaiaPairing` actually returns on a fresh pairing —
+  confirm whether Google now populates `Item8.UnknownTimestamp` and, if so,
+  that the resulting `phone_id` still round-trips through account lookup the
+  way spec §3.2 D28 expects; (2) that a `GaiaLoggedOut` event (logging the
+  paired Google account out, or waiting for cookies to expire) still reaches
+  `EventGaiaLoggedOut` correctly now that libgm acks pending events
+  synchronously on that path.
+- **What the gate did not cover**: everything the live gate above would have
+  covered — a fresh pairing, list, send, receive, session reload, and the
+  `GaiaLoggedOut` path — plus media and group creation, unchanged from the
+  `d7b1aaf` bump.
 
 ## `libgm` b0d61b4 → d7b1aaf (unreleased)
 

@@ -363,6 +363,9 @@ func (s *SessionHandler) sendAckRequest() {
 }
 
 func (s *SessionHandler) sendAckRequestContext(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
 	s.ackMapLock.Lock()
 	dataToAck := s.ackMap
 	s.ackMap = nil
