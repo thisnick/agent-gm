@@ -1,5 +1,11 @@
 # @agent-gm/cli
 
+## 1.4.2
+
+### Patch Changes
+
+- 7d6767e: Bump the pinned mautrix-gmessages (libgm) dependency from caaeaa7 to 186284e, carrying the maintained background-session patch forward unchanged. The only vendored change is a nil-receiver guard in `ListConversations`. ConfigVersion is unchanged. The live gate of spec §3.6(d) has not yet been run.
+
 ## 1.4.1
 
 ### Patch Changes

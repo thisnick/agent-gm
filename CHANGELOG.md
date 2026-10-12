@@ -16,6 +16,10 @@ tag: a tag is a label and a digest is evidence.
 
 Nothing yet.
 
+## [1.4.2] — 2026-10-12
+
+- Bump the pinned mautrix-gmessages (libgm) dependency from caaeaa7 to 186284e, carrying the maintained background-session patch forward unchanged. The only vendored change is a nil-receiver guard in `ListConversations`. ConfigVersion is unchanged. The live gate of spec §3.6(d) has not yet been run.
+
 ## [1.4.1] — 2026-09-28
 
 - Bump the pinned mautrix-gmessages (libgm) dependency from d7b1aaf to caaeaa7, carrying the maintained background-session patch forward. Upstream acks pending events immediately on logout, and `FinishGaiaPairing`'s returned phone ID now prefers a new `DestRegDevice.UnknownTS` field over the old `UnknownInt` whenever Google populates it, so a pairing performed after this bump may store a differently-shaped phone_id than one performed before it; phone_id is not an account key, so existing and new accounts are identified as before. ConfigVersion is unchanged and still stale against Google, so conversation creation stays exposed until upstream publishes a newer one. The live gate of spec §3.6(d) is not yet recorded; see `docs/upstream-pin.md`.
@@ -161,7 +165,8 @@ Agent GM *is* rather than what changed.
   gate was satisfied through the public URL with Codex CLI. Adding either
   later needs no code.
 
-[Unreleased]: https://github.com/thisnick/agent-gm/compare/v1.4.1...HEAD
+[Unreleased]: https://github.com/thisnick/agent-gm/compare/v1.4.2...HEAD
+[1.4.2]: https://github.com/thisnick/agent-gm/releases/tag/v1.4.2
 [1.4.1]: https://github.com/thisnick/agent-gm/releases/tag/v1.4.1
 [1.4.0]: https://github.com/thisnick/agent-gm/releases/tag/v1.4.0
 [1.3.3]: https://github.com/thisnick/agent-gm/releases/tag/v1.3.3
