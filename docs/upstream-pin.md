@@ -9,7 +9,7 @@ page is the record they write to.
 
 | Dependency | Pinned | Why this one | Bumped on |
 |---|---|---|---|
-| `go.mau.fi/mautrix-gmessages` (`pkg/libgm`) | `caaeaa7d8d56b828c225cb1f1ad2d15c8a3f1d0d` (`caaeaa7`), `ConfigVersion` 2026.9.2 (unchanged) | The Google Messages client library. Its `ConfigVersion` must be current enough for Google to accept conversation creation | `d7b1aaf` → `caaeaa7`, automated gate only — **live gate outstanding**; see Bumps below |
+| `go.mau.fi/mautrix-gmessages` (`pkg/libgm`) | `186284eea622b01c281217bc2848fe0ab3cd7e85` (`186284e`), `ConfigVersion` 2026.9.2 (unchanged) | The Google Messages client library. Its `ConfigVersion` must be current enough for Google to accept conversation creation | `caaeaa7` → `186284e`, automated gate only — **live gate outstanding**; see Bumps below |
 | `github.com/modelcontextprotocol/go-sdk` | `v1.7.0` | The MCP protocol layer. It decides the JSON-RPC framing, the `WWW-Authenticate` challenge on `/mcp` and the RFC 9728 handler | initial pin, `v1.0.0` |
 | Node | `22` (`devbox.json`, and `actions/setup-node` in `release.yml`) | Runs the `@agent-gm/cli` postinstall shim and packs the npm tarball | initial pin, `v1.0.0` |
 | npm | `>= 11.5.1`, installed into a scratch prefix by `release.yml` and passed to `scripts/release.sh` as `AGENT_GM_NPM` | Trusted publishing (OIDC) is not implemented before 11.5.1: an older npm publishes unauthenticated and the registry answers `404`. Node 22 ships npm 10 | `v1.0.1` |
@@ -65,6 +65,32 @@ without cloning anything:
 A bump with no entry here is a bump nobody can review later.
 
 ## Bumps
+
+## `libgm` caaeaa7 → 186284e (unreleased, live gate outstanding)
+
+Two upstream commits by the upstream maintainer, 2026-10-05 and 2026-10-11:
+`03662ea` (add support for blocking chats; `pkg/connector` only) and `186284e`
+(`chatsync,libgm: fix panic`).
+
+- **`ConfigVersion`**: 2026.9.2 → 2026.9.2 (unchanged).
+- **Symbols in spec §3.1 that changed**: none. The only vendored change is
+  `methods.go`: `ListConversations` now returns `ErrClientIsNil` when called
+  on a nil `*Client` instead of panicking. Signature unchanged.
+- **Delivery-state and event vocabulary**: none. No `.proto` changed.
+- **Wire behaviour that changed**: none.
+- **`go.mod` in the nested module**: copied verbatim from upstream
+  `186284e`; the only change is `maunium.net/go/mautrix` `0748d1ea` →
+  `f14e6b5f` (connector-only, not compiled here). The root `require` now pins
+  `v0.2609.1-0.20261010212621-186284eea622`.
+- **`pkg/connector`** (not vendored): `capabilities.go`, `chatinfo.go`,
+  `chatsync.go`, `handlematrix.go` implement chat blocking and the panic fix.
+  None of it is behaviour Agent GM mirrors.
+- **Interaction with the maintained patch**: nothing retired, nothing added;
+  the patch applies cleanly to pristine `186284e` and is unchanged. Old-base
+  (`caaeaa7`) reconstruction matched the committed tree before the bump.
+- **Gate**, automated: see the PR description. **Live gate**: **not
+  recorded**; spec §3.6(d) requires the maintainer to pair, list, send one
+  text and receive a reply by hand.
 
 ## `libgm` d7b1aaf → caaeaa7 (unreleased, live gate outstanding)
 

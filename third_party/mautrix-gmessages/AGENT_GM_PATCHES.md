@@ -2,19 +2,19 @@
 
 Read this record before updating the upstream pin or changing connection
 behavior. It describes the implementation shipped in Agent GM v1.3.0 and
-carried forward onto the `b0d61b4`, then the `d7b1aaf`, and now the `caaeaa7`
+carried forward onto the `b0d61b4`, then the `d7b1aaf`, `caaeaa7`, and now the `186284e`
 pin, including its known limitations.
 
 ## Source and reproducible patch
 
 - Upstream: <https://github.com/mautrix/gmessages>.
-- Base commit: `caaeaa7d8d56b828c225cb1f1ad2d15c8a3f1d0d`.
-- Go version: `v0.2609.1-0.20260922114237-caaeaa7d8d56`.
+- Base commit: `186284eea622b01c281217bc2848fe0ab3cd7e85`.
+- Go version: `v0.2609.1-0.20261010212621-186284eea622`.
 - Imported files: upstream `pkg/libgm`, `go.mod`, `go.sum`, `LICENSE`, and
   `LICENSE.exceptions`. The Matrix connector is not copied.
 - First shipped in commit `1f8659ed279ac1f30526078c77613def7822145a` (PR #15),
   against base commit `be48a58b733825f6dfd6bb630af5f236d3bc9ae8`. Carried
-  forward onto `b0d61b4`, then `d7b1aaf`, and now `caaeaa7` per the procedure
+  forward onto `b0d61b4`, then `d7b1aaf`, then `caaeaa7`, and now `186284e` per the procedure
   below; see [docs/upstream-pin.md](../../docs/upstream-pin.md) for what
   changed in each bump and what upstream now does natively (the former
   `doLongPollContext` split and the `dittoPinger` context fields). The
@@ -24,7 +24,10 @@ pin, including its known limitations.
   `sendAckRequest` hunk had to be merged by hand, because upstream's own new
   nil-receiver guard on `sendAckRequest` lands inside the same function this
   patch splits into `sendAckRequest`/`sendAckRequestContext` (see its row
-  below).
+  below). The `186284e` bump added nothing to and retired nothing from the
+  patch; its only `pkg/libgm` change (a nil-receiver guard in
+  `ListConversations`, `methods.go`) is outside every patched file and the
+  patch applied cleanly.
 - Exact source delta: [patches/background-session.patch](patches/background-session.patch).
   Paths are relative to the upstream repository root. The patch includes new
   source/tests, changes to existing files, and the mode difference noted below.
@@ -117,7 +120,7 @@ tree.
 patch_record="$PWD/third_party/mautrix-gmessages/patches/background-session.patch"
 upstream_checkout=/path/to/mautrix-gmessages
 patch_verify_dir=$(mktemp -d -t agent-gm-patch-verify-XXXXXX)
-git -C "$upstream_checkout" archive caaeaa7d8d56b828c225cb1f1ad2d15c8a3f1d0d \
+git -C "$upstream_checkout" archive 186284eea622b01c281217bc2848fe0ab3cd7e85 \
   pkg/libgm go.mod go.sum LICENSE LICENSE.exceptions | tar -x -C "$patch_verify_dir"
 git -C "$patch_verify_dir" apply --check "$patch_record"
 git -C "$patch_verify_dir" apply "$patch_record"
@@ -276,9 +279,10 @@ attachment in the approved conversation downloaded byte-identical to the
 cover. These are historical observations; repeat relevant gates for every new
 upstream pin.
 
-**No live gate has been recorded for the `d7b1aaf` → `caaeaa7` pin bump.**
+**No live gate has been recorded for the `caaeaa7` → `186284e` pin bump
+(nor the earlier `d7b1aaf` → `caaeaa7` one).**
 The automated evidence (build, vet, the direct `pkg/libgm` race suite, and
-`fixture-validation` against a fresh `caaeaa7` clone) is recorded in
+`fixture-validation` against a fresh `186284e` clone) is recorded in
 [`docs/upstream-pin.md`](../../docs/upstream-pin.md); §3.6(d)'s
 pair/list/send-one-text/receive-a-reply gate against a real paired account is
 run by the maintainer, by hand, and is owed. One change the automated suites
