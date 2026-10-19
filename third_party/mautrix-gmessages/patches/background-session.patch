@@ -1,4 +1,4 @@
-diff --git a/pkg/libgm/background_session.go b/pkg/libgm/background_session.go
+diff --git a/b/pkg/libgm/background_session.go b/pkg/libgm/background_session.go
 new file mode 100644
 index 0000000..0d547cd
 --- /dev/null
@@ -67,7 +67,7 @@ index 0000000..0d547cd
 +		return true
 +	}
 +}
-diff --git a/pkg/libgm/background_session_test.go b/pkg/libgm/background_session_test.go
+diff --git a/b/pkg/libgm/background_session_test.go b/pkg/libgm/background_session_test.go
 new file mode 100644
 index 0000000..b9f0dc2
 --- /dev/null
@@ -147,10 +147,10 @@ index 0000000..b9f0dc2
 +	}
 +}
 diff --git a/pkg/libgm/client.go b/pkg/libgm/client.go
-index ed96e71..9ee4833 100644
+index dfe4370..41c11d8 100644
 --- a/pkg/libgm/client.go
 +++ b/pkg/libgm/client.go
-@@ -126,9 +126,11 @@ const DefaultBugleDefaultCheckInterval = 2*time.Hour + 55*time.Minute
+@@ -127,9 +127,11 @@ const DefaultBugleDefaultCheckInterval = 2*time.Hour + 55*time.Minute
  const minBugleDefaultCheckInterval = 1 * time.Hour
  
  type Client struct {
@@ -163,9 +163,9 @@ index ed96e71..9ee4833 100644
 +	evHandler              EventHandler
 +	sessionHandler         *SessionHandler
  
- 	longPollingConn io.Closer
+ 	longPollingConn atomic.Pointer[io.ReadCloser]
  	listenID        int
-@@ -472,7 +474,7 @@ type PushKeys struct {
+@@ -473,7 +475,7 @@ type PushKeys struct {
  
  func (c *Client) RegisterPush(ctx context.Context, keys *PushKeys) error {
  	if c.PushKeys == nil || c.PushKeys.URL != keys.URL {
@@ -174,7 +174,7 @@ index ed96e71..9ee4833 100644
  		if err != nil {
  			return fmt.Errorf("failed to refresh auth token: %w", err)
  		}
-@@ -504,6 +506,10 @@ func isFatalRefreshError(err error) bool {
+@@ -505,6 +507,10 @@ func isFatalRefreshError(err error) bool {
  }
  
  func (c *Client) refreshAuthToken(pushKeyOverride *PushKeys) error {
@@ -185,7 +185,7 @@ index ed96e71..9ee4833 100644
  	if c.AuthData.Browser == nil || (time.Until(c.AuthData.TachyonExpiry) > RefreshTachyonBuffer && pushKeyOverride == nil) {
  		return nil
  	}
-@@ -561,7 +567,7 @@ func (c *Client) refreshAuthToken(pushKeyOverride *PushKeys) error {
+@@ -562,7 +568,7 @@ func (c *Client) refreshAuthToken(pushKeyOverride *PushKeys) error {
  	}
  
  	resp, err := typedHTTPResponse[*gmproto.RegisterRefreshResponse](
@@ -198,7 +198,7 @@ diff --git a/pkg/libgm/gmproto/build.sh b/pkg/libgm/gmproto/build.sh
 old mode 100755
 new mode 100644
 diff --git a/pkg/libgm/longpoll.go b/pkg/libgm/longpoll.go
-index 12ce1f2..f19d052 100644
+index e6601d6..67ff674 100644
 --- a/pkg/libgm/longpoll.go
 +++ b/pkg/libgm/longpoll.go
 @@ -466,7 +466,7 @@ func (c *Client) doLongPoll(ctx context.Context, loggedIn, background bool, onFi
@@ -312,10 +312,10 @@ index 12ce1f2..f19d052 100644
  			log.Warn().Msg("Didn't get EOF after stream end marker")
  		}
 diff --git a/pkg/libgm/pair_google.go b/pkg/libgm/pair_google.go
-index 63fedf5..a0133b6 100644
+index bbd9a8c..607f306 100644
 --- a/pkg/libgm/pair_google.go
 +++ b/pkg/libgm/pair_google.go
-@@ -310,6 +310,9 @@ func (c *Client) DoGaiaPairing(ctx context.Context, emojiCallback func(string))
+@@ -311,6 +311,9 @@ func (c *Client) DoGaiaPairing(ctx context.Context, emojiCallback func(string))
  		return err
  	}
  	c.triggerEvent(&events.PairSuccessful{PhoneID: phoneID})

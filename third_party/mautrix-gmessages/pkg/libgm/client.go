@@ -40,9 +40,10 @@ type AuthData struct {
 	// Unknown encryption key, not used for anything
 	WebEncryptionKey []byte `json:"web_encryption_key,omitempty"`
 
-	SessionID uuid.UUID `json:"session_id,omitempty"`
-	DestRegID uuid.UUID `json:"dest_reg_id,omitempty"`
-	PairingID uuid.UUID `json:"pairing_id,omitempty"`
+	SessionID   uuid.UUID `json:"session_id,omitempty"`
+	DestRegID   uuid.UUID `json:"dest_reg_id,omitempty"`
+	DestPhoneID uint64    `json:"dest_phone_id,omitempty"`
+	PairingID   uuid.UUID `json:"pairing_id,omitempty"`
 
 	Cookies     map[string]string `json:"cookies,omitempty"`
 	CookiesLock sync.RWMutex      `json:"-"`
@@ -132,7 +133,7 @@ type Client struct {
 	evHandler              EventHandler
 	sessionHandler         *SessionHandler
 
-	longPollingConn io.Closer
+	longPollingConn atomic.Pointer[io.ReadCloser]
 	listenID        int
 	skipCount       int
 	disconnecting   bool
@@ -368,7 +369,7 @@ func (c *Client) Disconnect() {
 
 func (c *Client) IsConnected() bool {
 	// TODO add better check (longPollingConn is set to nil while the polling reconnects)
-	return c != nil && c.longPollingConn != nil
+	return c != nil && c.longPollingConn.Load() != nil
 }
 
 func (c *Client) IsLoggedIn() bool {
