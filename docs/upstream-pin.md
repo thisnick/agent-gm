@@ -9,7 +9,7 @@ page is the record they write to.
 
 | Dependency | Pinned | Why this one | Bumped on |
 |---|---|---|---|
-| `go.mau.fi/mautrix-gmessages` (`pkg/libgm`) | `186284eea622b01c281217bc2848fe0ab3cd7e85` (`186284e`), `ConfigVersion` 2026.9.2 (unchanged) | The Google Messages client library. Its `ConfigVersion` must be current enough for Google to accept conversation creation | `caaeaa7` → `186284e`, automated gate only — **live gate outstanding**; see Bumps below |
+| `go.mau.fi/mautrix-gmessages` (`pkg/libgm`) | `c1697e99a45b6657a8e3f8084a3aee7c18d4ca3c` (`c1697e9`), `ConfigVersion` 2026.9.2 (unchanged) | The Google Messages client library. Its `ConfigVersion` must be current enough for Google to accept conversation creation | `186284e` → `c1697e9`, automated gate only — **live gate outstanding**; see Bumps below |
 | `github.com/modelcontextprotocol/go-sdk` | `v1.7.0` | The MCP protocol layer. It decides the JSON-RPC framing, the `WWW-Authenticate` challenge on `/mcp` and the RFC 9728 handler | initial pin, `v1.0.0` |
 | Node | `22` (`devbox.json`, and `actions/setup-node` in `release.yml`) | Runs the `@agent-gm/cli` postinstall shim and packs the npm tarball | initial pin, `v1.0.0` |
 | npm | `>= 11.5.1`, installed into a scratch prefix by `release.yml` and passed to `scripts/release.sh` as `AGENT_GM_NPM` | Trusted publishing (OIDC) is not implemented before 11.5.1: an older npm publishes unauthenticated and the registry answers `404`. Node 22 ships npm 10 | `v1.0.1` |
@@ -65,6 +65,43 @@ without cloning anything:
 A bump with no entry here is a bump nobody can review later.
 
 ## Bumps
+
+## `libgm` 186284e → c1697e9 (unreleased, live gate outstanding)
+
+Nine upstream commits, 2026-10-12 to 2026-10-18, by the upstream maintainer and
+contributors. Four touch the vendored `pkg/libgm`: `8c17c77` (bridge location
+messages; `.proto` only), `5a43d57` (re-pair with the previously paired phone),
+`1bd3a84` (report another phone on the account after gaia logout; `pkg/connector`
+plus the `HasOtherGaiaPhone` helper from `5a43d57`) and `c1697e9` (atomic
+`longPollingConn`). The rest are `pkg/connector` only or a version bump to `v26.10`.
+
+- **`ConfigVersion`**: 2026.9.2 → 2026.9.2 (unchanged).
+- **Symbols in spec §3.1 that changed**: none removed or retyped. Added:
+  `AuthData.DestPhoneID` (set by `FinishGaiaPairing`, persisted in the session
+  JSON, `omitempty`), `Client.HasOtherGaiaPhone`, `ErrPhoneNotFound`.
+  `StartGaiaPairing` now restricts to the device matching `DestPhoneID` when
+  set, and device enumeration moved into `getGaiaPrimaryDevices`.
+  `Client.longPollingConn` is now `atomic.Pointer[io.ReadCloser]` (unexported).
+- **Delivery-state and event vocabulary**: new proto message `LocationContent`
+  and `MessageInfo.data` oneof field `locationContent = 5`. No enum values
+  added or removed.
+- **Wire behaviour that changed**: none.
+- **`go.mod` in the nested module**: copied verbatim from upstream; toolchain
+  go1.27.1 → go1.27.2, `go.mau.fi/util` v0.11.0, `maunium.net/go/mautrix`
+  v0.32.0 (connector-only), and x/crypto, x/net, x/sys, x/text, x/sync bumps.
+  The root `require` pins `v0.2610.1-0.20261017225230-c1697e99a45b`.
+- **Interaction with the maintained patch**: nothing retired, nothing added.
+  The `client.go` hunk adding `DisablePostPairConnect`/`backgroundBusy` did not
+  apply textually because upstream rewrote the neighbouring `Client` struct
+  fields; it was ported by hand (same two fields, same position). All other
+  hunks applied cleanly. Old-base (`186284e`) reconstruction matched the
+  committed tree before the bump, and new-base reconstruction from the
+  regenerated patch matches the vendored tree exactly. The patch's own
+  `longPollingConn` uses (none) are unaffected by the atomic change.
+- **Gate**, automated: see the PR description. **Live gate**: **not
+  recorded**; spec §3.6(d) requires the maintainer to pair, list, send one
+  text and receive a reply by hand. Note the new `DestPhoneID` only affects
+  pairings performed after this bump.
 
 ## `libgm` caaeaa7 → 186284e (unreleased, live gate outstanding)
 
