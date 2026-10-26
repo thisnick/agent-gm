@@ -9,7 +9,7 @@ page is the record they write to.
 
 | Dependency | Pinned | Why this one | Bumped on |
 |---|---|---|---|
-| `go.mau.fi/mautrix-gmessages` (`pkg/libgm`) | `c1697e99a45b6657a8e3f8084a3aee7c18d4ca3c` (`c1697e9`), `ConfigVersion` 2026.9.2 (unchanged) | The Google Messages client library. Its `ConfigVersion` must be current enough for Google to accept conversation creation | `186284e` → `c1697e9`, automated gate only — **live gate outstanding**; see Bumps below |
+| `go.mau.fi/mautrix-gmessages` (`pkg/libgm`) | `6026696bf7cd22c429c9a70aed15bfd852b9e135` (`6026696`), `ConfigVersion` 2026.9.2 (unchanged) | The Google Messages client library. Its `ConfigVersion` must be current enough for Google to accept conversation creation | `c1697e9` → `6026696`, automated gate only — **live gate outstanding**; see Bumps below |
 | `github.com/modelcontextprotocol/go-sdk` | `v1.7.0` | The MCP protocol layer. It decides the JSON-RPC framing, the `WWW-Authenticate` challenge on `/mcp` and the RFC 9728 handler | initial pin, `v1.0.0` |
 | Node | `22` (`devbox.json`, and `actions/setup-node` in `release.yml`) | Runs the `@agent-gm/cli` postinstall shim and packs the npm tarball | initial pin, `v1.0.0` |
 | npm | `>= 11.5.1`, installed into a scratch prefix by `release.yml` and passed to `scripts/release.sh` as `AGENT_GM_NPM` | Trusted publishing (OIDC) is not implemented before 11.5.1: an older npm publishes unauthenticated and the registry answers `404`. Node 22 ships npm 10 | `v1.0.1` |
@@ -65,6 +65,40 @@ without cloning anything:
 A bump with no entry here is a bump nobody can review later.
 
 ## Bumps
+
+## `libgm` c1697e9 → 6026696 (unreleased, live gate outstanding)
+
+Four upstream commits, 2026-10-19 to 2026-10-23: `ab98fe9` (set name when
+creating groups; `pkg/connector` only), `83d029c` (re-pair on a copy of the
+existing session), `3e25c2f` (map errors to message statuses; mostly
+`pkg/connector`) and `6026696` (lock cookies in auth data when marshaling).
+Three touch the vendored `pkg/libgm`: `client.go`, `media.go`, `pair.go`.
+
+- **`ConfigVersion`**: 2026.9.2 → 2026.9.2 (unchanged).
+- **Symbols in spec §3.1 that changed**: **breaking** for `UploadMedia`,
+  `DownloadMedia`, `StartUploadMedia` and `FinalizeUploadMedia`: each now takes
+  a leading `ctx context.Context` and builds its requests with
+  `http.NewRequestWithContext`. `internal/gm` no longer wraps the two it calls
+  in a goroutine plus `select`; it passes the caller's `ctx` through, so
+  cancelling now aborts the HTTP request. Added: `AuthData.MarshalJSON` (takes
+  `CookiesLock` while marshaling) and `AuthData.CopyForRepair`.
+- **Delivery-state and event vocabulary**: none. No `.proto` changed.
+- **Wire behaviour that changed**: media upload/download/avatar failures now
+  return `events.HTTPError{Action, Resp}` instead of a bare
+  `unexpected status code N` / `avatar download http N` error. `Unpair` returns
+  `nil` without a request for a Google account with no `PairingID`.
+- **`go.mod` in the nested module**: unchanged from `c1697e9`. The root
+  `require` pins `v0.2610.1-0.20261023204119-6026696bf7cd`.
+- **Interaction with the maintained patch**: nothing retired, nothing added;
+  the patch applies cleanly to pristine `6026696` (only line offsets moved) and
+  was regenerated. Old-base reconstruction matched before the bump; new-base
+  reconstruction matches the vendored tree exactly.
+- **Gate**, automated: `go build ./...`, `go test ./...`, nested
+  `go test ./pkg/libgm -race`, `scripts/pin-consistency.sh`, and the
+  `fixtures`-tagged `internal/upstream` validation against `6026696` all pass.
+  **Live gate**: **not recorded**; spec §3.6(d) requires the maintainer to
+  pair, list, send one text and receive a reply by hand. Also exercise one
+  media send and one media download, since their call path changed.
 
 ## `libgm` 186284e → c1697e9 (unreleased, live gate outstanding)
 

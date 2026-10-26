@@ -1,4 +1,4 @@
-diff --git a/b/pkg/libgm/background_session.go b/pkg/libgm/background_session.go
+diff --git a/pkg/libgm/background_session.go b/pkg/libgm/background_session.go
 new file mode 100644
 index 0000000..0d547cd
 --- /dev/null
@@ -67,7 +67,7 @@ index 0000000..0d547cd
 +		return true
 +	}
 +}
-diff --git a/b/pkg/libgm/background_session_test.go b/pkg/libgm/background_session_test.go
+diff --git a/pkg/libgm/background_session_test.go b/pkg/libgm/background_session_test.go
 new file mode 100644
 index 0000000..b9f0dc2
 --- /dev/null
@@ -147,10 +147,10 @@ index 0000000..b9f0dc2
 +	}
 +}
 diff --git a/pkg/libgm/client.go b/pkg/libgm/client.go
-index dfe4370..41c11d8 100644
+index 36d7570..6308bf8 100644
 --- a/pkg/libgm/client.go
 +++ b/pkg/libgm/client.go
-@@ -127,9 +127,11 @@ const DefaultBugleDefaultCheckInterval = 2*time.Hour + 55*time.Minute
+@@ -146,9 +146,11 @@ const DefaultBugleDefaultCheckInterval = 2*time.Hour + 55*time.Minute
  const minBugleDefaultCheckInterval = 1 * time.Hour
  
  type Client struct {
@@ -165,7 +165,7 @@ index dfe4370..41c11d8 100644
  
  	longPollingConn atomic.Pointer[io.ReadCloser]
  	listenID        int
-@@ -473,7 +475,7 @@ type PushKeys struct {
+@@ -492,7 +494,7 @@ type PushKeys struct {
  
  func (c *Client) RegisterPush(ctx context.Context, keys *PushKeys) error {
  	if c.PushKeys == nil || c.PushKeys.URL != keys.URL {
@@ -174,7 +174,7 @@ index dfe4370..41c11d8 100644
  		if err != nil {
  			return fmt.Errorf("failed to refresh auth token: %w", err)
  		}
-@@ -505,6 +507,10 @@ func isFatalRefreshError(err error) bool {
+@@ -524,6 +526,10 @@ func isFatalRefreshError(err error) bool {
  }
  
  func (c *Client) refreshAuthToken(pushKeyOverride *PushKeys) error {
@@ -185,7 +185,7 @@ index dfe4370..41c11d8 100644
  	if c.AuthData.Browser == nil || (time.Until(c.AuthData.TachyonExpiry) > RefreshTachyonBuffer && pushKeyOverride == nil) {
  		return nil
  	}
-@@ -562,7 +568,7 @@ func (c *Client) refreshAuthToken(pushKeyOverride *PushKeys) error {
+@@ -581,7 +587,7 @@ func (c *Client) refreshAuthToken(pushKeyOverride *PushKeys) error {
  	}
  
  	resp, err := typedHTTPResponse[*gmproto.RegisterRefreshResponse](

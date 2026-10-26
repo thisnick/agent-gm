@@ -482,16 +482,15 @@ Google-account pairing errors, all from `pair_google.go`, all mapped in §3.5:
 
 | Symbol | Signature | Returns |
 |---|---|---|
-| `(*Client).UploadMedia` | `(data []byte, fileName, mime string) (*gmproto.MediaContent, error)` | the whole upload: generates a random 32-byte key, AES-GCM-encrypts the bytes, `StartUploadMedia` (resumable session against `util.UploadMediaURL`), `FinalizeUploadMedia`, and returns `MediaContent{Format, MediaID, MediaName, Size, DecryptionKey, MimeType}`. **`Size` is the plaintext size.** Note this method takes no `context.Context` at the pinned commit. |
-| `(*Client).DownloadMedia` | `(mediaID string, key []byte) (io.ReadCloser, error)` | GETs `util.UploadMediaURL` with a base64 `DownloadAttachmentRequest` header and returns a streaming AES-GCM decryptor over the response body (`crypto.AESGCMDecryptStream`, since `d7b1aaf`); the caller reads it to the end and closes it. Also no `context.Context`. `internal/gm` drains it with `io.ReadAll`, so `Backend.Download` still hands back `[]byte`. |
+| `(*Client).UploadMedia` | `(ctx context.Context, data []byte, fileName, mime string) (*gmproto.MediaContent, error)` | the whole upload: generates a random 32-byte key, AES-GCM-encrypts the bytes, `StartUploadMedia` (resumable session against `util.UploadMediaURL`), `FinalizeUploadMedia`, and returns `MediaContent{Format, MediaID, MediaName, Size, DecryptionKey, MimeType}`. **`Size` is the plaintext size.** Takes a `context.Context` since `6026696`; cancelling it aborts the HTTP requests. |
+| `(*Client).DownloadMedia` | `(ctx context.Context, mediaID string, key []byte) (io.ReadCloser, error)` | GETs `util.UploadMediaURL` with a base64 `DownloadAttachmentRequest` header and returns a streaming AES-GCM decryptor over the response body (`crypto.AESGCMDecryptStream`, since `d7b1aaf`); the caller reads it to the end and closes it. Also takes a `context.Context` since `6026696`. `internal/gm` drains it with `io.ReadAll`, so `Backend.Download` still hands back `[]byte`. |
 | `(*Client).DownloadAvatar` | `(ctx, url string) ([]byte, error)` | plain HTTPS GET with relay headers, for `Conversation.GroupAvatarURL`. Capped at 5 MiB by `http.MaxBytesReader` since `d7b1aaf`. |
 | `(*Client).GetFullSizeImage` | `(ctx, messageID, actionMessageID string) (*gmproto.GetFullSizeImageResponse, error)` | asks the phone to promote a thumbnail to full size. Agent GM calls it when a media part has a `ThumbnailMediaID` but an empty `MediaID`. |
 | `libgm.MimeToMediaType` | `map[string]MediaType` | the mime → `gmproto.MediaFormats` table. Agent GM uses it to reject unsupported types **before** upload with `media_unsupported_type` (§7.6). Upstream falls back to the type prefix (`image/`, `video/`, …) when the exact mime is absent; Agent GM does the same. |
 
-Because `UploadMedia` and `DownloadMedia` take no context and can block for the
-duration of a large transfer, `internal/gm` wraps each in a goroutine plus a
-`select` on `ctx.Done()`, and documents that cancelling only abandons the
-result — the underlying HTTP request runs to completion.
+Since `6026696` `UploadMedia` and `DownloadMedia` take a context, so `internal/gm`
+passes the caller's `ctx` straight through and cancelling it aborts the
+underlying HTTP request.
 
 #### Events — `pkg/libgm/event_handler.go`, `pkg/libgm/events/`
 
@@ -912,14 +911,14 @@ values is reliable and is what Agent GM uses.
 
 ```
 module:  go.mau.fi/mautrix-gmessages
-commit:  c1697e9
-subject: libgm/longpoll: use atomic pointer for stored connection
+commit:  6026696
+subject: dbmeta,libgm: lock cookies in auth data when marshaling
 ConfigVersion (util.ConfigMessage): Year=2026 Month=9 Day=2 V1=4 V2=6
                                     (util/config.go:7-13, unchanged by this bump)
 go directive: 1.26.0 (toolchain go1.27.0)
 ```
 
-`go.mod` pins by pseudo-version resolving to `c1697e9`. A checkout of the
+`go.mod` pins by pseudo-version resolving to `6026696`. A checkout of the
 upstream tree at that commit lives at `/home/nick/code/mautrix-gmessages` on
 the owner's machine and is **not** committed here; CI re-clones it for the
 fixture-validation job (§13.4).
@@ -4573,11 +4572,11 @@ owner's confirmation before it runs.
 
 ### 13.4 Fixtures validated against the pinned source
 
-Fixtures live in `testdata/libgm/c1697e9/`, named for the pinned commit, and
+Fixtures live in `testdata/libgm/6026696/`, named for the pinned commit, and
 are **source-derived, not live captures** — every identifier is a fixture
 label or a `555` number, and every key is a nonfunctional placeholder.
 
-A CI job, `fixture-validation`, clones mautrix-gmessages at `c1697e9` and
+A CI job, `fixture-validation`, clones mautrix-gmessages at `6026696` and
 asserts, against that tree and not against Agent GM's own code (twenty-one
 assertions):
 
@@ -4706,7 +4705,7 @@ twice):
 | Job | What |
 |---|---|
 | `check` | `devbox run check` — build, vet, `golangci-lint run`, `go test -race` |
-| `pin-consistency` | `go.mod`, `internal/gm/pin.go` and §3.6 all name `c1697e9` |
+| `pin-consistency` | `go.mod`, `internal/gm/pin.go` and §3.6 all name `6026696` |
 | `fixture-validation` | §13.4, against a fresh clone of the pinned upstream tree |
 | `conformance` | `devbox run conformance` against the baseline (§8.4) |
 | `lint-names` | the name lint of §13.5 |

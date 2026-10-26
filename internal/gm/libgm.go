@@ -730,64 +730,35 @@ func (b *LibGM) rawDeleteConversation(ctx context.Context, convID, phone string)
 
 // --- media ------------------------------------------------------------------
 
-// UploadMedia and DownloadMedia take no context.Context at the pinned commit
-// and can block for the duration of a large transfer, so each is wrapped in a
-// goroutine plus a select on ctx.Done(). Cancelling only abandons the result:
-// the underlying HTTP request runs to completion (spec section 3.1).
+// UploadMedia and DownloadMedia take a context.Context since 6026696, so
+// cancelling it aborts the underlying HTTP request (spec section 3.1).
 
 func (b *LibGM) rawUpload(ctx context.Context, data []byte, filename, mime string) (MediaRef, error) {
-	type result struct {
-		mc  *gmproto.MediaContent
-		err error
+	mc, err := b.client.UploadMedia(ctx, data, filename, mime)
+	if err != nil {
+		return MediaRef{}, Classify(translateError(err))
 	}
-	done := make(chan result, 1)
-	go func() {
-		mc, err := b.client.UploadMedia(data, filename, mime)
-		done <- result{mc, err}
-	}()
-	select {
-	case <-ctx.Done():
-		return MediaRef{}, ctx.Err()
-	case r := <-done:
-		if r.err != nil {
-			return MediaRef{}, Classify(translateError(r.err))
-		}
-		return MediaRef{
-			MediaID:       r.mc.GetMediaID(),
-			Format:        r.mc.GetFormat().String(),
-			Name:          r.mc.GetMediaName(),
-			SizeBytes:     r.mc.GetSize(),
-			DecryptionKey: append([]byte(nil), r.mc.GetDecryptionKey()...),
-			MimeType:      r.mc.GetMimeType(),
-		}, nil
-	}
+	return MediaRef{
+		MediaID:       mc.GetMediaID(),
+		Format:        mc.GetFormat().String(),
+		Name:          mc.GetMediaName(),
+		SizeBytes:     mc.GetSize(),
+		DecryptionKey: append([]byte(nil), mc.GetDecryptionKey()...),
+		MimeType:      mc.GetMimeType(),
+	}, nil
 }
 
 func (b *LibGM) rawDownload(ctx context.Context, mediaID string, key []byte) ([]byte, error) {
-	type result struct {
-		data []byte
-		err  error
+	stream, err := b.client.DownloadMedia(ctx, mediaID, key)
+	if err != nil {
+		return nil, Classify(translateError(err))
 	}
-	done := make(chan result, 1)
-	go func() {
-		stream, err := b.client.DownloadMedia(mediaID, key)
-		if err != nil {
-			done <- result{nil, err}
-			return
-		}
-		defer func() { _ = stream.Close() }()
-		data, err := io.ReadAll(stream)
-		done <- result{data, err}
-	}()
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case r := <-done:
-		if r.err != nil {
-			return nil, Classify(translateError(r.err))
-		}
-		return r.data, nil
+	defer func() { _ = stream.Close() }()
+	data, err := io.ReadAll(stream)
+	if err != nil {
+		return nil, Classify(translateError(err))
 	}
+	return data, nil
 }
 
 func (b *LibGM) rawRequestFullSizeImage(ctx context.Context, msgID, actionMsgID string) error {
