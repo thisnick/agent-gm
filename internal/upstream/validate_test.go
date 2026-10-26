@@ -176,11 +176,10 @@ func TestAssertion01_SectionThreeOneSignatures(t *testing.T) {
 	}
 
 	for _, sig := range []string{
-		// Note these two take no context.Context at the pinned commit; the
-		// adapter wraps each in a goroutine plus a select on ctx.Done().
-		// DownloadMedia streams since d7b1aaf; the adapter drains it to []byte.
-		"func (c *Client) UploadMedia(data []byte, fileName, mime string) (*gmproto.MediaContent, error) {",
-		"func (c *Client) DownloadMedia(mediaID string, key []byte) (io.ReadCloser, error) {",
+		// Both take a context.Context since 6026696. DownloadMedia streams
+		// since d7b1aaf; the adapter drains it to []byte.
+		"func (c *Client) UploadMedia(ctx context.Context, data []byte, fileName, mime string) (*gmproto.MediaContent, error) {",
+		"func (c *Client) DownloadMedia(ctx context.Context, mediaID string, key []byte) (io.ReadCloser, error) {",
 		"func (c *Client) DownloadAvatar(ctx context.Context, url string) ([]byte, error) {",
 		"var MimeToMediaType = map[string]MediaType{",
 	} {

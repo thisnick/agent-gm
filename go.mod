@@ -13,7 +13,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/rs/zerolog v1.35.1
-	go.mau.fi/mautrix-gmessages v0.2610.1-0.20261017225230-c1697e99a45b
+	go.mau.fi/mautrix-gmessages v0.2610.1-0.20261023204119-6026696bf7cd
 	go.mau.fi/util v0.11.0
 	golang.org/x/crypto v0.58.0
 	golang.org/x/oauth2 v0.35.0
