@@ -2928,10 +2928,16 @@ reproduced verbatim in `docs/mcp.md` so the two can be diffed by a test.
 > 5. **Send a photo or a file.** `create_upload` with the filename, mime type
 >    and byte length; run the `curl` command it returns, with `FILE` replaced
 >    by the path; then `send_message` with `upload_ids: ["upl_…"]` and
->    optionally `text` as a caption. An upload is **not** tied to an account —
->    the conversation you send it into decides that — but it can be sent only
->    once. You cannot attach a file through this protocol any other way, and
->    base64 through the model is not acceptable.
+>    optionally `text` as a caption. **On an RCS thread, do not caption:
+>    Google drops the attachment from a captioned media send there while the
+>    operation still reports `succeeded`, so the recipient gets the text alone.
+>    Send the text and the attachment as two `send_message` calls.** Read the
+>    message back afterwards; an empty `attachments` list means the file did
+>    not go. An upload is **not** tied to an account — the conversation you
+>    send it into decides that — but it can be sent only once, and a send the
+>    phone refuses spends it too, so reserve a new one before retrying. You
+>    cannot attach a file through this protocol any other way, and base64
+>    through the model is not acceptable.
 > 6. **Start a new thread.** `start_conversation` with `recipients` as E.164
 >    phone numbers. One recipient is a direct chat; two or more is a group,
 >    and `name` is only accepted for a group. **If a thread with exactly
