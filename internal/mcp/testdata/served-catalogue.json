@@ -6036,14 +6036,14 @@
             "string",
             "null"
           ],
-          "description": "The message body. Optional only when `upload_ids` is present, in which case it is the caption."
+          "description": "The message body. Optional only when `upload_ids` is present, in which case it is the caption. On an RCS thread a caption makes Google drop the attachment while the send still succeeds, so there send the text and the attachment as two separate calls."
         },
         "upload_ids": {
           "type": [
             "array",
             "null"
           ],
-          "description": "The attachment to send, as a one-element array of an `upl_` ID from `create_upload` whose bytes you have already uploaded. Exactly one element is accepted today; two is refused naming the limit. An upload can be sent only once.",
+          "description": "The attachment to send, as a one-element array of an `upl_` ID from `create_upload` whose bytes you have already uploaded. Exactly one element is accepted today; two is refused naming the limit. An upload can be sent only once, and a send the phone refuses spends it too: reserve a new one before retrying. After sending, read the message back: an empty `attachments` list means the file did not go.",
           "items": {
             "type": "string"
           },
