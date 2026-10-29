@@ -1,5 +1,13 @@
 # @agent-gm/cli
 
+## 1.4.3
+
+### Patch Changes
+
+- 7b885f7: Bump the pinned mautrix-gmessages (libgm) dependency from c1697e9 to 6026696, carrying the maintained background-session patch forward unchanged (it applies cleanly). Upstream's media upload and download calls now take a `context.Context`, so cancelling a request aborts the transfer instead of abandoning it; media HTTP failures now surface as typed HTTP errors. ConfigVersion is unchanged. The live gate of spec §3.6(d) has not yet been run.
+- be0253a: Bump the pinned mautrix-gmessages (libgm) dependency from 186284e to c1697e9, carrying the maintained background-session patch forward. Upstream added re-pairing with the previously paired phone (`DestPhoneID`, `HasOtherGaiaPhone`), a new `conversations.proto` field, and an atomic `longPollingConn`; only the `Client` struct hunk of the patch needed a manual port. ConfigVersion is unchanged. The live gate of spec §3.6(d) has not yet been run.
+- 3f662df: The MCP instructions and the `send_message` argument descriptions now warn that a captioned media send on an RCS thread loses its attachment while still reporting `succeeded`, and say to send the text and the file as two calls instead; they also say that a send the phone refuses spends the upload.
+
 ## 1.4.2
 
 ### Patch Changes
