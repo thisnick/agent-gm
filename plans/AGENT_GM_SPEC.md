@@ -911,14 +911,14 @@ values is reliable and is what Agent GM uses.
 
 ```
 module:  go.mau.fi/mautrix-gmessages
-commit:  6026696
-subject: dbmeta,libgm: lock cookies in auth data when marshaling
+commit:  34e0490
+subject: libgm/pair: explain when the phone hasn't been online for gaia pairing (#112)
 ConfigVersion (util.ConfigMessage): Year=2026 Month=9 Day=2 V1=4 V2=6
                                     (util/config.go:7-13, unchanged by this bump)
 go directive: 1.26.0 (toolchain go1.27.0)
 ```
 
-`go.mod` pins by pseudo-version resolving to `6026696`. A checkout of the
+`go.mod` pins by pseudo-version resolving to `34e0490`. A checkout of the
 upstream tree at that commit lives at `/home/nick/code/mautrix-gmessages` on
 the owner's machine and is **not** committed here; CI re-clones it for the
 fixture-validation job (§13.4).
@@ -4578,11 +4578,11 @@ owner's confirmation before it runs.
 
 ### 13.4 Fixtures validated against the pinned source
 
-Fixtures live in `testdata/libgm/6026696/`, named for the pinned commit, and
+Fixtures live in `testdata/libgm/34e0490/`, named for the pinned commit, and
 are **source-derived, not live captures** — every identifier is a fixture
 label or a `555` number, and every key is a nonfunctional placeholder.
 
-A CI job, `fixture-validation`, clones mautrix-gmessages at `6026696` and
+A CI job, `fixture-validation`, clones mautrix-gmessages at `34e0490` and
 asserts, against that tree and not against Agent GM's own code (twenty-one
 assertions):
 
@@ -4711,7 +4711,7 @@ twice):
 | Job | What |
 |---|---|
 | `check` | `devbox run check` — build, vet, `golangci-lint run`, `go test -race` |
-| `pin-consistency` | `go.mod`, `internal/gm/pin.go` and §3.6 all name `6026696` |
+| `pin-consistency` | `go.mod`, `internal/gm/pin.go` and §3.6 all name `34e0490` |
 | `fixture-validation` | §13.4, against a fresh clone of the pinned upstream tree |
 | `conformance` | `devbox run conformance` against the baseline (§8.4) |
 | `lint-names` | the name lint of §13.5 |
