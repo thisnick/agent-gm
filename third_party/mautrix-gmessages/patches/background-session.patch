@@ -198,7 +198,7 @@ diff --git a/pkg/libgm/gmproto/build.sh b/pkg/libgm/gmproto/build.sh
 old mode 100755
 new mode 100644
 diff --git a/pkg/libgm/longpoll.go b/pkg/libgm/longpoll.go
-index e6601d6..67ff674 100644
+index 7807445..648f319 100644
 --- a/pkg/libgm/longpoll.go
 +++ b/pkg/libgm/longpoll.go
 @@ -466,7 +466,7 @@ func (c *Client) doLongPoll(ctx context.Context, loggedIn, background bool, onFi
@@ -312,10 +312,10 @@ index e6601d6..67ff674 100644
  			log.Warn().Msg("Didn't get EOF after stream end marker")
  		}
 diff --git a/pkg/libgm/pair_google.go b/pkg/libgm/pair_google.go
-index bbd9a8c..607f306 100644
+index 2b45211..ab8535b 100644
 --- a/pkg/libgm/pair_google.go
 +++ b/pkg/libgm/pair_google.go
-@@ -311,6 +311,9 @@ func (c *Client) DoGaiaPairing(ctx context.Context, emojiCallback func(string))
+@@ -313,6 +313,9 @@ func (c *Client) DoGaiaPairing(ctx context.Context, emojiCallback func(string))
  		return err
  	}
  	c.triggerEvent(&events.PairSuccessful{PhoneID: phoneID})
