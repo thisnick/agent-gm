@@ -16,6 +16,10 @@ tag: a tag is a label and a digest is evidence.
 
 Nothing yet.
 
+## [1.4.4] — 2026-11-09
+
+- Bump the pinned mautrix-gmessages (libgm) dependency from 6026696 to 3bf5e3a, carrying the maintained background-session patch forward unchanged (it applies cleanly). Upstream now stops its acknowledgment timer on disconnect, reads the long-poll stream with a smaller buffer, logs more detail when an incoming message can't be decoded, reports a Google-account pairing timeout as "phone hasn't been seen recently" when the phone has been offline for over 48 hours, and returns an error instead of panicking when media is downloaded on a nil client. ConfigVersion is unchanged. The live gate of spec §3.6(d) has not yet been run.
+
 ## [1.4.3] — 2026-10-29
 
 - Bump the pinned mautrix-gmessages (libgm) dependency from c1697e9 to 6026696, carrying the maintained background-session patch forward unchanged (it applies cleanly). Upstream's media upload and download calls now take a `context.Context`, so cancelling a request aborts the transfer instead of abandoning it; media HTTP failures now surface as typed HTTP errors. ConfigVersion is unchanged. The live gate of spec §3.6(d) has not yet been run.
@@ -171,7 +175,8 @@ Agent GM *is* rather than what changed.
   gate was satisfied through the public URL with Codex CLI. Adding either
   later needs no code.
 
-[Unreleased]: https://github.com/thisnick/agent-gm/compare/v1.4.3...HEAD
+[Unreleased]: https://github.com/thisnick/agent-gm/compare/v1.4.4...HEAD
+[1.4.4]: https://github.com/thisnick/agent-gm/releases/tag/v1.4.4
 [1.4.3]: https://github.com/thisnick/agent-gm/releases/tag/v1.4.3
 [1.4.2]: https://github.com/thisnick/agent-gm/releases/tag/v1.4.2
 [1.4.1]: https://github.com/thisnick/agent-gm/releases/tag/v1.4.1
