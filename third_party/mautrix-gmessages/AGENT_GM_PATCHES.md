@@ -2,19 +2,19 @@
 
 Read this record before updating the upstream pin or changing connection
 behavior. It describes the implementation shipped in Agent GM v1.3.0 and
-carried forward onto the `b0d61b4`, then the `d7b1aaf`, `caaeaa7`, `186284e`, `c1697e9`, and now the `6026696`
+carried forward onto the `b0d61b4`, then the `d7b1aaf`, `caaeaa7`, `186284e`, `c1697e9`, `6026696`, and now the `3bf5e3a`
 pin, including its known limitations.
 
 ## Source and reproducible patch
 
 - Upstream: <https://github.com/mautrix/gmessages>.
-- Base commit: `6026696bf7cd22c429c9a70aed15bfd852b9e135`.
-- Go version: `v0.2610.1-0.20261023204119-6026696bf7cd`.
+- Base commit: `3bf5e3ade989017518a8d3a1bf4e45732d44e220`.
+- Go version: `v0.2610.1-0.20261107153443-3bf5e3ade989`.
 - Imported files: upstream `pkg/libgm`, `go.mod`, `go.sum`, `LICENSE`, and
   `LICENSE.exceptions`. The Matrix connector is not copied.
 - First shipped in commit `1f8659ed279ac1f30526078c77613def7822145a` (PR #15),
   against base commit `be48a58b733825f6dfd6bb630af5f236d3bc9ae8`. Carried
-  forward onto `b0d61b4`, then `d7b1aaf`, then `caaeaa7`, then `186284e`, then `c1697e9`, and now `6026696` per the procedure
+  forward onto `b0d61b4`, then `d7b1aaf`, then `caaeaa7`, then `186284e`, then `c1697e9`, then `6026696`, and now `3bf5e3a` per the procedure
   below; see [docs/upstream-pin.md](../../docs/upstream-pin.md) for what
   changed in each bump and what upstream now does natively (the former
   `doLongPollContext` split and the `dittoPinger` context fields). The
@@ -34,7 +34,7 @@ pin, including its known limitations.
   moved the surrounding lines. The `6026696` bump again added nothing to and
   retired nothing from the patch; it applied cleanly and only line offsets
   moved (upstream's `media.go`, `pair.go` and `AuthData` changes are outside
-  every patched hunk).
+  every patched hunk). The `3bf5e3a` bump also added nothing to and retired nothing from the patch; it applied cleanly and only line offsets moved. Upstream's changes (a stopped ack ticker, `stopAckInterval`, in `session_handler.go`/`client.go`; a 32 KiB long-poll read buffer; richer decode-failure logging; `ErrPhoneInactive` in gaia pairing; nil-receiver guards on media downloads) are outside every patched hunk, but the `startAckInterval`/`stopAckInterval` pair now sits beside this patch's `sendAckRequestContext` split.
 - Exact source delta: [patches/background-session.patch](patches/background-session.patch).
   Paths are relative to the upstream repository root. The patch includes new
   source/tests, changes to existing files, and the mode difference noted below.
@@ -127,7 +127,7 @@ tree.
 patch_record="$PWD/third_party/mautrix-gmessages/patches/background-session.patch"
 upstream_checkout=/path/to/mautrix-gmessages
 patch_verify_dir=$(mktemp -d -t agent-gm-patch-verify-XXXXXX)
-git -C "$upstream_checkout" archive 6026696bf7cd22c429c9a70aed15bfd852b9e135 \
+git -C "$upstream_checkout" archive 3bf5e3ade989017518a8d3a1bf4e45732d44e220 \
   pkg/libgm go.mod go.sum LICENSE LICENSE.exceptions | tar -x -C "$patch_verify_dir"
 git -C "$patch_verify_dir" apply --check "$patch_record"
 git -C "$patch_verify_dir" apply "$patch_record"
