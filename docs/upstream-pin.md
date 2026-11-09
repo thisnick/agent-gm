@@ -9,7 +9,7 @@ page is the record they write to.
 
 | Dependency | Pinned | Why this one | Bumped on |
 |---|---|---|---|
-| `go.mau.fi/mautrix-gmessages` (`pkg/libgm`) | `6026696bf7cd22c429c9a70aed15bfd852b9e135` (`6026696`), `ConfigVersion` 2026.9.2 (unchanged) | The Google Messages client library. Its `ConfigVersion` must be current enough for Google to accept conversation creation | `c1697e9` → `6026696`, automated gate only — **live gate outstanding**; see Bumps below |
+| `go.mau.fi/mautrix-gmessages` (`pkg/libgm`) | `3bf5e3ade989017518a8d3a1bf4e45732d44e220` (`3bf5e3a`), `ConfigVersion` 2026.9.2 (unchanged) | The Google Messages client library. Its `ConfigVersion` must be current enough for Google to accept conversation creation | `6026696` → `3bf5e3a`, automated gate only — **live gate outstanding**; see Bumps below |
 | `github.com/modelcontextprotocol/go-sdk` | `v1.7.0` | The MCP protocol layer. It decides the JSON-RPC framing, the `WWW-Authenticate` challenge on `/mcp` and the RFC 9728 handler | initial pin, `v1.0.0` |
 | Node | `22` (`devbox.json`, and `actions/setup-node` in `release.yml`) | Runs the `@agent-gm/cli` postinstall shim and packs the npm tarball | initial pin, `v1.0.0` |
 | npm | `>= 11.5.1`, installed into a scratch prefix by `release.yml` and passed to `scripts/release.sh` as `AGENT_GM_NPM` | Trusted publishing (OIDC) is not implemented before 11.5.1: an older npm publishes unauthenticated and the registry answers `404`. Node 22 ships npm 10 | `v1.0.1` |
@@ -65,6 +65,41 @@ without cloning anything:
 A bump with no entry here is a bump nobody can review later.
 
 ## Bumps
+
+## `libgm` 6026696 → 3bf5e3a (unreleased, live gate outstanding)
+
+Seventeen upstream commits, 2026-10-26 to 2026-11-07. Most are `pkg/connector`
+or tooling (bridgelint pre-commit hook, startchat/chatinfo/chatsync fixes) and
+are not vendored. Five touch the vendored `pkg/libgm`: `d49e4d7` (32 KiB
+long-poll read buffer, `longpoll.go`), `34e0490` (`ErrPhoneInactive` /
+`GaiaPhoneInactiveAfter` in `pair_google.go`), `ef5c4b1` (stop the ack ticker
+on disconnect: `SessionHandler.ackStop`, `stopAckInterval`, called from
+`Client.Disconnect`), `1aca87b` (more fields on the "Failed to decode incoming
+RPC message" log) and `e7e197c` (`DownloadMedia`/`DownloadAvatar` return
+`ErrClientIsNil` on a nil client).
+
+- **`ConfigVersion`**: 2026.9.2 → 2026.9.2 (unchanged).
+- **Symbols in spec §3.1 that changed**: none breaking. Added
+  `libgm.ErrPhoneInactive` and `libgm.GaiaPhoneInactiveAfter` (48h): a gaia
+  pairing timeout is now wrapped with `ErrPhoneInactive` when the phone's
+  `LastSeen` is older than that. `startAckInterval` takes `ackMapLock` and is
+  now stoppable.
+- **Delivery-state and event vocabulary**: none. No `.proto` changed.
+- **Wire behaviour that changed**: none on the wire. The long-poll reader
+  buffer shrank from 2.5 MiB to 32 KiB per read (accumulation unchanged).
+- **`go.mod` in the nested module**: unchanged. The root `require` pins
+  `v0.2610.1-0.20261107153443-3bf5e3ade989`.
+- **Interaction with the maintained patch**: nothing retired, nothing added;
+  the patch applies cleanly to pristine `3bf5e3a` (only line offsets moved) and
+  was regenerated. Old-base reconstruction matched before the bump; new-base
+  reconstruction matches the vendored tree exactly. Review note: the upstream
+  `ackStop` change makes `Disconnect` stop the ack ticker, which the
+  background-session path (`RunBackground`, which sends its own final ACKs)
+  does not depend on.
+- **Gate**: see the automated-gate results recorded in the PR. **Live gate**:
+  **not recorded**; spec §3.6(d) requires the maintainer to pair, list, send
+  one text and receive a reply by hand. Also exercise a Google-account
+  re-pair, since `pair_google.go` changed.
 
 ## `libgm` c1697e9 → 6026696 (unreleased, live gate outstanding)
 

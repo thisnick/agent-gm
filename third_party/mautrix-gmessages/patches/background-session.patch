@@ -147,7 +147,7 @@ index 0000000..b9f0dc2
 +	}
 +}
 diff --git a/pkg/libgm/client.go b/pkg/libgm/client.go
-index 36d7570..6308bf8 100644
+index 1e24f14..583004f 100644
 --- a/pkg/libgm/client.go
 +++ b/pkg/libgm/client.go
 @@ -146,9 +146,11 @@ const DefaultBugleDefaultCheckInterval = 2*time.Hour + 55*time.Minute
@@ -165,7 +165,7 @@ index 36d7570..6308bf8 100644
  
  	longPollingConn atomic.Pointer[io.ReadCloser]
  	listenID        int
-@@ -492,7 +494,7 @@ type PushKeys struct {
+@@ -493,7 +495,7 @@ type PushKeys struct {
  
  func (c *Client) RegisterPush(ctx context.Context, keys *PushKeys) error {
  	if c.PushKeys == nil || c.PushKeys.URL != keys.URL {
@@ -174,7 +174,7 @@ index 36d7570..6308bf8 100644
  		if err != nil {
  			return fmt.Errorf("failed to refresh auth token: %w", err)
  		}
-@@ -524,6 +526,10 @@ func isFatalRefreshError(err error) bool {
+@@ -525,6 +527,10 @@ func isFatalRefreshError(err error) bool {
  }
  
  func (c *Client) refreshAuthToken(pushKeyOverride *PushKeys) error {
@@ -185,7 +185,7 @@ index 36d7570..6308bf8 100644
  	if c.AuthData.Browser == nil || (time.Until(c.AuthData.TachyonExpiry) > RefreshTachyonBuffer && pushKeyOverride == nil) {
  		return nil
  	}
-@@ -581,7 +587,7 @@ func (c *Client) refreshAuthToken(pushKeyOverride *PushKeys) error {
+@@ -582,7 +588,7 @@ func (c *Client) refreshAuthToken(pushKeyOverride *PushKeys) error {
  	}
  
  	resp, err := typedHTTPResponse[*gmproto.RegisterRefreshResponse](
@@ -198,7 +198,7 @@ diff --git a/pkg/libgm/gmproto/build.sh b/pkg/libgm/gmproto/build.sh
 old mode 100755
 new mode 100644
 diff --git a/pkg/libgm/longpoll.go b/pkg/libgm/longpoll.go
-index e6601d6..67ff674 100644
+index 7807445..648f319 100644
 --- a/pkg/libgm/longpoll.go
 +++ b/pkg/libgm/longpoll.go
 @@ -466,7 +466,7 @@ func (c *Client) doLongPoll(ctx context.Context, loggedIn, background bool, onFi
@@ -312,10 +312,10 @@ index e6601d6..67ff674 100644
  			log.Warn().Msg("Didn't get EOF after stream end marker")
  		}
 diff --git a/pkg/libgm/pair_google.go b/pkg/libgm/pair_google.go
-index bbd9a8c..607f306 100644
+index 2b45211..ab8535b 100644
 --- a/pkg/libgm/pair_google.go
 +++ b/pkg/libgm/pair_google.go
-@@ -311,6 +311,9 @@ func (c *Client) DoGaiaPairing(ctx context.Context, emojiCallback func(string))
+@@ -313,6 +313,9 @@ func (c *Client) DoGaiaPairing(ctx context.Context, emojiCallback func(string))
  		return err
  	}
  	c.triggerEvent(&events.PairSuccessful{PhoneID: phoneID})
@@ -326,10 +326,10 @@ index bbd9a8c..607f306 100644
  	go func() {
  		err := c.Reconnect(context.TODO())
 diff --git a/pkg/libgm/session_handler.go b/pkg/libgm/session_handler.go
-index b62c249..a222155 100644
+index 42852dd..ab33645 100644
 --- a/pkg/libgm/session_handler.go
 +++ b/pkg/libgm/session_handler.go
-@@ -359,15 +359,19 @@ func (s *SessionHandler) startAckInterval() {
+@@ -381,15 +381,19 @@ func (s *SessionHandler) stopAckInterval() {
  }
  
  func (s *SessionHandler) sendAckRequest() {
@@ -351,7 +351,7 @@ index b62c249..a222155 100644
  	}
  	ackMessages := make([]*gmproto.AckMessageRequest_Message, len(dataToAck))
  	for i, reqID := range dataToAck {
-@@ -406,4 +410,5 @@ func (s *SessionHandler) sendAckRequest() {
+@@ -428,4 +432,5 @@ func (s *SessionHandler) sendAckRequest() {
  	} else {
  		s.client.Logger.Trace().Strs("message_ids", dataToAck).Msg("Sent acks")
  	}
