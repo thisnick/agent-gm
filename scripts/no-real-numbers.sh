@@ -53,7 +53,11 @@ while IFS= read -r file; do
     if [ "${#digits}" -eq 10 ] && [ "${digits:3:3}" = "555" ]; then continue; fi
     printf 'no-real-numbers: %s:%s looks like a real phone number: %s\n' "$file" "$lineno" "$rest" >&2
     status=1
-  done < <(grep -noP "$pattern" "$file" 2>/dev/null)
+  # A full 40-character git commit hash is masked first: its decimal runs are
+  # bounded by hex letters, which the digit lookarounds do not exclude, so a
+  # pinned upstream commit can otherwise read as a phone number. Masking keeps
+  # line numbers, and a number merely next to a letter is still caught.
+  done < <(sed -E 's/(^|[^0-9a-f])[0-9a-f]{40}([^0-9a-f]|$)/\1<sha>\2/g' "$file" | grep -noP "$pattern" 2>/dev/null)
 done <<< "$files"
 
 if [ "$status" -ne 0 ]; then

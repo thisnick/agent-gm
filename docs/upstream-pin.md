@@ -9,7 +9,7 @@ page is the record they write to.
 
 | Dependency | Pinned | Why this one | Bumped on |
 |---|---|---|---|
-| `go.mau.fi/mautrix-gmessages` (`pkg/libgm`) | `3bf5e3ade989017518a8d3a1bf4e45732d44e220` (`3bf5e3a`), `ConfigVersion` 2026.9.2 (unchanged) | The Google Messages client library. Its `ConfigVersion` must be current enough for Google to accept conversation creation | `6026696` → `3bf5e3a`, automated gate only — **live gate outstanding**; see Bumps below |
+| `go.mau.fi/mautrix-gmessages` (`pkg/libgm`) | `f756f0cb7428198310e1c57d81a2429923524220` (`f756f0c`), `ConfigVersion` 2026.9.2 (unchanged) | The Google Messages client library. Its `ConfigVersion` must be current enough for Google to accept conversation creation | `3bf5e3a` → `f756f0c`, automated gate only — **live gate outstanding**; see Bumps below |
 | `github.com/modelcontextprotocol/go-sdk` | `v1.7.0` | The MCP protocol layer. It decides the JSON-RPC framing, the `WWW-Authenticate` challenge on `/mcp` and the RFC 9728 handler | initial pin, `v1.0.0` |
 | Node | `22` (`devbox.json`, and `actions/setup-node` in `release.yml`) | Runs the `@agent-gm/cli` postinstall shim and packs the npm tarball | initial pin, `v1.0.0` |
 | npm | `>= 11.5.1`, installed into a scratch prefix by `release.yml` and passed to `scripts/release.sh` as `AGENT_GM_NPM` | Trusted publishing (OIDC) is not implemented before 11.5.1: an older npm publishes unauthenticated and the registry answers `404`. Node 22 ships npm 10 | `v1.0.1` |
@@ -65,6 +65,74 @@ without cloning anything:
 A bump with no entry here is a bump nobody can review later.
 
 ## Bumps
+
+## `libgm` 3bf5e3a → f756f0c (unreleased, live gate outstanding)
+
+Eight upstream commits, 2026-11-09 to 2026-11-16. Four are `pkg/connector`
+only and are not vendored: `0956207` (chatinfo: check participant visibility
+before warning about a missing number), `2a4a130` (chatinfo: pause ghost
+avatar fetches after the phone doesn't answer one), `b826f89`
+(handlegmessages: treat SIM cards without a subscription as missing) and
+`f756f0c` (backfill: deduplicate forward backfill of empty portals by message
+ID). Four touch the vendored `pkg/libgm`:
+
+- `4e0fecb` — `DownloadMedia` (`media.go`) now checks the HTTP status and, on
+  a non-2xx response, closes the body and returns `events.HTTPError{Action:
+  "downloading media"}` instead of handing back a stream that decrypts the
+  error page. `internal/gm`'s `translateError` already maps `events.HTTPError`
+  to `gm.HTTPError` (`google_http_error`), so a failed attachment download now
+  surfaces as that error rather than a decryption failure from `io.ReadAll`.
+- `11e304c` — `client.proto` / `client.pb.go`: new `RenameGroupData { string
+  name = 1; }` as field 7 of `UpdateConversationRequest.data`, and a new enum
+  value `ConversationActionStatus.RENAME_GROUP = 17`. Agent GM does not use
+  either yet; the rest of that commit (renaming RCS groups from Matrix) is
+  `pkg/connector`.
+- `ec50396` — `PairingSession.ProcessServerInit` (`pair_google.go`) accepts
+  server key coordinates shorter than 32 bytes and left-pads them with zeros
+  into the 65-byte uncompressed P-256 point, instead of rejecting them.
+  Coordinates longer than 32 bytes are still an error. Fixes an intermittent
+  Google-account pairing failure when a coordinate has leading zero bytes.
+- `b580a1a` — `decryptInternalMessage` (`event_handler.go`) now calls a new
+  `fillMissingIDs` on decoded data events: for `UpdateEvents`,
+  `ListConversationsResponse`, `GetConversationResponse`,
+  `GetOrCreateConversationResponse` and `ListMessagesResponse` it fills an
+  empty `Conversation.ConversationID` / `LatestMessageID` and
+  `Message.MessageID` / `ConversationID` from the nested
+  `SomeKindOfGroupID` / `LatestMessageAnotherID` / `AnotherMessageID` fields.
+  Before this, Agent GM would have seen such conversations and messages with
+  empty IDs.
+
+- **`ConfigVersion`**: 2026.9.2 → 2026.9.2 (unchanged).
+- **Symbols in spec §3.1 that changed**: none in signature. `DownloadMedia`
+  gains a new error return path (above).
+- **Delivery-state and event vocabulary**: added
+  `ConversationActionStatus.RENAME_GROUP = 17` and the `RenameGroupData`
+  message. No delivery-state, message-status or event enum changed.
+- **Wire behaviour that changed**: media downloads with a non-2xx status are
+  reported as HTTP errors; short server-key coordinates in gaia pairing are
+  accepted; missing top-level IDs are back-filled from nested ones.
+- **`go.mod` in the nested module**: unchanged (`go.mod`/`go.sum` identical).
+  The root `require` pins `v0.2610.1-0.20261116095921-f756f0cb7428`.
+- **Interaction with the maintained patch**: nothing retired, nothing added;
+  the patch applies cleanly to pristine `f756f0c` (only the `DoGaiaPairing`
+  hunk's line offset moved, 313 → 317) and was regenerated. Old-base
+  reconstruction matched before the bump; new-base reconstruction matches the
+  vendored tree exactly, including `go.mod`, `go.sum` and both licenses.
+- **Spec citations**: `file:line` citations into `event_handler.go` (+1 after
+  line 104, +49 after line 133), `pair_google.go` (lines after 250 moved by +4) and
+  `gmproto/client.pb.go` are now offset; they were not renumbered in this bump.
+- **Repository check**: the full 40-character `f756f0c` hash contains a
+  ten-digit decimal run bounded by hex letters, which
+  `scripts/no-real-numbers.sh` flagged as a phone number. The script now
+  masks full 40-character hex commit hashes before matching; numbers next to
+  letters are still caught.
+- **Gate**: automated only — `pin-consistency`, `go build`, `go vet`, root
+  `go test ./... -race`, the nested `pkg/libgm` race test, `fixture-validation`
+  against a fresh `f756f0c` clone, `lint-names`, `no-real-numbers`,
+  `no-deployment-host`. **Live gate**: **not recorded**; spec §3.6(d) requires
+  the maintainer to pair, list, send one text and receive a reply by hand.
+  Also exercise a Google-account re-pair (`pair_google.go` changed) and an
+  attachment download (`media.go` changed).
 
 ## `libgm` 6026696 → 3bf5e3a (unreleased, live gate outstanding)
 
