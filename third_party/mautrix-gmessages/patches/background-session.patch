@@ -312,10 +312,10 @@ index 7807445..648f319 100644
  			log.Warn().Msg("Didn't get EOF after stream end marker")
  		}
 diff --git a/pkg/libgm/pair_google.go b/pkg/libgm/pair_google.go
-index 2b45211..ab8535b 100644
+index f9b0898..0b79c1c 100644
 --- a/pkg/libgm/pair_google.go
 +++ b/pkg/libgm/pair_google.go
-@@ -313,6 +313,9 @@ func (c *Client) DoGaiaPairing(ctx context.Context, emojiCallback func(string))
+@@ -317,6 +317,9 @@ func (c *Client) DoGaiaPairing(ctx context.Context, emojiCallback func(string))
  		return err
  	}
  	c.triggerEvent(&events.PairSuccessful{PhoneID: phoneID})
