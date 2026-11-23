@@ -16,6 +16,10 @@ tag: a tag is a label and a digest is evidence.
 
 Nothing yet.
 
+## [1.4.5] — 2026-11-23
+
+- Bump the pinned mautrix-gmessages (libgm) dependency from f756f0c to ed5dc19, carrying the maintained background-session patch forward unchanged (it applies cleanly). Upstream's `SetTyping` now takes an explicit typing flag (Agent GM keeps sending "typing"), adds a `PairedPhoneRegistered` check for a paired phone removed from the Google account, stops counting a closed recovery ping as a response, and moves the nested module to newer `go.mau.fi/util` and `golang.org/x` releases. ConfigVersion is unchanged. The live gate of spec §3.6(d) has not yet been run.
+
 ## [1.4.4] — 2026-11-16
 
 - Bump the pinned mautrix-gmessages (libgm) dependency from 6026696 to 3bf5e3a, carrying the maintained background-session patch forward unchanged (it applies cleanly). Upstream now stops its acknowledgment timer on disconnect, reads the long-poll stream with a smaller buffer, logs more detail when an incoming message can't be decoded, reports a Google-account pairing timeout as "phone hasn't been seen recently" when the phone has been offline for over 48 hours, and returns an error instead of panicking when media is downloaded on a nil client. ConfigVersion is unchanged. The live gate of spec §3.6(d) has not yet been run.
@@ -176,7 +180,8 @@ Agent GM *is* rather than what changed.
   gate was satisfied through the public URL with Codex CLI. Adding either
   later needs no code.
 
-[Unreleased]: https://github.com/thisnick/agent-gm/compare/v1.4.4...HEAD
+[Unreleased]: https://github.com/thisnick/agent-gm/compare/v1.4.5...HEAD
+[1.4.5]: https://github.com/thisnick/agent-gm/releases/tag/v1.4.5
 [1.4.4]: https://github.com/thisnick/agent-gm/releases/tag/v1.4.4
 [1.4.3]: https://github.com/thisnick/agent-gm/releases/tag/v1.4.3
 [1.4.2]: https://github.com/thisnick/agent-gm/releases/tag/v1.4.2
