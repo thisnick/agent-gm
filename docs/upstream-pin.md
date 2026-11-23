@@ -9,7 +9,7 @@ page is the record they write to.
 
 | Dependency | Pinned | Why this one | Bumped on |
 |---|---|---|---|
-| `go.mau.fi/mautrix-gmessages` (`pkg/libgm`) | `f756f0cb7428198310e1c57d81a2429923524220` (`f756f0c`), `ConfigVersion` 2026.9.2 (unchanged) | The Google Messages client library. Its `ConfigVersion` must be current enough for Google to accept conversation creation | `3bf5e3a` → `f756f0c`, automated gate only — **live gate outstanding**; see Bumps below |
+| `go.mau.fi/mautrix-gmessages` (`pkg/libgm`) | `ed5dc19eb2b4149ee242cf000c86a7150dca9947` (`ed5dc19`), `ConfigVersion` 2026.9.2 (unchanged) | The Google Messages client library. Its `ConfigVersion` must be current enough for Google to accept conversation creation | `f756f0c` → `ed5dc19`, automated gate only — **live gate outstanding**; see Bumps below |
 | `github.com/modelcontextprotocol/go-sdk` | `v1.7.0` | The MCP protocol layer. It decides the JSON-RPC framing, the `WWW-Authenticate` challenge on `/mcp` and the RFC 9728 handler | initial pin, `v1.0.0` |
 | Node | `22` (`devbox.json`, and `actions/setup-node` in `release.yml`) | Runs the `@agent-gm/cli` postinstall shim and packs the npm tarball | initial pin, `v1.0.0` |
 | npm | `>= 11.5.1`, installed into a scratch prefix by `release.yml` and passed to `scripts/release.sh` as `AGENT_GM_NPM` | Trusted publishing (OIDC) is not implemented before 11.5.1: an older npm publishes unauthenticated and the registry answers `404`. Node 22 ships npm 10 | `v1.0.1` |
@@ -65,6 +65,71 @@ without cloning anything:
 A bump with no entry here is a bump nobody can review later.
 
 ## Bumps
+
+## `libgm` f756f0c → ed5dc19 (unreleased, live gate outstanding)
+
+Nine upstream commits, 2026-11-16 to 2026-11-19 (upstream tagged `v0.2611.0`
+at `3c3a878`, so the pseudo-version is now `v0.2611.1-…`). Six are
+`pkg/connector` or release-only and are not vendored: `3c3a878` (bump version
+to v26.11, which also moved the nested module's dependencies), `56e5162`
+(startchat: fetch contacts once for nameless participant lookups), `cd2ffcd`
+(warn about dropped old messages only when their ID is higher), `dc09c71`
+(explain generic SMS/MMS send failures), `e599aed` (don't queue unchanged
+CONNECTED bridge states) and `97528a9` (use dimensions and the sender MIME
+type for incoming media). Three touch the vendored `pkg/libgm`:
+
+- `105163a` — **breaking API change**: `(*Client).SetTyping` (`methods.go`)
+  gains a `typing bool` argument, now
+  `SetTyping(ctx, convID string, typing bool, simPayload *gmproto.SIMPayload)`,
+  so callers can send typing *stops*. `internal/gm/libgm.go`'s
+  `rawSetTyping` now passes `true`, which keeps Agent GM's current behaviour;
+  the `internal/upstream` signature assertion and spec §3.1 were updated. The
+  same commit makes the upstream bridge send typing only in RCS chats; Agent
+  GM's REST `POST /v1/conversations/{id}/typing` does not filter by
+  conversation type (informational; not changed here).
+- `9f58c76` — `decryptInternalMessage` (`event_handler.go`) logs a debug line
+  for data events whose content is only encrypted field 11. Logging only.
+- `ed5dc19` — `pair_google.go`: `signInGaiaGetToken` is split into
+  `signInGaia` plus the token step, `getGaiaPrimaryDevices`'s parsing moves
+  to a free function `gaiaPrimaryDevices`, and a new exported
+  `(*Client).PairedPhoneRegistered(ctx) (bool, error)` reports whether the
+  paired phone (`DestRegID` or `DestPhoneID`) is still among the Google
+  account's primary devices. Agent GM does not call it yet. `longpoll.go`:
+  `dittoPinger.WaitForResponse` now treats a *closed* ping channel as no
+  response instead of calling `OnRespond`; the recovery pinger only runs for
+  active connections, so `RunBackground` is unaffected.
+
+- **`ConfigVersion`**: 2026.9.2 → 2026.9.2 (unchanged).
+- **Symbols in spec §3.1 that changed**: `SetTyping` (above). Added:
+  `PairedPhoneRegistered`.
+- **Delivery-state and event vocabulary**: unchanged; no `gmproto` change.
+- **Wire behaviour that changed**: none on the paths Agent GM uses; the ping
+  channel change only affects the active-mode recovery pinger.
+- **`go.mod` in the nested module**: toolchain `go1.27.2` → `go1.27.4`;
+  `go.mau.fi/util` v0.11.0 → v0.11.1, `golang.org/x/crypto` v0.58.0 → v0.59.0,
+  `maunium.net/go/mautrix` v0.32.0 → v0.33.0 and minor `x/*` bumps. The root
+  `go.mod` was re-tidied: `go.mau.fi/util` v0.11.1, `x/crypto` v0.59.0,
+  `x/text` v0.44.0, `x/exp`, `x/net`, `x/sync`, `x/sys` raised to match. The
+  root `require` pins `v0.2611.1-0.20261119194137-ed5dc19eb2b4`.
+- **Interaction with the maintained patch**: nothing retired, nothing added;
+  the patch applies cleanly to pristine `ed5dc19` (the `longpoll.go` hunks
+  moved by +2 lines, the `DoGaiaPairing` hunk by +4) and was regenerated.
+  Old-base reconstruction matched before the bump; new-base reconstruction
+  matches the vendored tree exactly, including `go.mod`, `go.sum` and both
+  licenses.
+- **Spec citations**: `file:line` citations into `pair_google.go` (after
+  line 80) and `longpoll.go` (after line 229) are now offset; they were not
+  renumbered in this bump.
+- **Gate**: automated only — `pin-consistency`, `go build`, `go vet` (linux,
+  windows, darwin/arm64), root `go test ./... -race`, the nested `pkg/libgm`
+  race test, `fixture-validation` against a fresh `ed5dc19` clone,
+  `conformance` (baseline holds), `lint-names`, `no-real-numbers`,
+  `no-deployment-host`. `golangci-lint` was not run locally (the installed
+  binary was built with Go 1.25); CI runs it. **Live gate**: **not
+  recorded**; spec §3.6(d) requires the maintainer to pair, list, send one
+  text and receive a reply by hand. Also exercise the typing endpoint
+  (`SetTyping` signature changed) and a Google-account re-pair
+  (`pair_google.go` changed).
 
 ## `libgm` 3bf5e3a → f756f0c (unreleased, live gate outstanding)
 

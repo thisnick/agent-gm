@@ -166,7 +166,7 @@ func TestAssertion01_SectionThreeOneSignatures(t *testing.T) {
 		"func (c *Client) SendReaction(ctx context.Context, payload *gmproto.SendReactionRequest) (*gmproto.SendReactionResponse, error) {",
 		"func (c *Client) DeleteMessage(ctx context.Context, messageID string) (*gmproto.DeleteMessageResponse, error) {",
 		"func (c *Client) MarkRead(ctx context.Context, conversationID, messageID string) error {",
-		"func (c *Client) SetTyping(ctx context.Context, convID string, simPayload *gmproto.SIMPayload) error {",
+		"func (c *Client) SetTyping(ctx context.Context, convID string, typing bool, simPayload *gmproto.SIMPayload) error {",
 		"func (c *Client) GetOrCreateConversation(ctx context.Context, req *gmproto.GetOrCreateConversationRequest) (*gmproto.GetOrCreateConversationResponse, error) {",
 		"func (c *Client) UpdateConversation(ctx context.Context, payload *gmproto.UpdateConversationRequest) (*gmproto.UpdateConversationResponse, error) {",
 		"func (c *Client) DeleteConversation(ctx context.Context, conversationID, phone string) error {",

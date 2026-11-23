@@ -198,10 +198,10 @@ diff --git a/pkg/libgm/gmproto/build.sh b/pkg/libgm/gmproto/build.sh
 old mode 100755
 new mode 100644
 diff --git a/pkg/libgm/longpoll.go b/pkg/libgm/longpoll.go
-index 7807445..648f319 100644
+index 540b2f0..d9c6b73 100644
 --- a/pkg/libgm/longpoll.go
 +++ b/pkg/libgm/longpoll.go
-@@ -466,7 +466,7 @@ func (c *Client) doLongPoll(ctx context.Context, loggedIn, background bool, onFi
+@@ -468,7 +468,7 @@ func (c *Client) doLongPoll(ctx context.Context, loggedIn, background bool, onFi
  	ctx = log.WithContext(ctx)
  	log.Debug().Str("listen_uuid", listenReqID).Msg("Long polling starting")
  
@@ -210,7 +210,7 @@ index 7807445..648f319 100644
  		stopDittoPinger := make(chan struct{})
  		defer close(stopDittoPinger)
  		go (&dittoPinger{
-@@ -483,7 +483,10 @@ func (c *Client) doLongPoll(ctx context.Context, loggedIn, background bool, onFi
+@@ -485,7 +485,10 @@ func (c *Client) doLongPoll(ctx context.Context, loggedIn, background bool, onFi
  	errorCount := 1
  	var disconnectedAt time.Time
  	for c.listenID == listenID {
@@ -222,7 +222,7 @@ index 7807445..648f319 100644
  		if err != nil {
  			if isFatalRefreshError(err) {
  				log.Err(err).Msg("Error refreshing auth token")
-@@ -504,7 +507,9 @@ func (c *Client) doLongPoll(ctx context.Context, loggedIn, background bool, onFi
+@@ -506,7 +509,9 @@ func (c *Client) doLongPoll(ctx context.Context, loggedIn, background bool, onFi
  				sleepSeconds = errorCount * 2
  			}
  			log.Err(err).Int("sleep_seconds", sleepSeconds).Msg("Error refreshing auth token, retrying in a while")
@@ -233,7 +233,7 @@ index 7807445..648f319 100644
  			continue
  		}
  		log.Trace().Msg("Starting new long-polling request")
-@@ -539,7 +544,9 @@ func (c *Client) doLongPoll(ctx context.Context, loggedIn, background bool, onFi
+@@ -541,7 +546,9 @@ func (c *Client) doLongPoll(ctx context.Context, loggedIn, background bool, onFi
  				sleepSeconds = errorCount * 2
  			}
  			log.Err(err).Int("sleep_seconds", sleepSeconds).Msg("Error making listen request, retrying in a while")
@@ -244,7 +244,7 @@ index 7807445..648f319 100644
  			continue
  		}
  		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-@@ -572,7 +579,9 @@ func (c *Client) doLongPoll(ctx context.Context, loggedIn, background bool, onFi
+@@ -574,7 +581,9 @@ func (c *Client) doLongPoll(ctx context.Context, loggedIn, background bool, onFi
  				Int("statusCode", resp.StatusCode).
  				Int("sleep_seconds", sleepSeconds).
  				Msg("Error in long polling, retrying in a while")
@@ -255,7 +255,7 @@ index 7807445..648f319 100644
  			continue
  		}
  		if c.listenID != listenID {
-@@ -626,6 +635,7 @@ func (c *Client) readLongPoll(log *zerolog.Logger, rc io.ReadCloser, background
+@@ -628,6 +637,7 @@ func (c *Client) readLongPoll(log *zerolog.Logger, rc io.ReadCloser, background
  		return false
  	}
  	var closeIn *time.Timer
@@ -263,7 +263,7 @@ index 7807445..648f319 100644
  	receivedEvents := false
  	onRead := func() {
  		if background {
-@@ -644,10 +654,19 @@ func (c *Client) readLongPoll(log *zerolog.Logger, rc io.ReadCloser, background
+@@ -646,10 +656,19 @@ func (c *Client) readLongPoll(log *zerolog.Logger, rc io.ReadCloser, background
  	if background {
  		closeIn = time.NewTimer(10 * time.Second)
  		go func() {
@@ -287,7 +287,7 @@ index 7807445..648f319 100644
  			}
  		}()
  	} else {
-@@ -664,6 +683,7 @@ func (c *Client) readLongPoll(log *zerolog.Logger, rc io.ReadCloser, background
+@@ -666,6 +685,7 @@ func (c *Client) readLongPoll(log *zerolog.Logger, rc io.ReadCloser, background
  			}
  		}()
  	}
@@ -295,7 +295,7 @@ index 7807445..648f319 100644
  	var expectEOF bool
  	for {
  		lastReadStart = time.Now()
-@@ -671,13 +691,13 @@ func (c *Client) readLongPoll(log *zerolog.Logger, rc io.ReadCloser, background
+@@ -673,13 +693,13 @@ func (c *Client) readLongPoll(log *zerolog.Logger, rc io.ReadCloser, background
  		lastRead = time.Now()
  		if err != nil {
  			var logEvt *zerolog.Event
@@ -312,10 +312,10 @@ index 7807445..648f319 100644
  			log.Warn().Msg("Didn't get EOF after stream end marker")
  		}
 diff --git a/pkg/libgm/pair_google.go b/pkg/libgm/pair_google.go
-index f9b0898..0b79c1c 100644
+index 18e55e8..6c4a0c3 100644
 --- a/pkg/libgm/pair_google.go
 +++ b/pkg/libgm/pair_google.go
-@@ -317,6 +317,9 @@ func (c *Client) DoGaiaPairing(ctx context.Context, emojiCallback func(string))
+@@ -321,6 +321,9 @@ func (c *Client) DoGaiaPairing(ctx context.Context, emojiCallback func(string))
  		return err
  	}
  	c.triggerEvent(&events.PairSuccessful{PhoneID: phoneID})

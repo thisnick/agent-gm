@@ -429,7 +429,7 @@ Google-account pairing errors, all from `pair_google.go`, all mapped in §3.5:
 | `(*Client).SendReaction` | `(ctx, *gmproto.SendReactionRequest) (*gmproto.SendReactionResponse, error)` | `.Success bool` only. Action enum: `UNSPECIFIED=0, ADD=1, REMOVE=2, SWITCH=3`. |
 | `(*Client).DeleteMessage` | `(ctx, messageID string) (*gmproto.DeleteMessageResponse, error)` | `.Success bool`. |
 | `(*Client).MarkRead` | `(ctx, conversationID, messageID string) error` | no response body. |
-| `(*Client).SetTyping` | `(ctx, convID string, simPayload *gmproto.SIMPayload) error` | fire-and-forget. Agent GM exposes this only via REST `POST /v1/conversations/{id}/typing`; there is no MCP tool for it (§8.2). |
+| `(*Client).SetTyping` | `(ctx, convID string, typing bool, simPayload *gmproto.SIMPayload) error` | fire-and-forget; `typing` added in `ed5dc19` (Agent GM always passes `true`). Agent GM exposes this only via REST `POST /v1/conversations/{id}/typing`; there is no MCP tool for it (§8.2). |
 | `(*Client).GetOrCreateConversation` | `(ctx, *gmproto.GetOrCreateConversationRequest) (*gmproto.GetOrCreateConversationResponse, error)` | see §3.7 for the status enum and the undocumented values. |
 | `(*Client).UpdateConversation` | `(ctx, *gmproto.UpdateConversationRequest) (*gmproto.UpdateConversationResponse, error)` | archive/unarchive/mark-unread/pin, via `ConversationActionStatus`. |
 | `(*Client).DeleteConversation` | `(ctx, conversationID, phone string) error` | a thin wrapper over `UpdateConversation` with `ConversationActionStatus_DELETE` and a `DeleteConversationData{ConversationID, Phone}`. **This is Google's delete-for-me and the only delete Agent GM has** (N6). |
@@ -911,14 +911,14 @@ values is reliable and is what Agent GM uses.
 
 ```
 module:  go.mau.fi/mautrix-gmessages
-commit:  f756f0c
-subject: backfill: deduplicate forward backfill of empty portals by message ID (#168)
+commit:  ed5dc19
+subject: handlegmessages: ask to re-link when the paired phone is gone from the Google account (#151)
 ConfigVersion (util.ConfigMessage): Year=2026 Month=9 Day=2 V1=4 V2=6
                                     (util/config.go:7-13, unchanged by this bump)
 go directive: 1.26.0 (toolchain go1.27.0)
 ```
 
-`go.mod` pins by pseudo-version resolving to `f756f0c`. A checkout of the
+`go.mod` pins by pseudo-version resolving to `ed5dc19`. A checkout of the
 upstream tree at that commit lives at `/home/nick/code/mautrix-gmessages` on
 the owner's machine and is **not** committed here; CI re-clones it for the
 fixture-validation job (§13.4).
@@ -4578,11 +4578,11 @@ owner's confirmation before it runs.
 
 ### 13.4 Fixtures validated against the pinned source
 
-Fixtures live in `testdata/libgm/f756f0c/`, named for the pinned commit, and
+Fixtures live in `testdata/libgm/ed5dc19/`, named for the pinned commit, and
 are **source-derived, not live captures** — every identifier is a fixture
 label or a `555` number, and every key is a nonfunctional placeholder.
 
-A CI job, `fixture-validation`, clones mautrix-gmessages at `f756f0c` and
+A CI job, `fixture-validation`, clones mautrix-gmessages at `ed5dc19` and
 asserts, against that tree and not against Agent GM's own code (twenty-one
 assertions):
 
@@ -4711,7 +4711,7 @@ twice):
 | Job | What |
 |---|---|
 | `check` | `devbox run check` — build, vet, `golangci-lint run`, `go test -race` |
-| `pin-consistency` | `go.mod`, `internal/gm/pin.go` and §3.6 all name `f756f0c` |
+| `pin-consistency` | `go.mod`, `internal/gm/pin.go` and §3.6 all name `ed5dc19` |
 | `fixture-validation` | §13.4, against a fresh clone of the pinned upstream tree |
 | `conformance` | `devbox run conformance` against the baseline (§8.4) |
 | `lint-names` | the name lint of §13.5 |
