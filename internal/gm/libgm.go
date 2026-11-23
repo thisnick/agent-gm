@@ -666,7 +666,7 @@ func (b *LibGM) rawMarkRead(ctx context.Context, convID, msgID string) error {
 }
 
 func (b *LibGM) rawSetTyping(ctx context.Context, convID string) error {
-	if err := b.client.SetTyping(ctx, convID, nil); err != nil {
+	if err := b.client.SetTyping(ctx, convID, true, nil); err != nil {
 		return Classify(translateError(err))
 	}
 	return nil

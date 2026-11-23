@@ -2,19 +2,19 @@
 
 Read this record before updating the upstream pin or changing connection
 behavior. It describes the implementation shipped in Agent GM v1.3.0 and
-carried forward onto the `b0d61b4`, then the `d7b1aaf`, `caaeaa7`, `186284e`, `c1697e9`, `6026696`, `3bf5e3a`, and now the `f756f0c`
+carried forward onto the `b0d61b4`, then the `d7b1aaf`, `caaeaa7`, `186284e`, `c1697e9`, `6026696`, `3bf5e3a`, `f756f0c`, and now the `ed5dc19`
 pin, including its known limitations.
 
 ## Source and reproducible patch
 
 - Upstream: <https://github.com/mautrix/gmessages>.
-- Base commit: `f756f0cb7428198310e1c57d81a2429923524220`.
-- Go version: `v0.2610.1-0.20261116095921-f756f0cb7428`.
+- Base commit: `ed5dc19eb2b4149ee242cf000c86a7150dca9947`.
+- Go version: `v0.2611.1-0.20261119194137-ed5dc19eb2b4`.
 - Imported files: upstream `pkg/libgm`, `go.mod`, `go.sum`, `LICENSE`, and
   `LICENSE.exceptions`. The Matrix connector is not copied.
 - First shipped in commit `1f8659ed279ac1f30526078c77613def7822145a` (PR #15),
   against base commit `be48a58b733825f6dfd6bb630af5f236d3bc9ae8`. Carried
-  forward onto `b0d61b4`, then `d7b1aaf`, then `caaeaa7`, then `186284e`, then `c1697e9`, then `6026696`, then `3bf5e3a`, and now `f756f0c` per the procedure
+  forward onto `b0d61b4`, then `d7b1aaf`, then `caaeaa7`, then `186284e`, then `c1697e9`, then `6026696`, then `3bf5e3a`, then `f756f0c`, and now `ed5dc19` per the procedure
   below; see [docs/upstream-pin.md](../../docs/upstream-pin.md) for what
   changed in each bump and what upstream now does natively (the former
   `doLongPollContext` split and the `dittoPinger` context fields). The
@@ -34,7 +34,7 @@ pin, including its known limitations.
   moved the surrounding lines. The `6026696` bump again added nothing to and
   retired nothing from the patch; it applied cleanly and only line offsets
   moved (upstream's `media.go`, `pair.go` and `AuthData` changes are outside
-  every patched hunk). The `3bf5e3a` bump also added nothing to and retired nothing from the patch; it applied cleanly and only line offsets moved. Upstream's changes (a stopped ack ticker, `stopAckInterval`, in `session_handler.go`/`client.go`; a 32 KiB long-poll read buffer; richer decode-failure logging; `ErrPhoneInactive` in gaia pairing; nil-receiver guards on media downloads) are outside every patched hunk, but the `startAckInterval`/`stopAckInterval` pair now sits beside this patch's `sendAckRequestContext` split. The `f756f0c` bump likewise added nothing to and retired nothing from the patch; it applied cleanly and only line offsets moved (one hunk in `pair_google.go`, by four lines). Upstream's changes (`fillMissingIDs` in `event_handler.go`'s `decryptInternalMessage`; zero-padding short server-key coordinates in `ProcessServerInit`; a non-2xx status check returning `events.HTTPError` in `DownloadMedia`; a new `RenameGroupData`/`RENAME_GROUP` in `client.proto`) are outside every patched hunk.
+  every patched hunk). The `3bf5e3a` bump also added nothing to and retired nothing from the patch; it applied cleanly and only line offsets moved. Upstream's changes (a stopped ack ticker, `stopAckInterval`, in `session_handler.go`/`client.go`; a 32 KiB long-poll read buffer; richer decode-failure logging; `ErrPhoneInactive` in gaia pairing; nil-receiver guards on media downloads) are outside every patched hunk, but the `startAckInterval`/`stopAckInterval` pair now sits beside this patch's `sendAckRequestContext` split. The `f756f0c` bump likewise added nothing to and retired nothing from the patch; it applied cleanly and only line offsets moved (one hunk in `pair_google.go`, by four lines). Upstream's changes (`fillMissingIDs` in `event_handler.go`'s `decryptInternalMessage`; zero-padding short server-key coordinates in `ProcessServerInit`; a non-2xx status check returning `events.HTTPError` in `DownloadMedia`; a new `RenameGroupData`/`RENAME_GROUP` in `client.proto`) are outside every patched hunk. The `ed5dc19` bump likewise added nothing to and retired nothing from the patch; it applied cleanly and only line offsets moved (the `longpoll.go` hunks by two lines, the `pair_google.go` hunk by four). Upstream's changes (a new exported `PairedPhoneRegistered` plus a `signInGaia`/`gaiaPrimaryDevices` refactor in `pair_google.go`; `dittoPinger.WaitForResponse` ignoring a closed ping channel instead of counting it as a response; a debug log for field-11 data events in `event_handler.go`; and a breaking `SetTyping(ctx, convID, typing bool, simPayload)` signature in `methods.go`) are outside every patched hunk. The recovery pinger change touches a path this patch disables in background mode, so it does not affect `RunBackground`.
 - Exact source delta: [patches/background-session.patch](patches/background-session.patch).
   Paths are relative to the upstream repository root. The patch includes new
   source/tests, changes to existing files, and the mode difference noted below.
@@ -127,7 +127,7 @@ tree.
 patch_record="$PWD/third_party/mautrix-gmessages/patches/background-session.patch"
 upstream_checkout=/path/to/mautrix-gmessages
 patch_verify_dir=$(mktemp -d -t agent-gm-patch-verify-XXXXXX)
-git -C "$upstream_checkout" archive f756f0cb7428198310e1c57d81a2429923524220 \
+git -C "$upstream_checkout" archive ed5dc19eb2b4149ee242cf000c86a7150dca9947 \
   pkg/libgm go.mod go.sum LICENSE LICENSE.exceptions | tar -x -C "$patch_verify_dir"
 git -C "$patch_verify_dir" apply --check "$patch_record"
 git -C "$patch_verify_dir" apply "$patch_record"

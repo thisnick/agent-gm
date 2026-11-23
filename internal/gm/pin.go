@@ -7,13 +7,13 @@ package gm
 //
 // Bumping the pin is a deliberate slice with its own live gate (spec 3.6),
 // never a drive-by commit.
-const PinnedUpstreamCommit = "f756f0c"
+const PinnedUpstreamCommit = "ed5dc19"
 
 // PinnedUpstreamCommitFull is the same commit in full. Git cannot fetch a
 // commit by abbreviation, so the fixture-validation job needs all forty
 // characters; pin-consistency asserts it still begins with
 // PinnedUpstreamCommit.
-const PinnedUpstreamCommitFull = "f756f0cb7428198310e1c57d81a2429923524220"
+const PinnedUpstreamCommitFull = "ed5dc19eb2b4149ee242cf000c86a7150dca9947"
 
 // PinnedUpstreamModule is the Go module path of the pinned dependency.
 const PinnedUpstreamModule = "go.mau.fi/mautrix-gmessages"
